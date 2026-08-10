@@ -1,26 +1,250 @@
 @import "tailwindcss";
 
+/* ---- Nostavel design tokens: "Dusk / lamplight" ----
+   Light is the default. Dark applies via prefers-color-scheme unless the viewer
+   explicitly chose light; the toggle stamps data-theme on <html> to win both ways. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --parchment: #f5efe6;
+  --parchment-2: #ede4d6;
+  --surface: #ffffff;
+  --line: #e2d8c7;
+  --ink: #211b2b;
+  --soft: #6a6172;
+  --brass: #b9772b;
+  --brass-glow: #d9a455;
+  --sage: #5b7a60;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    --parchment: #17131f;
+    --parchment-2: #1e1826;
+    --surface: #221b2d;
+    --line: #352c44;
+    --ink: #ede6da;
+    --soft: #a79dae;
+    --brass: #d9a455;
+    --brass-glow: #e9c388;
+    --sage: #8fb295;
   }
 }
 
+:root[data-theme="dark"] {
+  --parchment: #17131f;
+  --parchment-2: #1e1826;
+  --surface: #221b2d;
+  --line: #352c44;
+  --ink: #ede6da;
+  --soft: #a79dae;
+  --brass: #d9a455;
+  --brass-glow: #e9c388;
+  --sage: #8fb295;
+}
+
+:root[data-theme="light"] {
+  --parchment: #f5efe6;
+  --parchment-2: #ede4d6;
+  --surface: #ffffff;
+  --line: #e2d8c7;
+  --ink: #211b2b;
+  --soft: #6a6172;
+  --brass: #b9772b;
+  --brass-glow: #d9a455;
+  --sage: #5b7a60;
+}
+
+@theme inline {
+  --color-parchment: var(--parchment);
+  --color-parchment2: var(--parchment-2);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-soft: var(--soft);
+  --color-brass: var(--brass);
+  --color-brassglow: var(--brass-glow);
+  --color-sage: var(--sage);
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Hide scrollbars everywhere but keep scrolling. */
+html {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge */
+}
+html::-webkit-scrollbar {
+  display: none; /* Chrome / Safari */
+}
+.rail,
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.rail::-webkit-scrollbar,
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Keep autofilled fields on-theme — Chrome forces a white/yellow background on
+   address/tel/email inputs, which otherwise breaks the surface color (badly in
+   dark mode). The inset shadow paints over it; the long transition defers it. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+select:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px var(--surface) inset;
+  box-shadow: 0 0 0 1000px var(--surface) inset;
+  -webkit-text-fill-color: var(--ink);
+  caret-color: var(--ink);
+  transition: background-color 9999s ease-out 0s;
+}
+
+/* ===========================================================================
+   Polish layer — "warm lacquer"
+   Buttery easing, warm-tinted elevation, soft specular sheen, glass chrome,
+   and quiet entrance motion. Delivered as small utilities so the whole app
+   inherits one consistent, glossy feel. Plain (unlayered) rules so they win
+   over Tailwind utilities where they intentionally replace them.
+   =========================================================================== */
+:root {
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);      /* smooth deceleration */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1); /* gentle overshoot */
+  --dur-fast: 130ms;
+  --dur: 240ms;
+  --dur-slow: 460ms;
+
+  /* Warm-tinted elevation — shadows carry the ink hue, never flat grey. */
+  --shadow-sm: 0 1px 2px rgba(46, 32, 14, 0.06), 0 3px 8px -3px rgba(46, 32, 14, 0.10);
+  --shadow-md: 0 5px 14px -6px rgba(46, 32, 14, 0.16), 0 16px 34px -14px rgba(46, 32, 14, 0.20);
+  --shadow-lg: 0 12px 26px -12px rgba(46, 32, 14, 0.24), 0 34px 66px -26px rgba(46, 32, 14, 0.32);
+  --sheen-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --ring-brass: 0 0 0 1px rgba(185, 119, 43, 0.35);
+  --glow-brass: 0 10px 28px -12px rgba(185, 119, 43, 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.42), 0 3px 10px -3px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 6px 18px -6px rgba(0, 0, 0, 0.55), 0 18px 40px -16px rgba(0, 0, 0, 0.6);
+    --shadow-lg: 0 14px 30px -12px rgba(0, 0, 0, 0.6), 0 38px 74px -26px rgba(0, 0, 0, 0.7);
+    --sheen-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+}
+:root[data-theme="dark"] {
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.42), 0 3px 10px -3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 18px -6px rgba(0, 0, 0, 0.55), 0 18px 40px -16px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 14px 30px -12px rgba(0, 0, 0, 0.6), 0 38px 74px -26px rgba(0, 0, 0, 0.7);
+  --sheen-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Buttery, scoped transitions for interactive surfaces. */
+.smooth {
+  transition:
+    transform var(--dur) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    background-color var(--dur) var(--ease-out),
+    color var(--dur) var(--ease-out),
+    filter var(--dur) var(--ease-out);
+}
+
+/* Raised, softly top-lit surface. */
+.gloss {
+  box-shadow: var(--sheen-top), var(--shadow-sm);
+}
+/* Lift + warm glow + brass hairline on hover (pair with .smooth). */
+.gloss-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--sheen-top), var(--shadow-lg), var(--ring-brass);
+}
+
+/* Frosted chrome for the header and overlays. */
+.glass {
+  background: color-mix(in srgb, var(--parchment) 82%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+}
+
+/* Signature glossy brass control. Vertical gradient + top sheen + warm glow,
+   a one-pass specular gleam on hover, and a real press on :active. */
+.btn-brass {
+  position: relative;
+  overflow: hidden;
+  background-image: linear-gradient(180deg, var(--brass-glow), var(--brass));
+  box-shadow: var(--sheen-top), var(--shadow-sm), var(--glow-brass);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out),
+    filter var(--dur) var(--ease-out);
+}
+.btn-brass:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05) saturate(1.03);
+  box-shadow: var(--sheen-top), var(--shadow-md), var(--glow-brass);
+}
+.btn-brass:active {
+  transform: translateY(0);
+  filter: brightness(0.97);
+  box-shadow: var(--shadow-sm);
+}
+.btn-brass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 34%, rgba(255, 255, 255, 0.38) 48%, transparent 60%);
+  transform: translateX(-130%);
+  transition: transform var(--dur-slow) var(--ease-out);
+  pointer-events: none;
+}
+.btn-brass:hover::after {
+  transform: translateX(130%);
+}
+
+/* Quiet entrance: fade + rise. .stagger cascades its direct children. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise var(--dur-slow) var(--ease-out) both;
+}
+.stagger > * {
+  animation: rise var(--dur-slow) var(--ease-out) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 45ms; }
+.stagger > *:nth-child(3) { animation-delay: 90ms; }
+.stagger > *:nth-child(4) { animation-delay: 135ms; }
+.stagger > *:nth-child(5) { animation-delay: 180ms; }
+.stagger > *:nth-child(6) { animation-delay: 225ms; }
+.stagger > *:nth-child(7) { animation-delay: 270ms; }
+.stagger > *:nth-child(8) { animation-delay: 315ms; }
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
 }

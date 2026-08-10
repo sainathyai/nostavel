@@ -1,0 +1,1 @@
+ALTER TABLE "bookings" ALTER COLUMN "contact_email" DROP NOT NULL;
