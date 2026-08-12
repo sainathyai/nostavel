@@ -320,13 +320,83 @@ export async function searchStays(input: {
   dest: string;
   checkin: string;
   nights: number;
+  notes?: string;
 }): Promise<SearchResult> {
   const target = resolveDest(input.dest);
   if (!target) throw new Error(`Unknown destination "${input.dest}"`);
   const nights = Math.max(1, Math.min(30, Math.round(input.nights)));
   const checkout = addDays(input.checkin, nights);
   const items = await fetchStays({ target, checkin: input.checkin, checkout, limit: 40 });
+  if (input.notes) applyPreferenceBoost(items, input.notes);
   return { city: target.name, checkin: input.checkin, checkout, nights, items: items.slice(0, 30) };
+}
+
+const STOPWORDS = new Set([
+  "a", "an", "the", "and", "or", "with", "for", "near", "close", "to", "in", "on", "of", "is",
+  "are", "looking", "want", "need", "prefer", "like", "room", "rooms", "hotel", "stay", "place",
+  "would", "please", "some", "any", "but", "not", "very",
+]);
+
+function keywordsFrom(text: string): string[] {
+  return Array.from(
+    new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOPWORDS.has(w))),
+  );
+}
+
+const CATEGORY_SYNONYMS: Record<Category, string[]> = {
+  budget: ["budget", "cheap", "affordable", "inexpensive", "value"],
+  luxury: ["luxury", "luxurious", "upscale", "highend", "fancy", "premium", "5star", "fivestar"],
+  comfort: ["comfort", "comfortable", "cozy", "relaxing"],
+  convenience: ["central", "downtown", "walkable", "convenient", "close", "nearby", "walking"],
+};
+
+// Light-touch relevance boost from the free-text "what are you looking for"
+// field. Not real NLP — keyword overlap against our category tags plus each
+// hotel's own name/room/board text — but enough to nudge a "quiet, near
+// downtown" search toward the right handful without an LLM in the loop yet.
+function applyPreferenceBoost(items: HotelStay[], notes: string) {
+  const words = keywordsFrom(notes);
+  if (!words.length) return;
+
+  const score = (it: HotelStay) => {
+    let s = 0;
+    const haystack = `${it.name} ${it.room} ${it.board}`.toLowerCase();
+    for (const w of words) {
+      if (haystack.includes(w)) s += 1;
+      for (const cat of it.categories) {
+        if (CATEGORY_SYNONYMS[cat].some((syn) => syn.includes(w) || w.includes(syn))) s += 2;
+      }
+    }
+    return s;
+  };
+
+  // Only reorders when a preference match actually differs; otherwise keeps
+  // the existing price-beat ordering (stable on the original index).
+  const scored = items.map((it, i) => ({ it, i, s: score(it) }));
+  scored.sort((a, b) => b.s - a.s || a.i - b.i);
+  items.splice(0, items.length, ...scored.map((x) => x.it));
+}
+
+// ---- map-driven search: whatever the visitor panned/zoomed the map to ----
+// Same pricing/category pipeline as searchStays, just keyed off a live
+// lat/lng/radius instead of a resolved destination.
+export async function searchStaysInArea(input: {
+  lat: number;
+  lng: number;
+  radius: number; // meters
+  checkin: string;
+  nights: number;
+}): Promise<HotelStay[]> {
+  const nights = Math.max(1, Math.min(30, Math.round(input.nights)));
+  const checkout = addDays(input.checkin, nights);
+  const radius = Math.max(300, Math.min(30000, Math.round(input.radius)));
+  const items = await fetchStays({
+    target: { kind: "radius", name: "This area", lat: input.lat, lng: input.lng, radius },
+    checkin: input.checkin,
+    checkout,
+    limit: 40,
+  });
+  return items.slice(0, 40);
 }
 
 // ---- hotel detail: gallery + hotel facts + rich, bookable room options ----
@@ -616,6 +686,49 @@ function isEnglishReview(rv: any): boolean {
   if (NON_LATIN.test(text)) return false; // definitely not English
   const lang = String(rv?.language || "").toLowerCase();
   return lang === "" || lang === "en" || lang === "eng" || lang === "english";
+}
+
+// Amenity glyphs shown directly on a search-result tile (icon-only, no
+// label text) — ordered by priority, since a tile only has room for a
+// handful. Matched against the hotel's raw facility strings.
+export const AMENITY_ICONS = [
+  { key: "parking", rx: /parking/i },
+  { key: "breakfast", rx: /breakfast/i },
+  { key: "wifi", rx: /wifi/i },
+  { key: "kitchenette", rx: /kitchenette|\bkitchen\b/i },
+  { key: "microwave", rx: /microwave/i },
+  { key: "fridge", rx: /refrigerator|\bfridge\b|mini[-\s]?bar/i },
+  { key: "accessible", rx: /accessib|wheelchair/i },
+  { key: "pool", rx: /\bpool\b/i },
+  { key: "gym", rx: /fitness|\bgym\b/i },
+  { key: "pet", rx: /\bpet\b/i },
+  { key: "ac", rx: /air condition/i },
+  { key: "spa", rx: /\bspa\b/i },
+  { key: "restaurant", rx: /restaurant/i },
+  { key: "bar", rx: /\bbar\b/i },
+  { key: "laundry", rx: /laundry/i },
+] as const;
+export type AmenityKey = (typeof AMENITY_ICONS)[number]["key"];
+
+function pickAmenityIcons(detail: any): AmenityKey[] {
+  const facilities: string[] = detail?.hotelFacilities ?? [];
+  const found: AmenityKey[] = [];
+  for (const { key, rx } of AMENITY_ICONS) {
+    if (found.length >= 6) break;
+    if (facilities.some((f) => rx.test(f))) found.push(key);
+  }
+  return found;
+}
+
+// Photo gallery + amenity icons for a search-result card — the bulk
+// /data/hotels listing behind fetchStays only returns one photo and no
+// facility list per hotel, so a card fetches both together, once, lazily
+// (rather than paying for every hotel's full detail on every search).
+export async function getHotelCardExtras(
+  hotelId: string,
+): Promise<{ images: string[]; amenities: AmenityKey[] }> {
+  const detail = await hotelDetail(hotelId);
+  return { images: buildGallery(detail), amenities: pickAmenityIcons(detail) };
 }
 
 export async function getHotelDetail(input: {

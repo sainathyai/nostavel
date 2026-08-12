@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { signOutAction } from "@/app/actions/auth";
 import { prepareBookingAction } from "@/app/actions/booking";
@@ -15,6 +16,7 @@ import {
   useTransition,
 } from "react";
 import type {
+  AmenityKey,
   Category,
   HotelStay,
   ReviewSnippet,
@@ -23,6 +25,17 @@ import type {
 } from "@/lib/liteapi";
 import type { SeasonalSection } from "@/lib/seasonal";
 import { DESTINATIONS } from "@/lib/destinations";
+import { fallbackArt } from "@/lib/fallback-art";
+import { hotelExtrasQueue } from "@/lib/fetch-queue";
+import { AmenityIcon } from "@/components/AmenityIcon";
+
+// MapLibre touches window/document at module load — client-only, no SSR.
+const StaysMap = dynamic(() => import("@/components/StaysMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="grid h-full w-full place-items-center text-[13px] text-soft">Loading map…</div>
+  ),
+});
 
 const CAT_LABEL: Record<Category, string> = {
   budget: "Budget",
@@ -31,12 +44,6 @@ const CAT_LABEL: Record<Category, string> = {
   convenience: "Central",
 };
 const CAT_ORDER: Category[] = ["budget", "comfort", "luxury", "convenience"];
-const CAT_CLASS: Record<Category, string> = {
-  luxury: "border-brass/40 bg-brass/12 text-brass", // soft gold
-  comfort: "border-sage/50 bg-sage/15 text-sage", // sage green
-  convenience: "border-slate-400/35 bg-slate-400/12 text-slate-600 dark:text-slate-300", // muted slate
-  budget: "border-stone-400/40 bg-stone-400/12 text-stone-600 dark:text-stone-300", // quiet stone
-};
 
 function reviewLabel(r: number) {
   if (r >= 9.5) return "Exceptional";
@@ -131,35 +138,6 @@ function WhyRecommend({ stay, facilities }: { stay: HotelStay; facilities: strin
   );
 }
 
-function CategoryBadges({ cats }: { cats: Category[] }) {
-  if (!cats.length) return null;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {[...cats]
-        .sort((a, b) => CAT_ORDER.indexOf(a) - CAT_ORDER.indexOf(b))
-        .map((c) => (
-          <span
-            key={c}
-            className={
-              "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
-              CAT_CLASS[c]
-            }
-          >
-            {CAT_LABEL[c]}
-          </span>
-        ))}
-    </div>
-  );
-}
-
-// ---- deterministic dusk gradient, used only when a hotel has no photo ----
-function fallbackArt(seed: string) {
-  let n = 0;
-  for (let i = 0; i < seed.length; i++) n = (n * 31 + seed.charCodeAt(i)) % 360;
-  const h2 = (n + 40) % 360;
-  return `radial-gradient(120% 90% at 78% 12%, hsl(${h2} 40% 42%) 0%, transparent 55%), linear-gradient(150deg, hsl(${n} 32% 26%), hsl(${(n + 300) % 360} 30% 16%))`;
-}
-
 function prettyDate(iso: string) {
   const d = new Date(iso + "T00:00:00Z");
   return d.toLocaleDateString("en-US", {
@@ -174,7 +152,7 @@ function truncate(s: string, n = 30) {
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
 }
 
-type Query = { dest: string; checkin: string; nights: number };
+type Query = { dest: string; checkin: string; nights: number; notes: string };
 type Intent = "view" | "book";
 type ModalTarget = { stay: HotelStay; intent: Intent };
 
@@ -332,7 +310,7 @@ export default function Experience({
     <MemberContext.Provider value={Boolean(account)}>
     <div className="flex flex-1 flex-col">
       <header className="sticky top-0 z-40 border-b border-line glass">
-        <div className="mx-auto flex h-14 max-w-[1180px] items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between px-6">
           <a href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>
@@ -349,28 +327,37 @@ export default function Experience({
         </div>
       </header>
 
-      {/* compact hero + booking form */}
-      <section className="border-b border-line">
-        <div className="mx-auto w-full max-w-[1180px] px-6 py-8">
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-brass">
-                Your travel concierge
-              </p>
-              <h1 className="font-display text-[clamp(24px,3.4vw,34px)] leading-tight tracking-[-0.01em]">
-                Fewer places. The <span className="italic text-brass">right</span> ones.
-              </h1>
-            </div>
-            <p className="max-w-[42ch] text-[13.5px] text-soft">
-              Tell us where and when. We come back with a short list worth booking, taxes and fees
-              included, usually for less than the big sites charge.
-            </p>
+      {/* Full hero on browse; once there's a result, the search itself is the
+          focus — shrink to a slim bar so tiles get the room. */}
+      {mode === "search" && result ? (
+        <section className="border-b border-line">
+          <div className="mx-auto w-full max-w-[1440px] px-6 py-3">
+            <BookingForm query={query} compact />
           </div>
-          <BookingForm query={query} />
-        </div>
-      </section>
+        </section>
+      ) : (
+        <section className="border-b border-line">
+          <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-brass">
+                  Your travel concierge
+                </p>
+                <h1 className="font-display text-[clamp(24px,3.4vw,34px)] leading-tight tracking-[-0.01em]">
+                  Fewer places. The <span className="italic text-brass">right</span> ones.
+                </h1>
+              </div>
+              <p className="max-w-[42ch] text-[13.5px] text-soft">
+                Tell us where and when. We come back with a short list worth booking, taxes and fees
+                included, usually for less than the big sites charge.
+              </p>
+            </div>
+            <BookingForm query={query} />
+          </div>
+        </section>
+      )}
 
-      <main className="mx-auto w-full max-w-[1180px] flex-1 px-6">
+      <main className="mx-auto w-full max-w-[1440px] flex-1 px-6">
         {!account && <PublicPricingBanner />}
         {mode === "search" ? (
           <SearchResults
@@ -399,29 +386,34 @@ export default function Experience({
   );
 }
 
-function BookingForm({ query }: { query: Query }) {
+function BookingForm({ query, compact = false }: { query: Query; compact?: boolean }) {
   const router = useRouter();
   const [dest, setDest] = useState(query.dest);
   const [checkin, setCheckin] = useState(query.checkin);
   const [nights, setNights] = useState(query.nights);
+  const [notes, setNotes] = useState(query.notes);
   const [pending, startTransition] = useTransition();
   const today = new Date().toISOString().slice(0, 10);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
     startTransition(() => {
-      router.push(`/?dest=${dest}&checkin=${checkin}&nights=${nights}`);
+      const notesParam = notes.trim() ? `&notes=${encodeURIComponent(notes.trim())}` : "";
+      router.push(`/?dest=${dest}&checkin=${checkin}&nights=${nights}${notesParam}`);
     });
   }
 
   return (
     <form
       onSubmit={submit}
-      className="mt-5 flex flex-col gap-2.5 rounded-xl border border-line bg-surface p-2.5 gloss smooth focus-within:border-brass/50 sm:flex-row sm:items-stretch"
+      className={
+        "flex flex-col gap-2.5 rounded-xl border border-line bg-surface gloss smooth focus-within:border-brass/50 sm:flex-row sm:items-stretch " +
+        (compact ? "p-1.5" : "mt-5 p-2.5")
+      }
     >
-      <DestinationField value={dest} onChange={setDest} />
+      <DestinationField value={dest} onChange={setDest} compact={compact} />
       <Divider />
-      <Field label="Check-in" className="sm:flex-1">
+      <Field label="Check-in" className="sm:flex-1" compact={compact}>
         <input
           type="date"
           value={checkin}
@@ -431,7 +423,7 @@ function BookingForm({ query }: { query: Query }) {
         />
       </Field>
       <Divider />
-      <Field label="Nights" className="sm:w-28">
+      <Field label="Nights" className="sm:w-28" compact={compact}>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -452,12 +444,25 @@ function BookingForm({ query }: { query: Query }) {
           </button>
         </div>
       </Field>
+      <Divider />
+      <Field label="Preferences" className="sm:flex-[1.6]" compact={compact}>
+        <input
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="What are you looking for? e.g. quiet, near downtown, pool"
+          className="w-full bg-transparent text-[15px] text-ink outline-none placeholder:text-soft/60"
+        />
+      </Field>
       <button
         type="submit"
         disabled={pending}
-        className="btn-brass rounded-lg px-6 py-3 text-[15px] font-semibold text-[#1a1410] disabled:opacity-60 sm:self-stretch"
+        className={
+          "btn-brass rounded-lg text-[15px] font-semibold text-[#1a1410] disabled:opacity-60 sm:self-stretch " +
+          (compact ? "px-5 py-2" : "px-6 py-3")
+        }
       >
-        {pending ? "Searching…" : "Search"}
+        {pending ? (compact ? "Updating…" : "Searching…") : compact ? "Update search" : "Search"}
       </button>
     </form>
   );
@@ -468,9 +473,11 @@ type CitySuggestion = { dest: string; name: string; sub: string };
 function DestinationField({
   value,
   onChange,
+  compact = false,
 }: {
   value: string;
   onChange: (dest: string) => void;
+  compact?: boolean;
 }) {
   const initial = DESTINATIONS.find((d) => d.key === value)?.name ?? value;
   const [text, setText] = useState(initial);
@@ -507,8 +514,16 @@ function DestinationField({
 
   return (
     <div className="relative sm:flex-[2]">
-      <div className="flex flex-col justify-center gap-0.5 rounded-lg px-3.5 py-2">
-        <span className="text-[11px] uppercase tracking-[0.1em] text-soft">Destination</span>
+      <div
+        className={
+          "flex flex-col justify-center gap-0.5 rounded-lg " + (compact ? "px-2.5 py-1" : "px-3.5 py-2")
+        }
+      >
+        <span
+          className={"uppercase tracking-[0.1em] text-soft " + (compact ? "text-[9.5px]" : "text-[11px]")}
+        >
+          Destination
+        </span>
         <input
           value={text}
           placeholder="Search any US city…"
@@ -568,15 +583,29 @@ function DestinationField({
 function Field({
   label,
   className = "",
+  compact = false,
   children,
 }: {
   label: string;
   className?: string;
+  compact?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <label className={"flex flex-col justify-center gap-0.5 rounded-lg px-3.5 py-2 " + className}>
-      <span className="text-[11px] uppercase tracking-[0.1em] text-soft">{label}</span>
+    <label
+      className={
+        "flex flex-col justify-center gap-0.5 rounded-lg " +
+        (compact ? "px-2.5 py-1 " : "px-3.5 py-2 ") +
+        className
+      }
+    >
+      <span
+        className={
+          "uppercase tracking-[0.1em] text-soft " + (compact ? "text-[9.5px]" : "text-[11px]")
+        }
+      >
+        {label}
+      </span>
       {children}
     </label>
   );
@@ -655,6 +684,8 @@ function SearchResultsInner({
 }) {
   const [active, setActive] = useState<Category | "all">("all");
   const [sort, setSort] = useState<SortKey>("recommended");
+  const [view, setView] = useState<"list" | "map">("list");
+  const isMember = useMember();
 
   const counts = CAT_ORDER.map((c) => ({
     cat: c,
@@ -689,6 +720,28 @@ function SearchResultsInner({
         </div>
 
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-0.5 rounded-lg border border-line bg-surface p-0.5">
+            <button
+              onClick={() => setView("list")}
+              aria-pressed={view === "list"}
+              className={
+                "smooth rounded-md px-3 py-1 text-[13px] font-medium " +
+                (view === "list" ? "bg-brass text-[#1a1410]" : "text-soft hover:text-ink")
+              }
+            >
+              List
+            </button>
+            <button
+              onClick={() => setView("map")}
+              aria-pressed={view === "map"}
+              className={
+                "smooth rounded-md px-3 py-1 text-[13px] font-medium " +
+                (view === "map" ? "bg-brass text-[#1a1410]" : "text-soft hover:text-ink")
+              }
+            >
+              Map
+            </button>
+          </div>
           <FeesToggle on={inclFees} onToggle={onToggleFees} />
           <label className="flex items-center gap-2 text-[13px] text-soft">
             Sort
@@ -707,11 +760,24 @@ function SearchResultsInner({
         </div>
       </div>
 
-      <div key={`${active}-${sort}`} className="stagger grid grid-cols-2 gap-4 md:grid-cols-4">
-        {shown.map((stay) => (
-          <StayCard key={stay.id} stay={stay} onOpen={onOpen} />
-        ))}
-      </div>
+      {view === "map" ? (
+        <div className="gloss h-[min(75vh,760px)] min-h-[520px] w-full overflow-hidden rounded-[14px] border border-line">
+          <StaysMap
+            stays={shown}
+            onOpen={onOpen}
+            isMember={isMember}
+            inclFees={inclFees}
+            checkin={result.checkin}
+            nights={result.nights}
+          />
+        </div>
+      ) : (
+        <div key={`${active}-${sort}`} className="stagger grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {shown.map((stay) => (
+            <StayCard key={stay.id} stay={stay} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -838,6 +904,35 @@ function StayCard({
   // Public (parity-safe) price: the SSP if we have one, else our only price.
   const publicBase = stay.them ?? stay.you;
   const publicPrice = incl ? publicBase + stay.feeAtHotel : publicBase;
+
+  // Gallery + amenity icons both live behind one lazy fetch — the bulk
+  // search listing only carries a single photo and no facility list per
+  // hotel. Owned here (not inside the gallery) since amenities render in
+  // the text block below, not the image area.
+  const [images, setImages] = useState<string[]>(stay.photo ? [stay.photo] : []);
+  const [amenities, setAmenities] = useState<AmenityKey[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const release = await hotelExtrasQueue.acquire();
+      try {
+        const r = await fetch(`/api/hotel-images/${stay.id}`);
+        const d = await r.json();
+        if (cancelled) return;
+        if (Array.isArray(d.images) && d.images.length) setImages(d.images);
+        if (Array.isArray(d.amenities)) setAmenities(d.amenities);
+      } catch {
+        // leave the single listing photo + no amenity row — not worth retrying
+      } finally {
+        release();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stay.id]);
+
   return (
     <div
       role="button"
@@ -852,73 +947,157 @@ function StayCard({
       aria-label={`View ${stay.name}`}
       className="group flex cursor-pointer flex-col overflow-hidden rounded-[14px] border border-line bg-surface gloss gloss-lift smooth hover:border-brass/50 focus-visible:outline-2 focus-visible:outline-brass"
     >
-      <div className="relative h-40 w-full" style={{ background: fallbackArt(stay.id) }}>
-        {stay.photo && (
-          <Image
-            src={stay.photo}
-            alt={stay.name}
-            fill
-            sizes="(max-width: 768px) 50vw, 260px"
-            className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-          />
-        )}
-        {isMember && pct > 0 && (
-          <span className="absolute left-2.5 top-2.5 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white ring-1 ring-white/15 backdrop-blur-md">
-            {pct}% off
-          </span>
-        )}
-        {!isMember && band > 0 && (
-          <span className="absolute left-2.5 top-2.5 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white ring-1 ring-white/15 backdrop-blur-md">
-            Member rate
-          </span>
-        )}
-        {stay.stars > 0 && (
-          <span className="absolute bottom-2.5 right-3 text-[13px] tracking-[1px] text-brassglow [text-shadow:0_1px_3px_rgba(0,0,0,0.6)]">
-            {"★".repeat(stay.stars)}
-          </span>
-        )}
-      </div>
+      <StayCardGallery stay={stay} images={images} isMember={isMember} pct={pct} band={band} />
 
-      <div className="flex flex-1 flex-col gap-1.5 p-3.5">
-        <h3 className="line-clamp-2 min-h-[2.6em] font-display text-[17px] leading-[1.3]">
-          {stay.name}
-        </h3>
-        <ReviewLine stay={stay} />
-        <CategoryBadges cats={stay.categories} />
+      <div className="flex flex-1 flex-col gap-1.5 p-4">
+        <h3 className="line-clamp-1 font-display text-[19px] leading-tight">{stay.name}</h3>
+        <div className="flex items-center gap-2">
+          <ReviewLine stay={stay} />
+        </div>
 
-        {isMember ? (
-          <>
-            <div className="mt-1 flex items-baseline gap-2 font-mono">
-              <span className="text-[18px] font-bold tabular-nums">${you}</span>
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {amenities.map((a) => (
+              <AmenityIcon key={a} kind={a} size={20} />
+            ))}
+          </div>
+          {isMember ? (
+            <div className="flex shrink-0 items-baseline gap-2 font-mono">
+              <span className="text-[22px] font-bold tabular-nums">${you}</span>
               {stay.them && (
-                <span className="text-[12px] text-soft line-through tabular-nums">${stay.them}</span>
+                <span className="text-[13.5px] text-soft line-through tabular-nums">${stay.them}</span>
               )}
             </div>
-            {incl && stay.feeAtHotel > 0 && (
-              <div className="font-mono text-[10.5px] text-soft">incl. ${stay.feeAtHotel} hotel fee</div>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="mt-1 flex items-baseline gap-1.5">
-              <span className="font-mono text-[18px] font-bold tabular-nums">${publicPrice}</span>
-              <span className="text-[11px] text-soft">public</span>
+          ) : (
+            <div className="flex shrink-0 items-baseline gap-2">
+              <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
+              <span className="text-[12px] text-soft">public</span>
             </div>
-            {band > 0 && (
-              <div className="text-[11.5px] font-medium text-brass">Members save up to {band}%</div>
-            )}
-          </>
-        )}
-
-        <div className="mt-auto pt-3">
-          <span className="inline-flex items-center gap-1 text-[13px] font-medium text-brass underline decoration-brass/40 underline-offset-4 transition-colors group-hover:decoration-brass">
-            View rooms
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          {!isMember && band > 0 ? (
+            <div className="text-[12.5px] font-medium text-brass">Members save up to {band}%</div>
+          ) : (
+            <span />
+          )}
+          <span className="inline-flex shrink-0 items-center gap-0.5 text-[13px] font-medium text-brass">
+            View
             <span aria-hidden className="transition-transform group-hover:translate-x-0.5">
               →
             </span>
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Image-first card gallery: one photo up front (from the search-results
+// listing), more arrive once the card's lazy /api/hotel-images fetch (owned
+// by the parent StayCard) resolves — this component just renders whatever
+// `images` it's given and lets the visitor swipe/click through them.
+function StayCardGallery({
+  stay,
+  images,
+  isMember,
+  pct,
+  band,
+}: {
+  stay: HotelStay;
+  images: string[];
+  isMember: boolean;
+  pct: number;
+  band: number;
+}) {
+  const [idx, setIdx] = useState(0);
+  const touchX = useRef<number | null>(null);
+
+  const go = useCallback(
+    (dir: 1 | -1, e?: React.SyntheticEvent) => {
+      e?.stopPropagation();
+      setIdx((i) => {
+        const len = images.length || 1;
+        return (i + dir + len) % len;
+      });
+    },
+    [images.length],
+  );
+
+  return (
+    <div
+      className="relative h-64 w-full overflow-hidden"
+      style={{ background: fallbackArt(stay.id) }}
+      onTouchStart={(e) => {
+        touchX.current = e.touches[0].clientX;
+      }}
+      onTouchEnd={(e) => {
+        if (touchX.current == null) return;
+        const dx = e.changedTouches[0].clientX - touchX.current;
+        touchX.current = null;
+        if (Math.abs(dx) > 40) go(dx < 0 ? 1 : -1, e);
+      }}
+    >
+      {images[idx] && (
+        <Image
+          key={images[idx]}
+          src={images[idx]}
+          alt={stay.name}
+          fill
+          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 440px"
+          className="object-cover"
+        />
+      )}
+
+      {images.length > 1 && (
+        <>
+          <button
+            type="button"
+            aria-label="Previous photo"
+            onClick={(e) => go(-1, e)}
+            className="absolute left-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full bg-black/40 text-white opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 hover:bg-black/60"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            aria-label="Next photo"
+            onClick={(e) => go(1, e)}
+            className="absolute right-1.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full bg-black/40 text-white opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 hover:bg-black/60"
+          >
+            ›
+          </button>
+        </>
+      )}
+
+      {images.length > 1 && images.length <= 8 && (
+        <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1">
+          {images.map((_, i) => (
+            <span
+              key={i}
+              className={
+                "h-1 w-1 rounded-full transition-colors " + (i === idx ? "bg-white" : "bg-white/40")
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      {isMember && pct > 0 && (
+        <span className="absolute left-2.5 top-2.5 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white ring-1 ring-white/15 backdrop-blur-md">
+          {pct}% off
+        </span>
+      )}
+      {!isMember && band > 0 && (
+        <span className="absolute left-2.5 top-2.5 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white ring-1 ring-white/15 backdrop-blur-md">
+          Member rate
+        </span>
+      )}
+      {stay.stars > 0 && (
+        <span className="absolute bottom-2.5 right-3 text-[13px] tracking-[1px] text-brassglow [text-shadow:0_1px_3px_rgba(0,0,0,0.6)]">
+          {"★".repeat(stay.stars)}
+        </span>
+      )}
     </div>
   );
 }

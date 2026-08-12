@@ -107,6 +107,21 @@ select:-webkit-autofill {
   transition: background-color 9999s ease-out 0s;
 }
 
+/* The browser's native date-picker icon renders as a hard grey rectangle by
+   default — jarring against the rest of the "warm lacquer" chrome. Fade it
+   down to a quiet glyph that only asserts itself on hover. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 6px;
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.9;
+  background-color: var(--line);
+}
+
 /* ===========================================================================
    Polish layer — "warm lacquer"
    Buttery easing, warm-tinted elevation, soft specular sheen, glass chrome,
@@ -237,6 +252,126 @@ select:-webkit-autofill {
 :focus-visible {
   outline: 2px solid var(--brass);
   outline-offset: 2px;
+}
+
+/* StaysMap price pins — small brass pills, lift on hover, match the rest of
+   the site's price badges rather than a generic map-pin icon. */
+.stays-map-pin {
+  position: relative;
+  cursor: pointer;
+  border: none;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font: 600 12.5px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: #1a1410;
+  background: linear-gradient(180deg, var(--brass-glow), var(--brass));
+  box-shadow: var(--sheen-top), var(--shadow-sm), var(--glow-brass);
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur) var(--ease-out);
+}
+.stays-map-pin:hover,
+.stays-map-pin--active {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: var(--sheen-top), var(--shadow-md), var(--glow-brass);
+}
+.stays-map-pin--active {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.stays-map-pin::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  background: var(--brass);
+  transform: translateX(-50%) rotate(45deg);
+  border-radius: 0 0 2px 0;
+  z-index: -1;
+}
+
+/* A dark-canvas MapLibre attribution control reads poorly on our light
+   parchment chrome around the map; keep it small and unobtrusive either way. */
+.maplibregl-ctrl-attrib {
+  font-size: 10px !important;
+}
+
+/* StaysMap pin popup — replaces MapLibre's default white popup chrome with
+   our surface/gloss look; a compact hotel card (photo, name, rating, price,
+   View button) that opens on pin click, before the visitor commits to the
+   full modal. */
+.maplibregl-popup.stays-map-popup-wrap .maplibregl-popup-content {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--sheen-top), var(--shadow-lg);
+}
+.maplibregl-popup.stays-map-popup-wrap .maplibregl-popup-tip {
+  border-top-color: var(--surface);
+  border-bottom-color: var(--surface);
+  border-left-color: var(--surface);
+  border-right-color: var(--surface);
+}
+.maplibregl-popup.stays-map-popup-wrap .maplibregl-popup-close-button {
+  color: #fff;
+  font-size: 18px;
+  padding: 3px 8px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.stays-map-popup {
+  width: 220px;
+}
+.stays-map-popup-img {
+  height: 108px;
+  width: 100%;
+  background-size: cover;
+  background-position: center;
+}
+.stays-map-popup-body {
+  padding: 10px 12px 12px;
+}
+.stays-map-popup-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 4px;
+  font: 600 13.5px/1.3 var(--font-sans);
+  color: var(--ink);
+}
+.stays-map-popup-rating {
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  color: var(--soft);
+}
+.stays-map-popup-price {
+  margin-bottom: 8px;
+  font: 700 15px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.stays-map-popup-price span {
+  margin-left: 3px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--soft);
+}
+.stays-map-popup-view {
+  width: 100%;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 0;
+  font: 600 12.5px/1 var(--font-sans);
+  color: #1a1410;
+  background-image: linear-gradient(180deg, var(--brass-glow), var(--brass));
+  transition: filter var(--dur-fast) var(--ease-out);
+}
+.stays-map-popup-view:hover {
+  filter: brightness(1.05);
 }
 
 @media (prefers-reduced-motion: reduce) {

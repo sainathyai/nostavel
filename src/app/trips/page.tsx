@@ -18,7 +18,7 @@ export default async function TripsPage() {
   return (
     <main className="min-h-screen bg-parchment">
       <header className="sticky top-0 z-40 border-b border-line glass">
-        <div className="mx-auto flex h-14 max-w-[1180px] items-center justify-between px-6">
+        <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between px-6">
           <Link href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>

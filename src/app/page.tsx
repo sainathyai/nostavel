@@ -13,7 +13,7 @@ function defaultCheckin() {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ dest?: string; checkin?: string; nights?: string }>;
+  searchParams: Promise<{ dest?: string; checkin?: string; nights?: string; notes?: string }>;
 }) {
   const sp = await searchParams;
   const account = await getCurrentUser();
@@ -22,6 +22,7 @@ export default async function Home({
     dest: resolved ? (sp.dest as string) : "nyc",
     checkin: sp.checkin || defaultCheckin(),
     nights: Math.max(1, Math.min(30, Number(sp.nights) || 2)),
+    notes: sp.notes || "",
   };
 
   // Searched: show results for that destination + dates.
@@ -29,7 +30,12 @@ export default async function Home({
     let result: SearchResult | null = null;
     let error: string | null = null;
     try {
-      result = await searchStays({ dest: query.dest, checkin: query.checkin, nights: query.nights });
+      result = await searchStays({
+        dest: query.dest,
+        checkin: query.checkin,
+        nights: query.nights,
+        notes: query.notes,
+      });
     } catch (e) {
       error = (e as Error).message;
     }
