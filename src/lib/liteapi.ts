@@ -7,7 +7,7 @@ import "server-only";
 import { DEST_BY_KEY } from "./destinations";
 import { US_CITY_SET } from "./us-cities";
 import { INTL_CITY_BY_DEST } from "./intl-cities";
-import { memberPrice } from "./pricing";
+import { memberPrice, guestPrice } from "./pricing";
 
 const BASE = process.env.LITEAPI_BASE_URL || "https://api.liteapi.travel/v3.0";
 const KEY = process.env.LITEAPI_KEY || "";
@@ -144,29 +144,40 @@ async function hotelReviews(hotelId: string, limit = 8) {
 }
 
 // ---- the four-step booking flow (prebook/book used by the drawer via API routes) ----
-// usePaymentSdk=true makes LiteAPI the merchant of record: the response carries a
-// `secretKey` + `transactionId` for a browser card session (the guest's card is
-// charged by LiteAPI, not us). Default false keeps the old wallet path.
-export async function prebook(offerId: string, usePaymentSdk = false) {
+// We ONLY ever operate as a commission partner: LiteAPI is the merchant of
+// record, the guest's card is charged by them, and we're paid commission. The
+// alternative (ACC_CREDIT_CARD / WALLET) would make US the merchant, charging
+// our own card for the room and leaving us to collect from the guest and carry
+// fraud/chargeback liability. We are deliberately not equipped for that, so
+// those methods must never be reachable from this codebase.
+//
+// usePaymentSdk=true is what produces the `secretKey` + `transactionId` for the
+// browser card session, so it is always on and not a caller's choice.
+export async function prebook(offerId: string) {
   const d = await api("POST", "/rates/prebook", {
-    body: { offerId, usePaymentSdk },
+    body: { offerId, usePaymentSdk: true },
   });
   return (d as any).data ?? d;
 }
 
-// Finalize. When a transactionId is present (the Payment SDK path) we book against
-// that charge with method TRANSACTION_ID; otherwise we fall back to the sandbox
-// wallet method (no card).
+// Finalize against the guest's completed card charge. `transactionId` is
+// REQUIRED: without it there is no guest payment to book against, and the only
+// other methods LiteAPI accepts would bill our own account instead. Failing
+// loudly here is the point — a booking we can't tie to a guest charge must not
+// proceed.
 export async function book(input: {
   prebookId: string;
   firstName: string;
   lastName: string;
   email: string;
-  transactionId?: string | null;
+  transactionId: string;
 }) {
-  const payment = input.transactionId
-    ? { method: "TRANSACTION_ID", transactionId: input.transactionId }
-    : { method: "ACC_CREDIT_CARD" };
+  if (!input.transactionId) {
+    throw new Error(
+      "Refusing to book without a guest payment transactionId (would bill our own account)",
+    );
+  }
+  const payment = { method: "TRANSACTION_ID", transactionId: input.transactionId };
   const d = await api("POST", "/rates/book", {
     body: {
       prebookId: input.prebookId,
@@ -255,7 +266,7 @@ async function fetchStays(opts: {
       photo: h.main_photo || h.thumbnail || null,
       offerId: rt.offerId,
       you: memberPrice(you, them), // max(SSP - member discount, net + margin floor)
-      them: them ? Math.round(them) : null,
+      them: them ? guestPrice(you, them) : null, // never below the member price (parity floor can exceed raw SSP)
       currency: rt.offerRetailRate?.currency || "USD",
       room: firstRate.name || "Standard room",
       board: firstRate.boardName || "Room only",
@@ -409,6 +420,7 @@ export type RoomOption = {
   board: string; // boardName, e.g. "Bed & Breakfast"
   breakfast: boolean; // does the board include breakfast
   freeCancel: boolean;
+  freeCancelUntil: string | null; // e.g. "Sep 8" — the deadline before penalties kick in
   mandatory: string | null; // human note about the fee due at the hotel
   fee: number; // numeric fee due at the hotel (0 if none/bundled)
   amenities: string[]; // top room amenities
@@ -426,7 +438,23 @@ export type ReviewSnippet = {
   pros: string;
 };
 
+// Room-independent identity — enough to render a hotel detail page's header
+// and build a booking snapshot without depending on a search-result item
+// (the detail page can be reached directly, not just from a search list).
+export type HotelIdentity = {
+  id: string;
+  name: string;
+  city: string;
+  address: string;
+  stars: number;
+  photo: string | null;
+  rating: number | null;
+  reviewCount: number;
+  currency: string;
+};
+
 export type HotelDetail = {
+  hotel: HotelIdentity;
   images: string[];
   facilities: string[];
   checkinTime: string | null;
@@ -631,6 +659,39 @@ function tidyLabel(s: string): string {
 
 const BREAKFAST_BOARDS = new Set(["BB", "HB", "FB", "AI"]);
 
+// The supplier's taxesAndFees items each carry a `description` ("TAX",
+// "RESORT_FEE", etc.) — verified live that a plain La Quinta comes back with
+// description "TAX" only (i.e. ordinary hotel/occupancy tax, not a resort
+// fee). Map to honest wording instead of a single hardcoded "resort/facility
+// fee" label, which was misrepresenting plain taxes as a resort charge.
+function describeFeeKind(desc: string): string {
+  const d = (desc || "").toUpperCase();
+  if (/RESORT/.test(d)) return "resort fee";
+  if (/CLEAN/.test(d)) return "cleaning fee";
+  if (/SERVICE/.test(d)) return "service fee";
+  if (/CITY/.test(d)) return "city tax";
+  if (/OCCUPANC/.test(d)) return "occupancy tax";
+  if (/TAX/.test(d)) return "tax";
+  return "hotel fee";
+}
+
+function buildMandatoryFeeLine(fees: any[], feeSum: number): string | null {
+  if (!feeSum) return null;
+  const kinds = [...new Set(fees.map((f: any) => describeFeeKind(f?.description)))];
+  const label = kinds.length === 1 ? kinds[0] : "taxes & fees";
+  return `+ $${feeSum} ${label} due at the hotel`;
+}
+
+// cancelPolicyInfos[0].cancelTime is the deadline before the first penalty
+// tier applies — i.e. the "free cancellation until" date. Comes back as a
+// bare "YYYY-MM-DD HH:mm:ss" string with a separate explicit `timezone: GMT`.
+function formatCancelDeadline(cancelTime: string | undefined): string | null {
+  if (!cancelTime) return null;
+  const d = new Date(cancelTime.replace(" ", "T") + "Z");
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 // Pandemic-era health-protocol / packaging tags the supplier lists as
 // "facilities". They read as noise (and "Breakfast takeaway containers" even
 // gets mistaken for breakfast being served), so drop them outright.
@@ -688,6 +749,20 @@ function isEnglishReview(rv: any): boolean {
   return lang === "" || lang === "en" || lang === "eng" || lang === "english";
 }
 
+function buildReviewSnippets(rawReviews: any[]): ReviewSnippet[] {
+  return rawReviews
+    .filter((rv: any) => (rv?.pros || rv?.headline) && !/^\s*$/.test(rv?.pros || rv?.headline || ""))
+    .filter(isEnglishReview) // English only for now; the language tag isn't reliable, so also gate on script
+    .slice(0, 3)
+    .map((rv: any) => ({
+      name: rv.name || "Guest",
+      country: rv.country || null,
+      type: rv.type ? String(rv.type).replace(/_/g, " ") : null,
+      headline: rv.headline || "",
+      pros: rv.pros || "",
+    }));
+}
+
 // Amenity glyphs shown directly on a search-result tile (icon-only, no
 // label text) — ordered by priority, since a tile only has room for a
 // handful. Matched against the hotel's raw facility strings.
@@ -731,6 +806,31 @@ export async function getHotelCardExtras(
   return { images: buildGallery(detail), amenities: pickAmenityIcons(detail) };
 }
 
+export type HotelPreview = {
+  images: string[];
+  amenities: AmenityKey[];
+  facilities: string[];
+  reviews: ReviewSnippet[];
+  checkinTime: string | null;
+  checkoutTime: string | null;
+};
+
+// Everything the preview modal shows beyond what the search-result item
+// already carries (name/price/stars/rating) — deliberately skips rates
+// (searchRates), since the preview doesn't select or book a room; that's
+// what "Explore rooms" hands off to the full /stay page for.
+export async function getHotelPreview(hotelId: string): Promise<HotelPreview> {
+  const [detail, rawReviews] = await Promise.all([hotelDetail(hotelId), hotelReviews(hotelId)]);
+  return {
+    images: buildGallery(detail),
+    amenities: pickAmenityIcons(detail),
+    facilities: pickFacilities(detail),
+    reviews: buildReviewSnippets(rawReviews),
+    checkinTime: detail?.checkinCheckoutTimes?.checkin_start ?? null,
+    checkoutTime: detail?.checkinCheckoutTimes?.checkout ?? null,
+  };
+}
+
 export async function getHotelDetail(input: {
   hotelId: string;
   checkin: string;
@@ -745,18 +845,7 @@ export async function getHotelDetail(input: {
     hotelReviews(input.hotelId),
   ]);
 
-  const reviews: ReviewSnippet[] = rawReviews
-    .filter((rv: any) => (rv?.pros || rv?.headline) && !/^\s*$/.test(rv?.pros || rv?.headline || ""))
-    .filter(isEnglishReview) // English only for now; the language tag isn't reliable, so also gate on script
-    .slice(0, 3)
-    .map((rv: any) => ({
-      name: rv.name || "Guest",
-      country: rv.country || null,
-      type: rv.type ? String(rv.type).replace(/_/g, " ") : null,
-      headline: rv.headline || "",
-      pros: rv.pros || "",
-    }));
-
+  const reviews = buildReviewSnippets(rawReviews);
   const images = buildGallery(detail);
   const catalog = buildRoomCatalog(detail);
   const entry = rates[0];
@@ -783,11 +872,14 @@ export async function getHotelDetail(input: {
       const board = fr.boardName || "Room only";
       const fees = (fr.retailRate?.taxesAndFees ?? []).filter((t: any) => t?.included === false);
       const feeSum = Math.round(fees.reduce((s: number, t: any) => s + (t.amount || 0), 0));
-      // Supplier fee descriptions ("Heritage charge" etc.) confuse guests; show the
-      // amount and that it's collected at the hotel, without the raw jargon.
-      const mandatory = feeSum ? `+ $${feeSum} resort/facility fee due at the hotel` : null;
+      const mandatory = buildMandatoryFeeLine(fees, feeSum);
       const beds = [...bedKeywords(fr.name || "")].sort().join("+") || "unknown";
       const accessible = /accessible|hearing|mobility/i.test(fr.name || "") ? "acc" : "std";
+      const refundableTag = fr.cancellationPolicies?.refundableTag || "";
+      const freeCancel = refundableTag !== "NRFN";
+      const freeCancelUntil = freeCancel
+        ? formatCancelDeadline(fr.cancellationPolicies?.cancelPolicyInfos?.[0]?.cancelTime)
+        : null;
 
       return {
         offerId: rt.offerId,
@@ -797,13 +889,16 @@ export async function getHotelDetail(input: {
         sleeps: fr.maxOccupancy || room?.sleeps || 2,
         board,
         breakfast: BREAKFAST_BOARDS.has(boardType) || /breakfast/i.test(board),
-        freeCancel: (fr.cancellationPolicies?.refundableTag || "") !== "NRFN",
+        freeCancel,
+        freeCancelUntil,
         mandatory,
         fee: feeSum,
         amenities: [...new Set((room?.amenities ?? []).map(tidyLabel))].slice(0, 5),
         image: room?.photos?.[0] ?? images[0] ?? null,
         you: memberPrice(you, rt.suggestedSellingPrice?.amount ?? null), // max(SSP - discount, net + margin floor)
-        them: rt.suggestedSellingPrice?.amount ? Math.round(rt.suggestedSellingPrice.amount) : null,
+        them: rt.suggestedSellingPrice?.amount
+          ? guestPrice(you, rt.suggestedSellingPrice.amount) // never below the member price (parity floor can exceed raw SSP)
+          : null,
         currency: rt.offerRetailRate?.currency || "USD",
         groupKey: `${beds}|${board}|${accessible}`,
       };
@@ -840,6 +935,17 @@ export async function getHotelDetail(input: {
     .slice(0, 8);
 
   return {
+    hotel: {
+      id: input.hotelId,
+      name: detail?.name || "",
+      city: detail?.city || "",
+      address: detail?.address || "",
+      stars: Math.round(detail?.stars || detail?.starRating || 0),
+      photo: detail?.main_photo || detail?.thumbnail || images[0] || null,
+      rating: typeof detail?.rating === "number" ? detail.rating : null,
+      reviewCount: detail?.reviewCount || 0,
+      currency: detail?.currency || "USD",
+    },
     images,
     facilities: pickFacilities(detail),
     checkinTime: detail?.checkinCheckoutTimes?.checkin_start ?? null,

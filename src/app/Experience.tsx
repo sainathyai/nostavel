@@ -5,7 +5,6 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { signOutAction } from "@/app/actions/auth";
-import { prepareBookingAction } from "@/app/actions/booking";
 import {
   createContext,
   useCallback,
@@ -15,19 +14,14 @@ import {
   useState,
   useTransition,
 } from "react";
-import type {
-  AmenityKey,
-  Category,
-  HotelStay,
-  ReviewSnippet,
-  RoomOption,
-  SearchResult,
-} from "@/lib/liteapi";
+import type { AmenityKey, Category, HotelStay, ReviewSnippet, SearchResult } from "@/lib/liteapi";
 import type { SeasonalSection } from "@/lib/seasonal";
 import { DESTINATIONS } from "@/lib/destinations";
 import { fallbackArt } from "@/lib/fallback-art";
 import { hotelExtrasQueue } from "@/lib/fetch-queue";
 import { AmenityIcon } from "@/components/AmenityIcon";
+import { ReviewLine } from "@/components/ReviewLine";
+import { memberSavingsBand } from "@/lib/member-pricing";
 
 // MapLibre touches window/document at module load — client-only, no SSR.
 const StaysMap = dynamic(() => import("@/components/StaysMap"), {
@@ -44,14 +38,6 @@ const CAT_LABEL: Record<Category, string> = {
   convenience: "Central",
 };
 const CAT_ORDER: Category[] = ["budget", "comfort", "luxury", "convenience"];
-
-function reviewLabel(r: number) {
-  if (r >= 9.5) return "Exceptional";
-  if (r >= 9) return "Superb";
-  if (r >= 8) return "Very good";
-  if (r >= 7) return "Good";
-  return "Rated";
-}
 
 type SortKey = "recommended" | "price_low" | "price_high" | "savings";
 const SORTS: { key: SortKey; label: string }[] = [
@@ -82,62 +68,6 @@ function sortItems(items: HotelStay[], key: SortKey) {
   return arr;
 }
 
-function ReviewLine({ stay }: { stay: HotelStay }) {
-  if (stay.rating == null) return null;
-  return (
-    <div className="flex items-center gap-1.5 text-[12px]">
-      <span className="rounded bg-brass px-1.5 py-0.5 font-mono text-[11px] font-bold text-[#1a1410]">
-        {stay.rating.toFixed(1)}
-      </span>
-      <span className="font-semibold text-ink">{reviewLabel(stay.rating)}</span>
-      {stay.reviewCount > 0 && (
-        <span className="text-soft">· {stay.reviewCount.toLocaleString()} reviews</span>
-      )}
-    </div>
-  );
-}
-
-// Honest reasons drawn only from real signals — never fabricated prose.
-function recommendReasons(stay: HotelStay, facilities: string[]): string[] {
-  const out: string[] = [];
-  const save = stay.them ? stay.them - stay.you : 0;
-  if (save > 0) out.push(`$${save} under the Booking.com price`);
-  if (stay.rating != null && stay.rating >= 8) {
-    out.push(
-      `${reviewLabel(stay.rating)} ${stay.rating.toFixed(1)} guest score` +
-        (stay.reviewCount >= 200 ? ` across ${stay.reviewCount.toLocaleString()} reviews` : ""),
-    );
-  }
-  if (stay.categories.includes("convenience")) out.push("Central to the area's main sights");
-  else if (stay.categories.includes("luxury")) out.push("One of the top-tier stays here");
-  else if (stay.categories.includes("comfort")) out.push("A dependable, well-reviewed pick");
-  else if (stay.categories.includes("budget")) out.push("Among the best value in this search");
-  const fac = facilities.find((f) => /pool|spa|breakfast|parking|gym|fitness|beach|view/i.test(f));
-  if (fac && out.length < 3) out.push(fac);
-  if (stay.stars >= 4 && out.length < 3) out.push(`${stay.stars}-star property`);
-  return out.slice(0, 3);
-}
-
-function WhyRecommend({ stay, facilities }: { stay: HotelStay; facilities: string[] }) {
-  const reasons = recommendReasons(stay, facilities);
-  if (!reasons.length) return null;
-  return (
-    <div className="flex flex-col gap-2.5 border-t border-line pt-4">
-      <h4 className="font-display text-[19px]">Why we recommend it</h4>
-      <ul className="flex flex-col gap-2">
-        {reasons.map((r, i) => (
-          <li key={i} className="flex gap-2 text-[13px] text-ink">
-            <span className="text-brass" aria-hidden>
-              ✦
-            </span>
-            <span>{r}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function prettyDate(iso: string) {
   const d = new Date(iso + "T00:00:00Z");
   return d.toLocaleDateString("en-US", {
@@ -154,7 +84,6 @@ function truncate(s: string, n = 30) {
 
 type Query = { dest: string; checkin: string; nights: number; notes: string };
 type Intent = "view" | "book";
-type ModalTarget = { stay: HotelStay; intent: Intent };
 
 // When true, displayed prices include the mandatory fee collected at the hotel.
 const FeesContext = createContext(false);
@@ -169,11 +98,6 @@ const useMember = () => useContext(MemberContext);
 
 // Public-facing savings teaser: rounded UP to the nearest 5%, capped, and always
 // shown as "up to" so the exact member price can't be reverse-engineered.
-function memberSavingsBand(you: number, them?: number | null): number {
-  if (!them || you >= them) return 0;
-  return Math.min(60, Math.ceil((((them - you) / them) * 100) / 5) * 5);
-}
-
 export type Account = {
   name?: string | null;
   email?: string | null;
@@ -281,10 +205,28 @@ export default function Experience({
   searchError?: string | null;
   account?: Account;
 }) {
+  const router = useRouter();
   const [theme, setTheme] = useState<"light" | "dark" | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [modal, setModal] = useState<ModalTarget | null>(null);
-  const [inclFees, setInclFees] = useState(false);
+  const [inclFees, setInclFees] = useState(true);
+  // Netflix-style "which tile did I come from" cue: set right before
+  // navigating to a hotel's page, read once when the list mounts (e.g. on
+  // browser back), then faded out — a lightweight substitute for a full
+  // shared-element transition.
+  const [justViewedId, setJustViewedId] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const id = sessionStorage.getItem("lastViewedStayId");
+      if (id) {
+        setJustViewedId(id);
+        sessionStorage.removeItem("lastViewedStayId");
+        const t = setTimeout(() => setJustViewedId(null), 2600);
+        return () => clearTimeout(t);
+      }
+    } catch {
+      // sessionStorage unavailable (privacy mode etc.) — no highlight, no harm
+    }
+  }, []);
 
   useEffect(() => setMounted(true), []);
 
@@ -303,7 +245,27 @@ export default function Experience({
   // Pre-mount, render a stable label so server and client HTML match.
   const themeLabel = !mounted ? "Dusk" : currentTheme() === "dark" ? "Daylight" : "Dusk";
 
-  const open = (stay: HotelStay, intent: Intent) => setModal({ stay, intent });
+  // A tile click opens a lightweight preview first — more photos, rating,
+  // amenities, price — with no booking machinery in it, so there's nothing
+  // to lose if it's closed by accident. Only the preview's own "Explore
+  // rooms" button commits to the full page (room selection + booking).
+  const [preview, setPreview] = useState<HotelStay | null>(null);
+  const open = (stay: HotelStay) => setPreview(stay);
+
+  const explore = (stay: HotelStay) => {
+    try {
+      sessionStorage.setItem("lastViewedStayId", stay.id);
+    } catch {
+      // sessionStorage unavailable — the return-highlight just won't show
+    }
+    const params = new URLSearchParams({
+      checkin: query.checkin,
+      nights: String(query.nights),
+      dest: query.dest,
+    });
+    if (query.notes) params.set("notes", query.notes);
+    router.push(`/stay/${stay.id}?${params.toString()}`);
+  };
 
   return (
     <FeesContext.Provider value={inclFees}>
@@ -366,23 +328,305 @@ export default function Experience({
             onOpen={open}
             inclFees={inclFees}
             onToggleFees={() => setInclFees((v) => !v)}
+            justViewedId={justViewedId}
           />
         ) : (
           <BrowseRows sections={sections} />
         )}
       </main>
 
-      {modal && (
-        <HotelModal
-          stay={modal.stay}
-          intent={modal.intent}
-          query={query}
-          onClose={() => setModal(null)}
+      {preview && (
+        <HotelPreviewModal
+          stay={preview}
+          nights={query.nights}
+          onClose={() => setPreview(null)}
+          onExplore={() => {
+            setPreview(null);
+            explore(preview);
+          }}
         />
       )}
     </div>
     </MemberContext.Provider>
     </FeesContext.Provider>
+  );
+}
+
+// Quick-look preview: more photos, rating, amenities, price — everything a
+// visitor needs to decide "is this worth exploring further" without leaving
+// the results page. No booking logic lives here, so Escape/backdrop-click
+// closing it can never lose anything; "Explore rooms" is the only path to
+// the full page (room selection + booking).
+// Same "honest reasons" framing as the old modal — category-aware, since
+// (unlike the standalone /stay page) this preview has the full search-result
+// HotelStay on hand, categories included.
+function previewReasons(stay: HotelStay, facilities: string[]): string[] {
+  const out: string[] = [];
+  const save = stay.them ? stay.them - stay.you : 0;
+  if (save > 0) out.push(`$${save} under the Booking.com price`);
+  if (stay.rating != null && stay.rating >= 8) {
+    out.push(
+      `${stay.rating >= 9 ? "Superb" : "Very good"} ${stay.rating.toFixed(1)} guest score` +
+        (stay.reviewCount >= 200 ? ` across ${stay.reviewCount.toLocaleString()} reviews` : ""),
+    );
+  }
+  if (stay.categories.includes("convenience")) out.push("Central to the area's main sights");
+  else if (stay.categories.includes("luxury")) out.push("One of the top-tier stays here");
+  else if (stay.categories.includes("comfort")) out.push("A dependable, well-reviewed pick");
+  else if (stay.categories.includes("budget")) out.push("Among the best value in this search");
+  const fac = facilities.find((f) => /pool|spa|breakfast|parking|gym|fitness|beach|view/i.test(f));
+  if (fac && out.length < 3) out.push(fac);
+  if (stay.stars >= 4 && out.length < 3) out.push(`${stay.stars}-star property`);
+  return out.slice(0, 3);
+}
+
+function HotelPreviewModal({
+  stay,
+  nights,
+  onClose,
+  onExplore,
+}: {
+  stay: HotelStay;
+  nights: number;
+  onClose: () => void;
+  onExplore: () => void;
+}) {
+  const isMember = useMember();
+  const incl = useInclFees();
+  const [images, setImages] = useState<string[]>(stay.photo ? [stay.photo] : []);
+  const [amenities, setAmenities] = useState<AmenityKey[]>([]);
+  const [facilities, setFacilities] = useState<string[]>([]);
+  const [reviews, setReviews] = useState<ReviewSnippet[]>([]);
+  const [times, setTimes] = useState<{ ci: string | null; co: string | null }>({
+    ci: null,
+    co: null,
+  });
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/hotel-preview/${stay.id}`);
+        const d = await r.json();
+        if (cancelled) return;
+        if (Array.isArray(d.images) && d.images.length) setImages(d.images);
+        if (Array.isArray(d.amenities)) setAmenities(d.amenities);
+        if (Array.isArray(d.facilities)) setFacilities(d.facilities);
+        if (Array.isArray(d.reviews)) setReviews(d.reviews);
+        setTimes({ ci: d.checkinTime ?? null, co: d.checkoutTime ?? null });
+      } catch {
+        // keep the single listing photo; the rest of the panel just stays sparse
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stay.id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") setIdx((i) => (images.length ? (i + 1) % images.length : 0));
+      if (e.key === "ArrowLeft")
+        setIdx((i) => (images.length ? (i - 1 + images.length) % images.length : 0));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, images.length]);
+
+  const you = incl ? stay.you + stay.feeAtHotel : stay.you;
+  const perNight = Math.round(you / nights);
+  const publicBase = stay.them ?? stay.you;
+  const publicPrice = incl ? publicBase + stay.feeAtHotel : publicBase;
+  const publicPerNight = Math.round(publicPrice / nights);
+  const band = memberSavingsBand(stay.you, stay.them);
+  const reasons = previewReasons(stay, facilities);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-[rgba(12,9,16,0.6)] p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rise flex h-full w-full max-w-[960px] flex-col overflow-hidden border-line bg-parchment shadow-[var(--shadow-lg)] sm:h-auto sm:max-h-[90vh] sm:rounded-2xl sm:border"
+      >
+        <div
+          className="relative h-[280px] w-full shrink-0 overflow-hidden sm:h-[420px]"
+          style={{ background: fallbackArt(stay.id) }}
+        >
+          <div
+            className="flex h-full transition-transform duration-300 ease-out"
+            style={{ transform: `translateX(-${idx * 100}%)` }}
+          >
+            {images.map((src, i) => (
+              <div key={i} className="relative h-full w-full shrink-0">
+                <Image
+                  src={src}
+                  alt={`${stay.name} photo ${i + 1}`}
+                  fill
+                  sizes="(max-width: 960px) 100vw, 960px"
+                  className="object-cover"
+                  priority={i === 0}
+                />
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/50 text-lg text-white hover:bg-black/70"
+          >
+            ×
+          </button>
+
+          {images.length > 1 && (
+            <>
+              <button
+                onClick={() => setIdx((i) => (i - 1 + images.length) % images.length)}
+                aria-label="Previous photo"
+                className="absolute left-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-lg text-white hover:bg-black/70"
+              >
+                ‹
+              </button>
+              <button
+                onClick={() => setIdx((i) => (i + 1) % images.length)}
+                aria-label="Next photo"
+                className="absolute right-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-lg text-white hover:bg-black/70"
+              >
+                ›
+              </button>
+              <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-2.5 py-0.5 font-mono text-[11px] text-white">
+                {idx + 1} / {images.length}
+              </span>
+            </>
+          )}
+        </div>
+
+        <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
+          <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.1em] text-soft">
+                {stay.city}
+                {stay.stars > 0 ? ` · ${"★".repeat(stay.stars)}` : ""}
+              </div>
+              <h3 className="font-display text-[26px] leading-tight tracking-[-0.01em]">
+                {stay.name}
+              </h3>
+              <div className="mt-1.5">
+                <ReviewLine stay={stay} />
+              </div>
+              {stay.address && <p className="mt-1.5 text-[13px] text-soft">{stay.address}</p>}
+              {(times.ci || times.co) && (
+                <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-soft">
+                  {times.ci && <span>Check-in from {times.ci}</span>}
+                  {times.co && <span>Check-out by {times.co}</span>}
+                </div>
+              )}
+
+              {amenities.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+                  {amenities.map((a) => (
+                    <AmenityIcon key={a} kind={a} size={20} />
+                  ))}
+                </div>
+              )}
+
+              {facilities.length > 0 && (
+                <div className="mt-4 flex flex-col gap-2 border-t border-line pt-4">
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-soft">
+                    Amenities
+                  </h4>
+                  <div className="flex flex-wrap gap-1.5">
+                    {facilities.map((f) => (
+                      <span
+                        key={f}
+                        className="rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-soft"
+                      >
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {reasons.length > 0 && (
+                <div className="mt-4 flex flex-col gap-2.5 border-t border-line pt-4">
+                  <h4 className="font-display text-[17px]">Why we recommend it</h4>
+                  <ul className="flex flex-col gap-2">
+                    {reasons.map((r, i) => (
+                      <li key={i} className="flex gap-2 text-[13px] text-ink">
+                        <span className="text-brass" aria-hidden>
+                          ✦
+                        </span>
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {reviews.length > 0 && (
+              <div className="flex flex-col gap-2.5 border-t border-line pt-4 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6">
+                <h4 className="font-display text-[17px]">What guests say</h4>
+                {reviews.map((rv, i) => (
+                  <div key={i} className="rounded-lg border border-line bg-surface p-3">
+                    {rv.headline && (
+                      <div className="text-[13.5px] font-semibold text-ink">“{rv.headline}”</div>
+                    )}
+                    {rv.pros && (
+                      <div className="mt-0.5 line-clamp-3 text-[13px] text-soft">{rv.pros}</div>
+                    )}
+                    <div className="mt-1.5 text-[11px] uppercase tracking-wide text-soft">
+                      {rv.name}
+                      {rv.country ? ` · ${rv.country.toUpperCase()}` : ""}
+                      {rv.type ? ` · ${rv.type}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-surface/60 p-4 sm:p-5">
+          <div>
+            {isMember ? (
+              <>
+                <div className="text-[11px] text-soft tabular-nums">${perNight}/night</div>
+                <div className="flex items-baseline gap-1.5 font-mono">
+                  <span className="text-[22px] font-bold tabular-nums">${you}</span>
+                  <span className="text-[11px] text-soft">total</span>
+                  {stay.them && stay.them > you && (
+                    <span className="text-[13px] text-soft line-through tabular-nums">${stay.them}</span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-[11px] text-soft tabular-nums">${publicPerNight}/night</div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
+                  <span className="text-[12px] text-soft">public · total</span>
+                </div>
+              </>
+            )}
+            {!isMember && band > 0 && (
+              <div className="text-[11.5px] font-medium text-brass">Members save up to {band}%</div>
+            )}
+          </div>
+          <button
+            onClick={onExplore}
+            className="btn-brass shrink-0 rounded-lg px-5 py-2.5 text-[14px] font-semibold text-[#1a1410]"
+          >
+            Explore rooms →
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -640,12 +884,14 @@ function SearchResults({
   onOpen,
   inclFees,
   onToggleFees,
+  justViewedId,
 }: {
   result: SearchResult | null;
   error: string | null;
   onOpen: (s: HotelStay, i: Intent) => void;
   inclFees: boolean;
   onToggleFees: () => void;
+  justViewedId: string | null;
 }) {
   if (error) {
     return (
@@ -667,6 +913,7 @@ function SearchResults({
       onOpen={onOpen}
       inclFees={inclFees}
       onToggleFees={onToggleFees}
+      justViewedId={justViewedId}
     />
   );
 }
@@ -676,11 +923,13 @@ function SearchResultsInner({
   onOpen,
   inclFees,
   onToggleFees,
+  justViewedId,
 }: {
   result: SearchResult;
   onOpen: (s: HotelStay, i: Intent) => void;
   inclFees: boolean;
   onToggleFees: () => void;
+  justViewedId: string | null;
 }) {
   const [active, setActive] = useState<Category | "all">("all");
   const [sort, setSort] = useState<SortKey>("recommended");
@@ -774,7 +1023,13 @@ function SearchResultsInner({
       ) : (
         <div key={`${active}-${sort}`} className="stagger grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((stay) => (
-            <StayCard key={stay.id} stay={stay} onOpen={onOpen} />
+            <StayCard
+              key={stay.id}
+              stay={stay}
+              nights={result.nights}
+              onOpen={onOpen}
+              justViewed={stay.id === justViewedId}
+            />
           ))}
         </div>
       )}
@@ -890,20 +1145,26 @@ function DestinationCard({ d }: { d: SeasonalSection["destinations"][number] }) 
 
 function StayCard({
   stay,
+  nights,
   onOpen,
+  justViewed = false,
 }: {
   stay: HotelStay;
+  nights: number;
   onOpen: (s: HotelStay, i: Intent) => void;
+  justViewed?: boolean;
 }) {
   const incl = useInclFees();
   const isMember = useMember();
   const you = incl ? stay.you + stay.feeAtHotel : stay.you;
+  const perNight = Math.round(you / nights);
   const save = stay.them ? stay.them - you : 0;
   const pct = stay.them ? Math.round((save / stay.them) * 100) : 0;
   const band = memberSavingsBand(stay.you, stay.them);
   // Public (parity-safe) price: the SSP if we have one, else our only price.
   const publicBase = stay.them ?? stay.you;
   const publicPrice = incl ? publicBase + stay.feeAtHotel : publicBase;
+  const publicPerNight = Math.round(publicPrice / nights);
 
   // Gallery + amenity icons both live behind one lazy fetch — the bulk
   // search listing only carries a single photo and no facility list per
@@ -945,7 +1206,10 @@ function StayCard({
         }
       }}
       aria-label={`View ${stay.name}`}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-[14px] border border-line bg-surface gloss gloss-lift smooth hover:border-brass/50 focus-visible:outline-2 focus-visible:outline-brass"
+      className={
+        "group flex cursor-pointer flex-col overflow-hidden rounded-[14px] border bg-surface gloss gloss-lift smooth hover:border-brass/50 focus-visible:outline-2 focus-visible:outline-brass " +
+        (justViewed ? "border-brass ring-2 ring-brass/60" : "border-line")
+      }
     >
       <StayCardGallery stay={stay} images={images} isMember={isMember} pct={pct} band={band} />
 
@@ -962,16 +1226,23 @@ function StayCard({
             ))}
           </div>
           {isMember ? (
-            <div className="flex shrink-0 items-baseline gap-2 font-mono">
-              <span className="text-[22px] font-bold tabular-nums">${you}</span>
-              {stay.them && (
-                <span className="text-[13.5px] text-soft line-through tabular-nums">${stay.them}</span>
+            <div className="flex shrink-0 flex-col items-end gap-0.5">
+              <span className="text-[11px] text-soft tabular-nums">${perNight}/night</span>
+              <div className="flex items-baseline gap-1.5 font-mono">
+                <span className="text-[22px] font-bold tabular-nums">${you}</span>
+                <span className="text-[11px] text-soft">total</span>
+              </div>
+              {stay.them && stay.them > you && (
+                <span className="text-[12.5px] text-soft line-through tabular-nums">${stay.them}</span>
               )}
             </div>
           ) : (
-            <div className="flex shrink-0 items-baseline gap-2">
-              <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
-              <span className="text-[12px] text-soft">public</span>
+            <div className="flex shrink-0 flex-col items-end gap-0.5">
+              <span className="text-[11px] text-soft tabular-nums">${publicPerNight}/night</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
+                <span className="text-[11px] text-soft">public · total</span>
+              </div>
             </div>
           )}
         </div>
@@ -1101,466 +1372,3 @@ function StayCardGallery({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Large modal: sliding photo gallery + bookable room options
-// ---------------------------------------------------------------------------
-// Prepare state for the modal's Book button. On success we navigate to the
-// dedicated /book/[id] checkout page, so the modal only needs to reflect the
-// in-flight prepare + any error; the ledger row + price live on that page.
-type CheckoutState =
-  | { phase: "idle" }
-  | { phase: "preparing"; offerId: string }
-  | { phase: "error"; offerId: string; message: string };
-
-// checkin + nights -> checkout date (yyyy-mm-dd), matching the server's UTC math.
-function checkoutDateOf(checkin: string, nights: number) {
-  const d = new Date(checkin + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + nights);
-  return d.toISOString().slice(0, 10);
-}
-
-function HotelModal({
-  stay,
-  intent,
-  query,
-  onClose,
-}: {
-  stay: HotelStay;
-  intent: Intent;
-  query: Query;
-  onClose: () => void;
-}) {
-  const router = useRouter();
-  const [images, setImages] = useState<string[]>(stay.photo ? [stay.photo] : []);
-  const [options, setOptions] = useState<RoomOption[]>([]);
-  const [facilities, setFacilities] = useState<string[]>([]);
-  const [reviews, setReviews] = useState<ReviewSnippet[]>([]);
-  const [times, setTimes] = useState<{ ci: string | null; co: string | null }>({
-    ci: null,
-    co: null,
-  });
-  const [loading, setLoading] = useState(true);
-  const [idx, setIdx] = useState(0);
-  const [pb, setPb] = useState<CheckoutState>({ phase: "idle" });
-
-  // One idempotency key per offer, stable across retries of the same selection so
-  // a repeated Book click reuses the same ledger row instead of duplicating it.
-  const idemKeys = useRef<Map<string, string>>(new Map());
-  function keyFor(offerId: string) {
-    const map = idemKeys.current;
-    let k = map.get(offerId);
-    if (!k) {
-      k = crypto.randomUUID();
-      map.set(offerId, k);
-    }
-    return k;
-  }
-
-  // Takes the RoomOption directly (not an offerId lookup) so it doesn't depend on
-  // `options` — which the hotel-fetch effect sets. Depending on it here would make
-  // this callback churn on every fetch and drive that effect into a render loop.
-  const startPrebook = useCallback(
-    async (o: RoomOption) => {
-      const offerId = o.offerId;
-      setPb({ phase: "preparing", offerId });
-      const res = await prepareBookingAction({
-        idempotencyKey: keyFor(offerId),
-        hotelId: stay.id,
-        offerId,
-        hotel: {
-          name: stay.name,
-          city: stay.city,
-          address: stay.address,
-          image: stay.photo,
-          stars: stay.stars,
-        },
-        room: {
-          title: o.title ?? stay.room,
-          beds: o.beds,
-          board: o.board ?? stay.board,
-          image: o.image ?? stay.photo,
-          amenities: o.amenities ?? [],
-          sleeps: o.sleeps,
-          themMinor: (o.them ?? stay.them) != null ? Math.round((o.them ?? stay.them)! * 100) : null,
-        },
-        checkinDate: query.checkin,
-        checkoutDate: checkoutDateOf(query.checkin, query.nights),
-        nights: query.nights,
-        adults: 2,
-        currency: o.currency ?? stay.currency ?? "USD",
-        usePaymentSdk: true,
-      });
-      if (!res.ok) {
-        setPb({ phase: "error", offerId, message: res.error });
-        return;
-      }
-      // Rate is held + the ledger row is written — hand off to the secure
-      // checkout page (guest details + card). Stay in "preparing" through nav.
-      router.push(`/book/${res.data.bookingId}`);
-    },
-    [stay, query, router],
-  );
-
-  // fetch curated gallery + hotel facts + room options
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const r = await fetch("/api/hotel", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hotelId: stay.id, checkin: query.checkin, nights: query.nights }),
-        });
-        const d = await r.json();
-        if (!alive) return;
-        if (r.ok) {
-          if (d.images?.length) setImages(d.images);
-          setFacilities(d.facilities ?? []);
-          setReviews(d.reviews ?? []);
-          setTimes({ ci: d.checkinTime ?? null, co: d.checkoutTime ?? null });
-          const opts: RoomOption[] = d.options?.length
-            ? d.options
-            : [
-                {
-                  offerId: stay.offerId,
-                  title: stay.room,
-                  beds: "",
-                  size: null,
-                  sleeps: 2,
-                  board: stay.board,
-                  breakfast: /breakfast/i.test(stay.board),
-                  freeCancel: stay.freeCancel,
-                  mandatory: null,
-                  amenities: [],
-                  image: stay.photo,
-                  you: stay.you,
-                  them: stay.them,
-                  currency: stay.currency,
-                },
-              ];
-          setOptions(opts);
-          if (intent === "book" && opts[0]) startPrebook(opts[0]);
-        }
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [stay, query, intent, startPrebook]);
-
-  // keyboard: esc closes, arrows slide the gallery
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowRight") setIdx((i) => (images.length ? (i + 1) % images.length : 0));
-      if (e.key === "ArrowLeft")
-        setIdx((i) => (images.length ? (i - 1 + images.length) % images.length : 0));
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, images.length]);
-
-  const incl = useInclFees();
-  const isMember = useMember();
-  const baseFrom = options[0]?.you ?? stay.you;
-  const feeFrom = options[0]?.fee ?? stay.feeAtHotel;
-  // Members see the net "from"; everyone else sees the public (SSP) "from".
-  const fromBase = isMember ? baseFrom : (options[0]?.them ?? stay.them ?? baseFrom);
-  const fromPrice = incl ? fromBase + feeFrom : fromBase;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-[rgba(12,9,16,0.6)] p-0 backdrop-blur-sm sm:items-center sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="rise flex h-full w-full max-w-[1140px] flex-col overflow-hidden border-line bg-parchment shadow-[var(--shadow-lg)] sm:h-[92vh] sm:rounded-2xl sm:border lg:flex-row"
-      >
-        {/* LEFT — gallery, then room options directly below */}
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-[1.55]">
-          <div
-            className="relative h-64 w-full shrink-0 overflow-hidden sm:h-80"
-            style={{ background: fallbackArt(stay.id) }}
-          >
-            <div
-              className="flex h-full transition-transform duration-300 ease-out"
-              style={{ transform: `translateX(-${idx * 100}%)` }}
-            >
-              {images.map((src, i) => (
-                <div key={i} className="relative h-full w-full shrink-0">
-                  <Image
-                    src={src}
-                    alt={`${stay.name} photo ${i + 1}`}
-                    fill
-                    sizes="(max-width: 1140px) 100vw, 720px"
-                    className="object-cover"
-                    priority={i === 0}
-                  />
-                </div>
-              ))}
-            </div>
-
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/50 text-lg text-white hover:bg-black/70"
-            >
-              ×
-            </button>
-
-            {images.length > 1 && (
-              <>
-                <button
-                  onClick={() => setIdx((i) => (i - 1 + images.length) % images.length)}
-                  aria-label="Previous photo"
-                  className="absolute left-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-lg text-white hover:bg-black/70"
-                >
-                  ‹
-                </button>
-                <button
-                  onClick={() => setIdx((i) => (i + 1) % images.length)}
-                  aria-label="Next photo"
-                  className="absolute right-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-lg text-white hover:bg-black/70"
-                >
-                  ›
-                </button>
-                <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-2.5 py-0.5 font-mono text-[11px] text-white">
-                  {idx + 1} / {images.length}
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* rooms scroll independently under the images */}
-          <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto p-5">
-            <div className="mb-3 flex items-baseline justify-between">
-              <h4 className="font-display text-[20px]">
-                {options.length > 1 ? "Choose your room" : "Room option"}
-              </h4>
-              <span className="text-[12px] text-soft">
-                {query.nights} {query.nights === 1 ? "night" : "nights"} · from ${fromPrice} total
-              </span>
-            </div>
-
-            {loading && <div className="py-8 text-center text-sm text-soft">Loading rooms…</div>}
-
-            <div className="flex flex-col gap-4">
-              {options.map((o) => (
-                <RoomOptionCard
-                  key={o.offerId}
-                  o={o}
-                  seed={stay.id}
-                  pb={pb}
-                  onBook={() => startPrebook(o)}
-                />
-              ))}
-            </div>
-
-            <p className="mt-4 text-center text-[11px] text-soft">
-              You pay the price shown. Sandbox bookings never charge a card.
-            </p>
-          </div>
-        </div>
-
-        {/* RIGHT — static details: identity, amenities, reviews */}
-        <aside className="no-scrollbar flex min-h-0 w-full shrink-0 flex-col gap-5 overflow-y-auto border-t border-line bg-surface/50 p-5 lg:w-[380px] lg:border-l lg:border-t-0">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.1em] text-soft">
-              {stay.city}
-              {stay.stars > 0 ? ` · ${"★".repeat(stay.stars)}` : ""}
-            </div>
-            <h3 className="font-display text-[24px] leading-tight tracking-[-0.01em]">
-              {stay.name}
-            </h3>
-            <div className="mt-1.5">
-              <ReviewLine stay={stay} />
-            </div>
-            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-soft">
-              {times.ci && <span>Check-in from {times.ci}</span>}
-              {times.co && <span>Check-out by {times.co}</span>}
-            </div>
-          </div>
-
-          {facilities.length > 0 && (
-            <div className="flex flex-col gap-2 border-t border-line pt-4">
-              <h4 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-soft">
-                Amenities
-              </h4>
-              <div className="flex flex-wrap gap-1.5">
-                {facilities.map((f) => (
-                  <span
-                    key={f}
-                    className="rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-soft"
-                  >
-                    {f}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {reviews.length > 0 && (
-            <div className="flex flex-col gap-2.5 border-t border-line pt-4">
-              <h4 className="font-display text-[19px]">What guests say</h4>
-              {reviews.map((rv, i) => (
-                <div key={i} className="rounded-lg border border-line bg-surface p-3">
-                  {rv.headline && (
-                    <div className="text-[13.5px] font-semibold text-ink">“{rv.headline}”</div>
-                  )}
-                  {rv.pros && (
-                    <div className="mt-0.5 line-clamp-3 text-[13px] text-soft">{rv.pros}</div>
-                  )}
-                  <div className="mt-1.5 text-[11px] uppercase tracking-wide text-soft">
-                    {rv.name}
-                    {rv.country ? ` · ${rv.country.toUpperCase()}` : ""}
-                    {rv.type ? ` · ${rv.type}` : ""}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loading && <WhyRecommend stay={stay} facilities={facilities} />}
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function Chip({ tone, children }: { tone: "good" | "muted"; children: React.ReactNode }) {
-  return (
-    <span
-      className={
-        "rounded-full px-2.5 py-1 text-[12px] font-medium " +
-        (tone === "good"
-          ? "border border-sage/40 bg-sage/15 text-sage"
-          : "border border-line bg-surface text-soft")
-      }
-    >
-      {children}
-    </span>
-  );
-}
-
-function RoomOptionCard({
-  o,
-  seed,
-  pb,
-  onBook,
-}: {
-  o: RoomOption;
-  seed: string;
-  pb: CheckoutState;
-  onBook: () => void;
-}) {
-  const incl = useInclFees();
-  const isMember = useMember();
-  const active = "offerId" in pb && pb.offerId === o.offerId;
-  const you = incl ? o.you + o.fee : o.you;
-  const band = memberSavingsBand(o.you, o.them);
-  const publicBase = o.them ?? o.you;
-  const publicPrice = incl ? publicBase + o.fee : publicBase;
-  const meta = [o.beds, o.size, `sleeps ${o.sleeps}`].filter(Boolean).join(" · ");
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-line bg-surface">
-      <div className="flex flex-col sm:flex-row">
-        <div
-          className="relative h-40 w-full shrink-0 sm:h-auto sm:w-40"
-          style={{ background: fallbackArt(seed + o.offerId) }}
-        >
-          {o.image && (
-            <Image
-              src={o.image}
-              alt={o.title}
-              fill
-              sizes="(max-width: 640px) 100vw, 160px"
-              className="object-cover"
-            />
-          )}
-        </div>
-
-        <div className="flex flex-1 flex-col gap-2.5 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="font-display text-[17px] leading-tight">{o.title}</div>
-              {meta && <div className="mt-0.5 text-[13px] text-soft">{meta}</div>}
-            </div>
-            {isMember ? (
-              <div className="flex items-baseline justify-end gap-2 font-mono">
-                {o.them && you < o.them && (
-                  <span className="text-[12px] text-soft line-through tabular-nums">${o.them}</span>
-                )}
-                <span className="text-[18px] font-bold tabular-nums">${you}</span>
-              </div>
-            ) : (
-              <div className="flex flex-col items-end">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono text-[18px] font-bold tabular-nums">${publicPrice}</span>
-                  <span className="text-[11px] text-soft">public</span>
-                </div>
-                {band > 0 && (
-                  <span className="text-[11.5px] font-medium text-brass">Members save up to {band}%</span>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-1.5">
-            <Chip tone={o.breakfast ? "good" : "muted"}>
-              {o.breakfast ? "Breakfast included" : o.board}
-            </Chip>
-            <Chip tone={o.freeCancel ? "good" : "muted"}>
-              {o.freeCancel ? "Free cancellation" : "Non-refundable"}
-            </Chip>
-            {o.amenities.slice(0, 3).map((a) => (
-              <Chip key={a} tone="muted">
-                {a}
-              </Chip>
-            ))}
-          </div>
-
-          {o.fee > 0 &&
-            (incl ? (
-              <div className="text-[12px] text-soft">Includes ${o.fee} hotel fee</div>
-            ) : (
-              <div className="text-[12px] text-soft">{o.mandatory}</div>
-            ))}
-
-          {/* Anyone can book — guest checkout is allowed. Non-members are
-              charged the public price server-side (enforced in prepareBooking,
-              not here); this is just a nudge toward the cheaper member rate. */}
-          {!isMember && band > 0 && (
-            <p className="text-[11.5px] text-soft">
-              <a href="/signin" className="text-brass underline underline-offset-2 hover:text-brassglow">
-                Sign in
-              </a>{" "}
-              first to book at the member rate instead.
-            </p>
-          )}
-          {active && pb.phase === "error" && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-2.5 text-[13px] text-red-500">
-              {pb.message}
-            </div>
-          )}
-          {active && pb.phase === "preparing" && (
-            <div className="mt-auto text-center text-[13px] text-soft">Holding this rate…</div>
-          )}
-          {(!active || pb.phase === "error") && (
-            <button
-              onClick={onBook}
-              className="btn-brass mt-auto w-full rounded-lg py-2 text-[13px] font-semibold text-[#1a1410]"
-            >
-              {active && pb.phase === "error" ? "Try again" : "Book this room"}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-

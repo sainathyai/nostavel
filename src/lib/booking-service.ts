@@ -15,6 +15,7 @@ import {
 import { prebook, book } from "@/lib/liteapi";
 import { sendBookingConfirmation } from "@/lib/email";
 import { memberPrice, guestPrice } from "@/lib/pricing";
+import { makeRef, extractCancellation } from "@/lib/booking-format";
 
 export type HotelSnapshot = {
   name: string;
@@ -48,8 +49,6 @@ export type PrepareInput = {
   nights: number;
   adults: number;
   currency: string;
-  // true => merchant-of-record card flow: capture the SDK secret + transactionId.
-  usePaymentSdk?: boolean;
 };
 
 export type PrepareResult = {
@@ -67,15 +66,6 @@ export type PrepareResult = {
   transactionId: string | null;
 };
 
-// Unambiguous alphabet (no 0/O/1/I) for a human-readable booking reference.
-const REF_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-
-function makeRef(): string {
-  let s = "";
-  for (let i = 0; i < 6; i++) s += REF_ALPHABET[Math.floor(Math.random() * REF_ALPHABET.length)];
-  return `NSTVL-${s}`;
-}
-
 async function uniqueHumanRef(): Promise<string> {
   for (let i = 0; i < 5; i++) {
     const ref = makeRef();
@@ -88,38 +78,6 @@ async function uniqueHumanRef(): Promise<string> {
   }
   // Astronomically unlikely; fall back to a longer, still-unique ref.
   return `${makeRef()}${Date.now().toString(36).slice(-2).toUpperCase()}`;
-}
-
-// LiteAPI nests the cancellation policy at roomTypes[0].rates[0].cancellationPolicies:
-//   { refundableTag: "RFN" | "NRFN", cancelPolicyInfos: [{ amount, cancelTime, timezone }] }
-// `refundableTag` is the authoritative refundable/non-refundable signal; the free
-// window ends at the EARLIEST cancelTime (after which a penalty applies). Times are
-// GMT in "YYYY-MM-DD HH:mm:ss" form — not ISO — so we normalize before parsing.
-function extractCancellation(pb: unknown): {
-  policy: object | null;
-  refundableUntil: Date | null;
-} {
-  const p = pb as Record<string, unknown>;
-  const roomTypes = p?.roomTypes as Array<Record<string, unknown>> | undefined;
-  const rates = roomTypes?.[0]?.rates as Array<Record<string, unknown>> | undefined;
-  const policy = (rates?.[0]?.cancellationPolicies ?? null) as Record<string, unknown> | null;
-  if (!policy) return { policy: null, refundableUntil: null };
-
-  const refundableTag = String(policy.refundableTag ?? "").toUpperCase();
-  const infos = policy.cancelPolicyInfos as Array<Record<string, unknown>> | undefined;
-  if (refundableTag === "NRFN" || !Array.isArray(infos) || infos.length === 0) {
-    return { policy, refundableUntil: null };
-  }
-
-  const times = infos
-    .map((i) => i?.cancelTime)
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => new Date(t.replace(" ", "T") + "Z"))
-    .filter((d) => !isNaN(d.getTime()));
-  const refundableUntil = times.length
-    ? new Date(Math.min(...times.map((d) => d.getTime())))
-    : null;
-  return { policy, refundableUntil };
 }
 
 // Draft -> prebooked. Idempotent on `idempotencyKey`: a retry of the same click
@@ -189,7 +147,7 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
   // 3. Supplier prebook — the authoritative price + cancellation policy.
   let pb: Record<string, unknown>;
   try {
-    pb = (await prebook(input.offerId, input.usePaymentSdk ?? false)) as Record<string, unknown>;
+    pb = (await prebook(input.offerId)) as Record<string, unknown>;
   } catch (e) {
     await db.insert(bookingEvents).values({
       bookingId,
@@ -222,9 +180,25 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
   const cancellationChanged = Boolean(pb?.cancellationChanged);
   const prebookId = String(pb?.prebookId ?? "");
   const { policy: cancellationPolicy, refundableUntil } = extractCancellation(pb);
-  // Present only on the usePaymentSdk path.
   const paymentSecret = pb?.secretKey != null ? String(pb.secretKey) : null;
   const transactionId = pb?.transactionId != null ? String(pb.transactionId) : null;
+
+  // Both are required to charge the guest. If LiteAPI didn't hand us a card
+  // session, stop here — continuing would leave a bookable row whose only
+  // remaining payment route is billing our own account.
+  if (!transactionId || !paymentSecret) {
+    await db.insert(bookingEvents).values({
+      bookingId,
+      type: "prebook.failed",
+      actor: "system",
+      payload: { error: "no guest payment session returned", prebookId: String(pb?.prebookId ?? "") },
+    });
+    await db
+      .update(bookings)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(bookings.id, bookingId));
+    throw new Error("Payment is unavailable for this rate. Please try another room.");
+  }
 
   // 4. Advance to prebooked, snapshotting price + policy, and log it.
   await db
@@ -372,6 +346,13 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
   const lead = guests[0];
   if (!lead || !row.contactEmail) {
     throw new Error("Guest details are missing for this booking");
+  }
+
+  // No guest charge, no booking. LiteAPI's only other payment methods bill our
+  // own account for the room, so a missing transactionId must stop the flow
+  // rather than quietly fall through to us paying for a stranger's stay.
+  if (!row.transactionId) {
+    throw new Error("Booking has no guest payment transaction; refusing to book");
   }
 
   // Supplier book — the point of no return.
