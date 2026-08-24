@@ -16,6 +16,13 @@ import { fallbackArt } from "@/lib/fallback-art";
 
 // Great-circle distance in meters — used to turn the current viewport into a
 // center + radius for the "search this area" area query.
+// Cubic approximation of --ease-out's cubic-bezier(0.22, 1, 0.36, 1), so
+// MapLibre's JS-driven camera animation reads as the same motion as the CSS
+// transitions elsewhere in the app instead of its own default curve.
+function easeOut(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
 function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -150,15 +157,21 @@ export default function StaysMap({
     if (!geo.length) return;
 
     const bounds = new LngLatBounds();
-    for (const s of geo) {
+    geo.forEach((s, i) => {
       const el = document.createElement("button");
       el.type = "button";
       el.setAttribute("aria-label", `${s.name} — open details`);
-      el.className = "stays-map-pin";
+      el.className = "stays-map-pin stays-map-pin--enter";
+      // A short, capped stagger so a page of pins drops in like a cascade
+      // rather than a flat pop — capped, or 270 pins would take seconds to
+      // finish appearing.
+      el.style.animationDelay = `${Math.min(i * 12, 260)}ms`;
       el.textContent = `$${priceFor(s, latest.current.isMember, latest.current.inclFees)}`;
       el.onclick = (ev) => {
         ev.stopPropagation();
         popupRef.current?.remove();
+        markersRef.current.forEach((m) => m.getElement().classList.remove("stays-map-pin--active"));
+        el.classList.add("stays-map-pin--active");
         const content = buildPopupContent(s, latest.current.isMember, latest.current.inclFees, () => {
           popupRef.current?.remove();
           popupRef.current = null;
@@ -174,14 +187,18 @@ export default function StaysMap({
           .setLngLat([s.lng, s.lat])
           .setDOMContent(content)
           .addTo(map);
+        popup.on("close", () => el.classList.remove("stays-map-pin--active"));
         popupRef.current = popup;
       };
 
       const marker = new Marker({ element: el, anchor: "bottom" }).setLngLat([s.lng, s.lat]).addTo(map);
       markersRef.current.set(s.id, marker);
       bounds.extend([s.lng, s.lat]);
-    }
-    if (fit) map.fitBounds(bounds, { padding: 56, maxZoom: 14, duration: 400 });
+    });
+    // Matches --ease-out (cubic-bezier(0.22, 1, 0.36, 1)) so the camera glides
+    // on the same curve as every other motion in the app, not MapLibre's
+    // default easing.
+    if (fit) map.fitBounds(bounds, { padding: 56, maxZoom: 14, duration: 500, easing: easeOut });
   }, []);
 
   // Mount the map once. Async because the basemap build URL is a date that

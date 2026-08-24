@@ -25,6 +25,7 @@ import { hotelExtrasQueue } from "@/lib/fetch-queue";
 import { AmenityIcon } from "@/components/AmenityIcon";
 import { ReviewLine } from "@/components/ReviewLine";
 import ThemeToggle from "@/components/ThemeToggle";
+import { withViewTransition } from "@/components/view-transition";
 import { memberSavingsBand } from "@/lib/member-pricing";
 import type { Query } from "@/lib/query-url";
 import { buildSearchUrl } from "@/lib/query-url";
@@ -1082,7 +1083,7 @@ function SearchResultsInner({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-0.5 rounded-lg border border-line bg-surface p-0.5">
             <button
-              onClick={() => setView("list")}
+              onClick={() => withViewTransition(() => setView("list"))}
               aria-pressed={view === "list"}
               className={
                 "smooth rounded-md px-3 py-1 text-[13px] font-medium " +
@@ -1092,7 +1093,7 @@ function SearchResultsInner({
               List
             </button>
             <button
-              onClick={() => setView("map")}
+              onClick={() => withViewTransition(() => setView("map"))}
               aria-pressed={view === "map"}
               className={
                 "smooth rounded-md px-3 py-1 text-[13px] font-medium " +

@@ -1401,6 +1401,17 @@ export async function getHotelPreview(hotelId: string): Promise<HotelPreview> {
 // it far above this floor, and there both rows survive so the guest chooses.
 const BREAKFAST_FLOOR_PER_PERSON_NIGHT = 8;
 
+// The smallest refund premium worth presenting as a real choice. Below this,
+// a guest is being asked to give up cancellation rights to save pocket change
+// — Sainatha flagged a live case where free cancellation cost $2 more on a
+// $601 room and $665 room. Nobody rationally picks non-refundable to save $2,
+// so showing both rows as if it were a decision just adds clutter and makes
+// non-refundable look like the "normal" price. Below the floor, only the
+// refundable rate is shown. Flat, not per-night: the guest's actual question
+// is "is this worth it", and a $2 gap is not, whether the stay is one night
+// or ten.
+const REFUND_PREMIUM_FLOOR = 20;
+
 // ONE axis of choice per room: refundable or not. Nothing else.
 //
 // We sell a room, not a menu. Board is a property of whichever plan wins, never
@@ -1476,7 +1487,15 @@ function pickPerCancellation(rows: RoomRate[], plans: Plan[] | null, nights: num
         const sameFamily = refundable.filter((x) => x.plan && rateFamilyKey(x.plan.fr) === key);
         if (sameFamily.length) pool = sameFamily;
       }
-      out.push(bestOf(pool).row);
+      const refundableChoice = bestOf(pool).row;
+      // Below REFUND_PREMIUM_FLOOR the non-refundable row isn't a real
+      // trade-off, so drop it and keep only the refundable one rather than
+      // showing two rows for what is really one obvious choice.
+      if (refundableChoice.total - chosen.row.total < REFUND_PREMIUM_FLOOR) {
+        out[0] = refundableChoice;
+      } else {
+        out.push(refundableChoice);
+      }
     }
   } else if (refundable.length) {
     out.push(bestOf(refundable).row);

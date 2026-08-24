@@ -63,7 +63,7 @@
   --color-brass: var(--brass);
   --color-brassglow: var(--brass-glow);
   --color-sage: var(--sage);
-  --font-display: Georgia, "Times New Roman", serif;
+  --font-display: var(--font-fraunces), Georgia, serif;
   --font-sans: var(--font-geist-sans), system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
@@ -296,6 +296,28 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   z-index: -1;
 }
 
+/* Pins drop in on a search/refresh instead of popping into existence —
+   staggered per-pin via the animation-delay set inline in StaysMap.tsx. */
+@keyframes pin-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.stays-map-pin--enter {
+  animation: pin-drop var(--dur) var(--ease-out) both;
+}
+
+/* MapLibre popups mount with no transition of their own; give the info card
+   the same rise+fade as everything else instead of a hard appear. */
+.maplibregl-popup.stays-map-popup-wrap {
+  animation: rise var(--dur) var(--ease-out) both;
+}
+
 /* A dark-canvas MapLibre attribution control reads poorly on our light
    parchment chrome around the map; keep it small and unobtrusive either way. */
 .maplibregl-ctrl-attrib {
@@ -379,6 +401,16 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
   filter: brightness(1.05);
 }
 
+/* Native View Transitions API (see components/view-transition.ts). The
+   browser's default is a flat 0.25s ease crossfade of the whole viewport;
+   this matches it to the rest of the app's motion — shared root name means
+   old/new both cross-fade at the same curve rather than jump-cutting. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur);
+  animation-timing-function: var(--ease-out);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -392,10 +424,31 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
 /* Single-property marker on the hotel page. No price on it — there is only one
    hotel, so a number here would just repeat the room list below. */
 .hotel-map-pin {
+  position: relative;
   width: 18px;
   height: 18px;
   border-radius: 999px;
   background: linear-gradient(180deg, var(--brass-glow), var(--brass));
   border: 3px solid var(--surface);
   box-shadow: var(--shadow-md), var(--glow-brass);
+  animation: pin-drop var(--dur-slow) var(--ease-out) both;
+}
+
+/* A quiet breathing glow instead of a static dot — reads as "you are here"
+   rather than just a marker, and costs nothing since it's the only pin on
+   this map (unlike StaysMap, which cannot afford per-pin looping animation
+   at 270 pins). */
+.hotel-map-pin::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  background: var(--brass-glow);
+  opacity: 0.35;
+  z-index: -1;
+  animation: hotel-pin-pulse 2.6s var(--ease-out) infinite;
+}
+@keyframes hotel-pin-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.35; }
+  50% { transform: scale(1.6); opacity: 0; }
 }
