@@ -166,3 +166,5 @@ whether to re-run it.
   several tables and several LiteAPI endpoints already exist unused.
 - `docs/verticals-cars-flights.md` — parked assessment of cars and flights. Not
   a commitment; revisit only after production readiness is closed out.
+- `docs/testing-strategy.md` — manual functional testing checklist for the
+  live app, complementary to the unit tests in section 6 above.
