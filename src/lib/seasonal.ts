@@ -209,6 +209,29 @@ const THEMES: Theme[] = [
   },
 ];
 
+export type AtmosphereVariant = "leaves" | "snow" | "petals" | "none";
+
+// Deliberately sparse: most themes get no hero effect at all. A gimmick on
+// every row would read as decoration, not as the app noticing the season —
+// see the design note in Experience.tsx's hero section.
+const ATMOSPHERE_BY_THEME: Record<string, AtmosphereVariant> = {
+  "fall-foliage": "leaves",
+  "thanksgiving-smokies": "leaves",
+  ski: "snow",
+  "southern-spring": "petals",
+};
+
+export function themeAtmosphere(themeKey: string): AtmosphereVariant {
+  return ATMOSPHERE_BY_THEME[themeKey] ?? "none";
+}
+
+// A quiet warm-twinkle layer, independent of the falling-particle variant —
+// runs Dec 1-26 regardless of which theme is leading (ski or winter-sun),
+// since neither implies the holiday on its own.
+export function isHolidayWindow(now: Date = new Date()): boolean {
+  return now.getMonth() + 1 === 12 && now.getDate() <= 26;
+}
+
 // Always available — a stable fallback / "popular anytime" row.
 const EVERGREEN: Theme = {
   key: "popular-anytime",

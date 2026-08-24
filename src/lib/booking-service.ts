@@ -14,7 +14,6 @@ import {
 } from "@/db/schema";
 import { prebook, book } from "@/lib/liteapi";
 import { sendBookingConfirmation } from "@/lib/email";
-import { memberPrice, guestPrice } from "@/lib/pricing";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
 
 export type HotelSnapshot = {
@@ -23,17 +22,83 @@ export type HotelSnapshot = {
   address?: string;
   image?: string | null;
   stars?: number;
+  postcode?: string | null;
+  /** The property's own arrival/departure times, shown next to the dates. */
+  checkinTime?: string | null;
+  checkoutTime?: string | null;
+  /**
+   * Kept so checkout can render cancellation deadlines in PROPERTY-local time.
+   * LiteAPI states every deadline in GMT and publishes no property timezone,
+   * so the zone is derived from these — see src/lib/cancellation.ts.
+   */
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type RoomSnapshot = {
   title: string;
   beds?: string;
+  /** What WE advertised — the board the guest saw and agreed to. */
   board?: string;
+  /**
+   * The supplier's own board string, kept whenever it differs from `board`.
+   * At a hotel where breakfast is a free property amenity, some suppliers
+   * still file the rate as "Room Only"; we show "Breakfast included" on the
+   * measured evidence, and the guest is owed the record of what they were
+   * promised. This field preserves the underlying contract for any dispute,
+   * so neither version is lost.
+   */
+  supplierBoard?: string;
   image?: string | null;
   amenities?: string[];
   sleeps?: number;
+  size?: string | null;
   themMinor?: number | null; // Booking.com comparison price (for the price-beat)
+  /**
+   * The rate itself, before anything the hotel collects on arrival. Stored so
+   * checkout can show a real breakdown (rate, then fees due at the property)
+   * rather than one opaque total.
+   */
+  rateMinor?: number | null;
+  /** Mandatory charges the HOTEL collects at check-in, not us. */
+  feeAtHotelMinor?: number | null;
+  /** How that fee was described, already resolved against the tax schema. */
+  feeNote?: string | null;
+  /** Supplier tax already inside the rate — lets us show a per-night room line. */
+  taxInRateMinor?: number | null;
 };
+
+/**
+ * Void a held rate because the visitor is no longer the person it was priced
+ * for, and say so in the ledger.
+ *
+ * A prebooked offerId carries the margin that was chosen for the session that
+ * created it. If that session changes, continuing to payment would charge the
+ * WRONG TIER: sign in, hold a member price, sign out, pay, and a non-member has
+ * bought member pricing. It is repeatable in seconds and costs us the whole
+ * tier difference every time.
+ *
+ * Deliberately abandons rather than re-prices in place. Editing the total on a
+ * checkout page while someone is holding a card is the drip-pricing pattern
+ * pricing.ts refuses everywhere else; the guest goes back to the room list and
+ * chooses again at a price that was honest when they saw it.
+ */
+export async function abandonForIdentityChange(
+  bookingId: string,
+  pricedFor: string | null,
+  now: string | null,
+): Promise<void> {
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "prebook.identity_changed",
+    actor: "system",
+    payload: { pricedFor, now, reason: "auth state changed between prebook and payment" },
+  });
+  await db
+    .update(bookings)
+    .set({ status: "expired", paymentSecret: null, updatedAt: new Date() })
+    .where(eq(bookings.id, bookingId));
+}
 
 export type PrepareInput = {
   // Client-generated, stable per "Book" click — the idempotency guard.
@@ -162,19 +227,23 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
     throw e;
   }
 
-  const price = Number(pb?.price ?? 0);
-  const netAmountMinor = Math.round(price * 100);
+  // The offerId was produced by a rates search carrying our margin, so LiteAPI
+  // has ALREADY marked this price up and this is the exact figure their payment
+  // SDK will charge the guest's card. We record it verbatim.
+  //
+  // Do not apply a pricing formula here. An earlier version treated this as net
+  // and marked it up a second time, which recorded a total ~30% above what the
+  // guest was actually charged and would have made the ledger irreconcilable
+  // against LiteAPI's commission payouts.
+  const price = Number(pb?.sellingPriceToUser ?? pb?.price ?? 0);
+  const amountTotalMinor = Math.round(price * 100);
 
-  // Nobody — member or guest — is ever charged raw supplier net. The SAME
-  // pricing formula used to compute the price shown in search results (see
-  // lib/pricing.ts) is applied here, so what a member is shown always matches
-  // what they're charged. A guest pays the public/SSP price (never a member's
-  // discounted price). amountSupplierMinor always records the true net cost.
-  const isMember = Boolean(input.userId);
-  const sspMinor = input.room.themMinor ?? null;
-  const amountTotalMinor = isMember
-    ? memberPrice(netAmountMinor, sspMinor)
-    : guestPrice(netAmountMinor, sspMinor);
+  // Our commission is the markup LiteAPI pays us after the guest checks out;
+  // net is what's left, i.e. the true supplier cost. Recording both keeps the
+  // ledger reconcilable against the weekly payout.
+  const commission = Number(pb?.commission ?? 0);
+  const amountCommissionMinor = Math.round(commission * 100);
+  const netAmountMinor = amountTotalMinor - amountCommissionMinor;
 
   const priceDiffPct = Number(pb?.priceDifferencePercent ?? 0);
   const cancellationChanged = Boolean(pb?.cancellationChanged);

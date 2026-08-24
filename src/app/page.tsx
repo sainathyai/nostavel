@@ -2,6 +2,7 @@ import { resolveDest, searchStays, type SearchResult } from "@/lib/liteapi";
 import { getSeasonalSections } from "@/lib/seasonal";
 import Experience from "./Experience";
 import { getCurrentUser } from "@/lib/dal";
+import { recordSearch } from "@/lib/search-history-store";
 
 // Live rates: render on request, never statically prerender at build.
 export const dynamic = "force-dynamic";
@@ -35,10 +36,28 @@ export default async function Home({
         checkin: query.checkin,
         nights: query.nights,
         notes: query.notes,
+        // Selects which of the two prices these cards quote. `account` is
+        // already awaited above; no extra work, no extra request.
+        isMember: Boolean(account),
       });
     } catch (e) {
       error = (e as Error).message;
     }
+
+    // Recorded from a GET render, which is a side effect on a read. Accepted
+    // deliberately: a search is a navigation, not a form post, so there is no
+    // action to hang this off. shouldRecord() absorbs the consequence, since a
+    // refresh or a Next prefetch of the same URL would otherwise each add a
+    // row. Awaited rather than floated so a slow write cannot outlive the
+    // request and be killed mid-statement.
+    await recordSearch(account?.id ?? null, {
+      dest: query.dest,
+      checkin: query.checkin,
+      nights: query.nights,
+      adults: 2,
+      notes: query.notes || null,
+    });
+
     return (
       <Experience
         mode="search"

@@ -16,12 +16,18 @@ import {
 } from "react";
 import type { AmenityKey, Category, HotelStay, ReviewSnippet, SearchResult } from "@/lib/liteapi";
 import type { SeasonalSection } from "@/lib/seasonal";
+import { themeAtmosphere, isHolidayWindow } from "@/lib/seasonal";
+import { SeasonalAtmosphere } from "@/components/SeasonalAtmosphere";
+import { ForestBackdrop } from "@/components/ForestBackdrop";
 import { DESTINATIONS } from "@/lib/destinations";
 import { fallbackArt } from "@/lib/fallback-art";
 import { hotelExtrasQueue } from "@/lib/fetch-queue";
 import { AmenityIcon } from "@/components/AmenityIcon";
 import { ReviewLine } from "@/components/ReviewLine";
+import ThemeToggle from "@/components/ThemeToggle";
 import { memberSavingsBand } from "@/lib/member-pricing";
+import type { Query } from "@/lib/query-url";
+import { buildSearchUrl } from "@/lib/query-url";
 
 // MapLibre touches window/document at module load — client-only, no SSR.
 const StaysMap = dynamic(() => import("@/components/StaysMap"), {
@@ -39,6 +45,11 @@ const CAT_LABEL: Record<Category, string> = {
 };
 const CAT_ORDER: Category[] = ["budget", "comfort", "luxury", "convenience"];
 
+// How many stay cards the list reveals at a time. Three columns at the widest
+// breakpoint, so a multiple of 3 keeps the last row full and the "Show more"
+// button centred under a straight edge.
+const PAGE_SIZE = 24;
+
 type SortKey = "recommended" | "price_low" | "price_high" | "savings";
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "recommended", label: "Recommended" },
@@ -46,6 +57,41 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "price_high", label: "Price: high to low" },
   { key: "savings", label: "Biggest savings" },
 ];
+
+// The price a row is actually SHOWING. Every ranking uses this rather than
+// `you`, so the list is ordered by the same number the guest is reading.
+// Sorting on `you` while displaying `you + feeAtHotel` was why the fees toggle
+// looked broken: the prices changed but nothing moved, and rows further down
+// sat in an order that contradicted their own labels.
+function shownPrice(s: HotelStay, inclFees: boolean) {
+  return inclFees ? s.you + s.feeAtHotel : s.you;
+}
+
+// The room line, per night, with every tax and fee stripped out — the only
+// per-night figure that means the same thing at two different hotels.
+//
+// `you` cannot serve as one. It is the supplier's net marked up, and suppliers
+// disagree about what "net" contains: measured in Austin on the same dates,
+// Sonesta's $353 already carries its tax while Town Lake's $368 does not and
+// $59 more is taken at the desk. Dividing either by nights produces a number
+// that looks comparable and is not.
+//
+// Subtracting `taxInRate` leaves our margin on the tax portion inside the room
+// line rather than inflating the tax we quote — deliberate, since the tax we
+// disclose has to stay the supplier's own figure, which does not move with
+// margin (verified across margins 0/10/20/30).
+function baseRatePerNight(s: HotelStay, nights: number) {
+  return Math.max(0, Math.round((s.you - s.taxInRate) / Math.max(1, nights)));
+}
+
+// What the price shown is made of, said plainly enough to put on a tile.
+function priceCaption(s: HotelStay, inclFees: boolean) {
+  const hasTax = s.taxInRate > 0;
+  const hasFee = s.feeAtHotel > 0;
+  if (inclFees && hasFee) return "total incl. taxes & hotel fees";
+  if (hasTax) return "total incl. taxes";
+  return "total";
+}
 
 function savingsFrac(s: HotelStay) {
   return s.them ? (s.them - s.you) / s.them : 0;
@@ -59,10 +105,11 @@ function recScore(s: HotelStay) {
   return rating * 0.55 + savingsFrac(s) * 0.25 + reviews * 0.1 + stars * 0.1;
 }
 
-function sortItems(items: HotelStay[], key: SortKey) {
+function sortItems(items: HotelStay[], key: SortKey, inclFees: boolean) {
   const arr = [...items];
-  if (key === "price_low") arr.sort((a, b) => a.you - b.you);
-  else if (key === "price_high") arr.sort((a, b) => b.you - a.you);
+  const price = (s: HotelStay) => shownPrice(s, inclFees);
+  if (key === "price_low") arr.sort((a, b) => price(a) - price(b));
+  else if (key === "price_high") arr.sort((a, b) => price(b) - price(a));
   else if (key === "savings") arr.sort((a, b) => savingsFrac(b) - savingsFrac(a));
   else arr.sort((a, b) => recScore(b) - recScore(a));
   return arr;
@@ -82,12 +129,22 @@ function truncate(s: string, n = 30) {
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
 }
 
-type Query = { dest: string; checkin: string; nights: number; notes: string };
 type Intent = "view" | "book";
 
 // When true, displayed prices include the mandatory fee collected at the hotel.
 const FeesContext = createContext(false);
 const useInclFees = () => useContext(FeesContext);
+
+// Category chip + sort order for the current result set. Lifted out of
+// SearchResultsInner (rather than left as local state) so the assistant
+// chat/voice layer can set them from outside that component tree.
+type SearchFilter = { category: Category | "all"; sort: SortKey };
+const DEFAULT_SEARCH_FILTER: SearchFilter = { category: "all", sort: "recommended" };
+const SearchFilterContext = createContext<{
+  filter: SearchFilter;
+  setFilter: (f: Partial<SearchFilter>) => void;
+}>({ filter: DEFAULT_SEARCH_FILTER, setFilter: () => {} });
+const useSearchFilter = () => useContext(SearchFilterContext);
 
 // True only for signed-in members. Non-members never see the discounted net
 // rate (rate-parity: we may not display below-SSP prices publicly) — they see
@@ -205,10 +262,21 @@ export default function Experience({
   searchError?: string | null;
   account?: Account;
 }) {
-  const router = useRouter();
-  const [theme, setTheme] = useState<"light" | "dark" | null>(null);
-  const [mounted, setMounted] = useState(false);
+  // The leading seasonal row is also what the hero atmosphere reacts to —
+  // one signal ("what's in season right now") driving both the destination
+  // rail and the ambient overlay, rather than a second, disconnected read of
+  // the calendar.
+  const leadingSection = sections[0] ?? null;
+  const atmosphere = leadingSection ? themeAtmosphere(leadingSection.key) : "none";
+  const heroImage = leadingSection?.destinations[0]?.image ?? null;
+  const holidayTwinkle = isHolidayWindow();
+
   const [inclFees, setInclFees] = useState(true);
+  const [filter, setFilterState] = useState<SearchFilter>(DEFAULT_SEARCH_FILTER);
+  const setFilter = useCallback(
+    (f: Partial<SearchFilter>) => setFilterState((prev) => ({ ...prev, ...f })),
+    [],
+  );
   // Netflix-style "which tile did I come from" cue: set right before
   // navigating to a hotel's page, read once when the list mounts (e.g. on
   // browser back), then faded out — a lightweight substitute for a full
@@ -228,23 +296,6 @@ export default function Experience({
     }
   }, []);
 
-  useEffect(() => setMounted(true), []);
-
-  useEffect(() => {
-    if (theme) document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
-
-  function currentTheme() {
-    if (theme) return theme;
-    return typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-
-  // Pre-mount, render a stable label so server and client HTML match.
-  const themeLabel = !mounted ? "Dusk" : currentTheme() === "dark" ? "Daylight" : "Dusk";
-
   // A tile click opens a lightweight preview first — more photos, rating,
   // amenities, price — with no booking machinery in it, so there's nothing
   // to lose if it's closed by accident. Only the preview's own "Explore
@@ -253,37 +304,36 @@ export default function Experience({
   const open = (stay: HotelStay) => setPreview(stay);
 
   const explore = (stay: HotelStay) => {
-    try {
-      sessionStorage.setItem("lastViewedStayId", stay.id);
-    } catch {
-      // sessionStorage unavailable — the return-highlight just won't show
-    }
     const params = new URLSearchParams({
       checkin: query.checkin,
       nights: String(query.nights),
       dest: query.dest,
     });
     if (query.notes) params.set("notes", query.notes);
-    router.push(`/stay/${stay.id}?${params.toString()}`);
+    // New tab: the results page stays open behind it, so there's no "back to
+    // results" navigation left to highlight lastViewedStayId for.
+    window.open(`/stay/${stay.id}?${params.toString()}`, "_blank", "noopener,noreferrer");
   };
 
   return (
     <FeesContext.Provider value={inclFees}>
+    <SearchFilterContext.Provider value={{ filter, setFilter }}>
     <MemberContext.Provider value={Boolean(account)}>
     <div className="flex flex-1 flex-col">
-      <header className="sticky top-0 z-40 border-b border-line glass">
+      {/* Page-wide, not scoped to the hero: fixed to the viewport so it drifts
+          over the whole page, header excepted (header sits above it at z-40).
+          Forest backdrop sits furthest back (behind the back leaf layer too);
+          the back leaf layer sits behind card tiles but above the plain bg. */}
+      <ForestBackdrop />
+      <SeasonalAtmosphere variant={atmosphere} twinkle={holidayTwinkle} />
+      <header className="sticky top-0 z-40 border-b border-line bg-parchment">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between px-6">
           <a href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>
           </a>
           <div className="flex items-center gap-2.5">
-            <button
-              onClick={() => setTheme(currentTheme() === "dark" ? "light" : "dark")}
-              className="rounded-full border border-line px-3 py-1.5 text-[13px] text-soft hover:border-brass hover:text-ink"
-            >
-              {themeLabel}
-            </button>
+            <ThemeToggle />
             <AccountMenu account={account} />
           </div>
         </div>
@@ -298,20 +348,39 @@ export default function Experience({
           </div>
         </section>
       ) : (
-        <section className="border-b border-line">
-          <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
+        <section className="relative overflow-hidden border-b border-line">
+          {heroImage && (
+            <div className="absolute inset-0">
+              <Image
+                src={heroImage}
+                alt=""
+                fill
+                priority
+                sizes="100vw"
+                className="object-cover opacity-[0.14] blur-[1px]"
+              />
+              <div className="absolute inset-0 bg-gradient-to-b from-parchment/50 via-parchment/85 to-parchment" />
+            </div>
+          )}
+          <div className="relative mx-auto w-full max-w-[1440px] px-6 py-8">
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
-                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-brass">
-                  Your travel concierge
+                <p className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-brass">
+                  {leadingSection ? leadingSection.title : "Your travel concierge"}
+                  {leadingSection && (
+                    <span className="rounded-full border border-brass/40 px-2 py-0.5 text-[10px] normal-case tracking-normal text-brass">
+                      {leadingSection.badge}
+                    </span>
+                  )}
                 </p>
                 <h1 className="font-display text-[clamp(24px,3.4vw,34px)] leading-tight tracking-[-0.01em]">
                   Fewer places. The <span className="italic text-brass">right</span> ones.
                 </h1>
               </div>
               <p className="max-w-[42ch] text-[13.5px] text-soft">
-                Tell us where and when. We come back with a short list worth booking, taxes and fees
-                included, usually for less than the big sites charge.
+                {leadingSection
+                  ? leadingSection.blurb
+                  : "Tell us where and when. We come back with a short list worth booking, taxes and fees included, usually for less than the big sites charge."}
               </p>
             </div>
             <BookingForm query={query} />
@@ -348,6 +417,7 @@ export default function Experience({
       )}
     </div>
     </MemberContext.Provider>
+    </SearchFilterContext.Provider>
     </FeesContext.Provider>
   );
 }
@@ -436,10 +506,22 @@ function HotelPreviewModal({
   }, [onClose, images.length]);
 
   const you = incl ? stay.you + stay.feeAtHotel : stay.you;
-  const perNight = Math.round(you / nights);
+  // The small line is the ROOM, not the total divided by nights: the total
+  // carries taxes that some suppliers include and others leave at the desk.
+  const perNight = baseRatePerNight(stay, nights);
+  const caption = priceCaption(stay, incl);
   const publicBase = stay.them ?? stay.you;
   const publicPrice = incl ? publicBase + stay.feeAtHotel : publicBase;
-  const publicPerNight = Math.round(publicPrice / nights);
+  // ASSUMPTION, flagged deliberately: `them` is Booking.com's published price
+  // and `taxInRate` is OUR supplier's tax figure, so subtracting one from the
+  // other assumes both treat tax the same way. It is the closest honest room
+  // line available for the public price — the alternative, showing a per-night
+  // that bears no relation to the total beneath it, is worse — but it is an
+  // estimate, not a quoted figure, and should not be used in a receipt.
+  const publicPerNight = Math.max(
+    0,
+    Math.round((publicBase - stay.taxInRate) / Math.max(1, nights)),
+  );
   const band = memberSavingsBand(stay.you, stay.them);
   const reasons = previewReasons(stay, facilities);
 
@@ -596,10 +678,12 @@ function HotelPreviewModal({
           <div>
             {isMember ? (
               <>
-                <div className="text-[11px] text-soft tabular-nums">${perNight}/night</div>
+                <div className="text-[11px] text-soft tabular-nums">
+                  ${perNight}/night <span className="tracking-wide">room rate</span>
+                </div>
                 <div className="flex items-baseline gap-1.5 font-mono">
                   <span className="text-[22px] font-bold tabular-nums">${you}</span>
-                  <span className="text-[11px] text-soft">total</span>
+                  <span className="text-[11px] text-soft">{caption}</span>
                   {stay.them && stay.them > you && (
                     <span className="text-[13px] text-soft line-through tabular-nums">${stay.them}</span>
                   )}
@@ -607,10 +691,12 @@ function HotelPreviewModal({
               </>
             ) : (
               <>
-                <div className="text-[11px] text-soft tabular-nums">${publicPerNight}/night</div>
+                <div className="text-[11px] text-soft tabular-nums">
+                  ${publicPerNight}/night <span className="tracking-wide">room rate</span>
+                </div>
                 <div className="flex items-baseline gap-1.5">
                   <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
-                  <span className="text-[12px] text-soft">public · total</span>
+                  <span className="text-[12px] text-soft">public · {caption}</span>
                 </div>
               </>
             )}
@@ -642,8 +728,7 @@ function BookingForm({ query, compact = false }: { query: Query; compact?: boole
   function submit(e: React.FormEvent) {
     e.preventDefault();
     startTransition(() => {
-      const notesParam = notes.trim() ? `&notes=${encodeURIComponent(notes.trim())}` : "";
-      router.push(`/?dest=${dest}&checkin=${checkin}&nights=${nights}${notesParam}`);
+      router.push(buildSearchUrl({ dest, checkin, nights, notes }));
     });
   }
 
@@ -931,8 +1016,10 @@ function SearchResultsInner({
   onToggleFees: () => void;
   justViewedId: string | null;
 }) {
-  const [active, setActive] = useState<Category | "all">("all");
-  const [sort, setSort] = useState<SortKey>("recommended");
+  const { filter, setFilter } = useSearchFilter();
+  const { category: active, sort } = filter;
+  const setActive = useCallback((category: Category | "all") => setFilter({ category }), [setFilter]);
+  const setSort = useCallback((sort: SortKey) => setFilter({ sort }), [setFilter]);
   const [view, setView] = useState<"list" | "map">("list");
   const isMember = useMember();
 
@@ -943,7 +1030,31 @@ function SearchResultsInner({
 
   const filtered =
     active === "all" ? result.items : result.items.filter((i) => i.categories.includes(active));
-  const shown = sortItems(filtered, sort);
+  // inclFees participates in the ranking, not just the labels — with the
+  // toggle on, a hotel with a $60 property fee genuinely is more expensive
+  // than one without, and must sort that way.
+  const shown = sortItems(filtered, sort, inclFees);
+
+  // A search now returns everything LiteAPI will price, which is ~270 hotels
+  // rather than the 30 it used to be truncated to (see HOTEL_LIMIT). All of
+  // them feed the map, the filters and the category counts; the LIST reveals
+  // them a page at a time, because 270 cards is 270 galleries and the page
+  // stops feeling instant well before that.
+  const [listLimit, setListLimit] = useState(PAGE_SIZE);
+  // Reset the reveal whenever the underlying set changes, or a guest who
+  // pressed "Show more" four times under "all" would land forty cards deep in
+  // a freshly filtered list. Adjusted DURING RENDER, not in an effect: React
+  // re-runs this component immediately with the new value and never commits
+  // the stale one, so there is no flash of the wrong page length and no
+  // cascading render (conventions section 9).
+  const pageKey = `${active}|${sort}|${result.city}|${result.checkin}|${result.items.length}`;
+  const [lastPageKey, setLastPageKey] = useState(pageKey);
+  if (pageKey !== lastPageKey) {
+    setLastPageKey(pageKey);
+    setListLimit(PAGE_SIZE);
+  }
+  const listed = shown.slice(0, listLimit);
+  const remaining = shown.length - listed.length;
 
   return (
     <section className="pt-7">
@@ -1021,17 +1132,31 @@ function SearchResultsInner({
           />
         </div>
       ) : (
-        <div key={`${active}-${sort}`} className="stagger grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {shown.map((stay) => (
-            <StayCard
-              key={stay.id}
-              stay={stay}
-              nights={result.nights}
-              onOpen={onOpen}
-              justViewed={stay.id === justViewedId}
-            />
-          ))}
-        </div>
+        <>
+          <div key={`${active}-${sort}`} className="stagger grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {listed.map((stay) => (
+              <StayCard
+                key={stay.id}
+                stay={stay}
+                nights={result.nights}
+                onOpen={onOpen}
+                justViewed={stay.id === justViewedId}
+              />
+            ))}
+          </div>
+          {remaining > 0 && (
+            <div className="mt-7 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setListLimit((n) => n + PAGE_SIZE)}
+                className="smooth rounded-full border border-line px-5 py-2 text-[14px] font-medium text-ink hover:border-brass"
+              >
+                Show {Math.min(PAGE_SIZE, remaining)} more
+                <span className="ml-1.5 text-soft">({remaining} left)</span>
+              </button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -1157,14 +1282,26 @@ function StayCard({
   const incl = useInclFees();
   const isMember = useMember();
   const you = incl ? stay.you + stay.feeAtHotel : stay.you;
-  const perNight = Math.round(you / nights);
+  // The small line is the ROOM, not the total divided by nights: the total
+  // carries taxes that some suppliers include and others leave at the desk.
+  const perNight = baseRatePerNight(stay, nights);
+  const caption = priceCaption(stay, incl);
   const save = stay.them ? stay.them - you : 0;
   const pct = stay.them ? Math.round((save / stay.them) * 100) : 0;
   const band = memberSavingsBand(stay.you, stay.them);
   // Public (parity-safe) price: the SSP if we have one, else our only price.
   const publicBase = stay.them ?? stay.you;
   const publicPrice = incl ? publicBase + stay.feeAtHotel : publicBase;
-  const publicPerNight = Math.round(publicPrice / nights);
+  // ASSUMPTION, flagged deliberately: `them` is Booking.com's published price
+  // and `taxInRate` is OUR supplier's tax figure, so subtracting one from the
+  // other assumes both treat tax the same way. It is the closest honest room
+  // line available for the public price — the alternative, showing a per-night
+  // that bears no relation to the total beneath it, is worse — but it is an
+  // estimate, not a quoted figure, and should not be used in a receipt.
+  const publicPerNight = Math.max(
+    0,
+    Math.round((publicBase - stay.taxInRate) / Math.max(1, nights)),
+  );
 
   // Gallery + amenity icons both live behind one lazy fetch — the bulk
   // search listing only carries a single photo and no facility list per
@@ -1227,10 +1364,10 @@ function StayCard({
           </div>
           {isMember ? (
             <div className="flex shrink-0 flex-col items-end gap-0.5">
-              <span className="text-[11px] text-soft tabular-nums">${perNight}/night</span>
+              <span className="text-[11px] text-soft tabular-nums">${perNight}/night room</span>
               <div className="flex items-baseline gap-1.5 font-mono">
                 <span className="text-[22px] font-bold tabular-nums">${you}</span>
-                <span className="text-[11px] text-soft">total</span>
+                <span className="text-[11px] text-soft">{caption}</span>
               </div>
               {stay.them && stay.them > you && (
                 <span className="text-[12.5px] text-soft line-through tabular-nums">${stay.them}</span>
@@ -1238,10 +1375,10 @@ function StayCard({
             </div>
           ) : (
             <div className="flex shrink-0 flex-col items-end gap-0.5">
-              <span className="text-[11px] text-soft tabular-nums">${publicPerNight}/night</span>
+              <span className="text-[11px] text-soft tabular-nums">${publicPerNight}/night room</span>
               <div className="flex items-baseline gap-1.5">
                 <span className="font-mono text-[22px] font-bold tabular-nums">${publicPrice}</span>
-                <span className="text-[11px] text-soft">public · total</span>
+                <span className="text-[11px] text-soft">public · {caption}</span>
               </div>
             </div>
           )}

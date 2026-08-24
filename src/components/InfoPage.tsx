@@ -1,4 +1,5 @@
 import Link from "next/link";
+import ThemeToggle from "@/components/ThemeToggle";
 
 // Shared shell for static informational pages (About, Terms, etc.). Sticky
 // header matches the rest of the site; the global footer comes from the layout.
@@ -13,15 +14,18 @@ export default function InfoPage({
 }) {
   return (
     <div className="flex flex-1 flex-col bg-parchment text-ink">
-      <header className="sticky top-0 z-40 border-b border-line glass">
+      <header className="sticky top-0 z-40 border-b border-line bg-parchment">
         <div className="mx-auto flex h-14 max-w-[760px] items-center justify-between px-6">
           <Link href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>
           </Link>
-          <Link href="/" className="text-[13px] text-soft hover:text-ink">
-            Back to search
-          </Link>
+          <div className="flex items-center gap-2.5">
+            <Link href="/" className="text-[13px] text-soft hover:text-ink">
+              Back to search
+            </Link>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
       <main className="rise mx-auto w-full max-w-[760px] flex-1 px-6 py-10">

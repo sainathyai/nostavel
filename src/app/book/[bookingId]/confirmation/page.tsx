@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getBookingById } from "@/lib/bookings";
 import { confirmBooking } from "@/lib/booking-service";
+import ThemeToggle from "@/components/ThemeToggle";
 
 type HotelSnap = { name?: string; city?: string; stars?: number };
 type RoomSnap = { title?: string; board?: string };
@@ -17,12 +18,13 @@ function money(minor: number, currency = "USD") {
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-1 flex-col bg-parchment text-ink">
-      <header className="sticky top-0 z-40 border-b border-line glass">
-        <div className="mx-auto flex h-14 max-w-[720px] items-center px-6">
+      <header className="sticky top-0 z-40 border-b border-line bg-parchment">
+        <div className="mx-auto flex h-14 max-w-[720px] items-center justify-between px-6">
           <Link href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>
           </Link>
+          <ThemeToggle />
         </div>
       </header>
       <main className="mx-auto w-full max-w-[720px] flex-1 px-6 py-10">{children}</main>

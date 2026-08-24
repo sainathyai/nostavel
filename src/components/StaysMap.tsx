@@ -7,73 +7,12 @@ import {
   Popup,
   NavigationControl,
   LngLatBounds,
-  addProtocol,
-  setWorkerUrl,
 } from "maplibre-gl";
-import type { StyleSpecification, MapMovementEvent } from "maplibre-gl";
+import type { MapMovementEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { Protocol } from "pmtiles";
-import { layers, namedFlavor } from "@protomaps/basemaps";
+import { buildStyle, currentThemeIsDark, ensureProtocol, resolveBasemapUrl } from "./map-style";
 import type { HotelStay } from "@/lib/liteapi";
 import { fallbackArt } from "@/lib/fallback-art";
-
-// Register the pmtiles:// protocol once per page load (addProtocol is meant to
-// be called a single time; module scope guarantees that regardless of how many
-// times this component mounts/unmounts).
-let protocolRegistered = false;
-function ensureProtocol() {
-  if (protocolRegistered) return;
-  const protocol = new Protocol();
-  addProtocol("pmtiles", protocol.tile);
-  // MapLibre v6 loads its render worker as an ES module Worker resolved via
-  // `new URL(..., import.meta.url)`; Turbopack's dev worker-chunk serving
-  // doesn't resolve that correctly (fails with a "non-JavaScript MIME type"
-  // browser error — confirmed live). Point it at the prebuilt worker file
-  // instead, served as a plain static asset so no bundler ever touches it.
-  // public/maplibre-gl-worker.mjs is copied from
-  // node_modules/maplibre-gl/dist/maplibre-gl-worker.mjs — must be re-copied
-  // whenever the maplibre-gl version bumps. That worker file itself
-  // `import`s a sibling module, "./maplibre-gl-shared.mjs" (resolved against
-  // the site root once served statically) — public/maplibre-gl-shared.mjs is
-  // a copy of node_modules/maplibre-gl/dist/maplibre-gl-shared.mjs and must
-  // be re-copied alongside it. Missing this causes the worker module to
-  // 404-fail silently inside its own realm: no console error on the main
-  // thread, style loads, first frame paints (background only), but vector
-  // tiles never get parsed so the map stays visually blank.
-  setWorkerUrl("/maplibre-gl-worker.mjs");
-  protocolRegistered = true;
-}
-
-// Protomaps' public daily planet build. PMTiles is a single cloud-optimized
-// file read via HTTP range requests, so the browser only fetches the byte
-// ranges for tiles actually on screen — no self-hosting needed to prototype.
-// NOTE: this is the public daily build (rolls off after a few days, no SLA);
-// fine for Phase 1, but before real production traffic we should copy a
-// snapshot to our own storage (see docs/planner-research.md's own guidance on
-// hosted-now/self-host-later for the same reason it gives for Valhalla).
-const PMTILES_URL = "pmtiles://https://build.protomaps.com/20260810.pmtiles";
-
-function buildStyle(dark: boolean): StyleSpecification {
-  return {
-    version: 8,
-    glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
-    sprite: `https://protomaps.github.io/basemaps-assets/sprites/v4/${dark ? "dark" : "light"}`,
-    sources: {
-      protomaps: {
-        type: "vector",
-        url: PMTILES_URL,
-        attribution:
-          '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
-      },
-    },
-    layers: layers("protomaps", namedFlavor(dark ? "dark" : "light"), { lang: "en" }),
-  };
-}
-
-function currentThemeIsDark(): boolean {
-  const attr = document.documentElement.getAttribute("data-theme");
-  return attr === "dark" || (attr !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-}
 
 // Great-circle distance in meters — used to turn the current viewport into a
 // center + radius for the "search this area" area query.
@@ -174,8 +113,18 @@ export default function StaysMap({
   const markersRef = useRef<Map<string, Marker>>(new Map());
   const popupRef = useRef<Popup | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [basemapFailed, setBasemapFailed] = useState(false);
+  // Flipped when the async mount finishes, so the marker effect re-runs against
+  // a map that did not exist on its first pass.
+  const [mapReady, setMapReady] = useState(false);
+  // The guest has moved the camera since the pins were last filled, so what is
+  // on screen no longer matches what was searched. This is what offers the
+  // button; it is never set by our own fitBounds (see the moveend handler).
+  const [dirty, setDirty] = useState(false);
+  // One line of feedback after a search, e.g. "No stays in this area". Cleared
+  // on the next move, because it describes a search of the previous viewport.
+  const [note, setNote] = useState<string | null>(null);
   const refreshSeq = useRef(0);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Imperative marker code (event handlers registered once) needs the latest
   // pricing/search inputs without forcing the map to remount on every change.
@@ -235,35 +184,54 @@ export default function StaysMap({
     if (fit) map.fitBounds(bounds, { padding: 56, maxZoom: 14, duration: 400 });
   }, []);
 
-  // Mount the map once.
+  // Mount the map once. Async because the basemap build URL is a date that
+  // expires and has to be resolved first — see map-style.ts.
   useEffect(() => {
     if (!containerRef.current) return;
-    ensureProtocol();
-    const map = new MapLibreMap({
-      container: containerRef.current,
-      style: buildStyle(currentThemeIsDark()),
-      center: [-98, 39],
-      zoom: 3,
-      attributionControl: { compact: true },
-    });
-    map.addControl(new NavigationControl({ showCompass: false }), "top-right");
-    mapRef.current = map;
+    let cancelled = false;
+
+    (async () => {
+      const basemap = await resolveBasemapUrl();
+      if (cancelled || !containerRef.current) return;
+      if (!basemap) {
+        setBasemapFailed(true);
+        return;
+      }
+      ensureProtocol();
+      const map = new MapLibreMap({
+        container: containerRef.current,
+        style: buildStyle(currentThemeIsDark(), basemap),
+        center: [-98, 39],
+        zoom: 3,
+        attributionControl: { compact: true },
+      });
+      map.addControl(new NavigationControl({ showCompass: false }), "top-right");
+
+      // Re-skin when the site theme toggles. Lives here rather than in its own
+      // effect now that the map is created asynchronously — a separate effect
+      // would run before the map exists and silently never attach.
+      const observer = new MutationObserver(() =>
+        map.setStyle(buildStyle(currentThemeIsDark(), basemap)),
+      );
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      map.once("remove", () => observer.disconnect());
+
+      mapRef.current = map;
+      // The pin-drawing effect below may have already run and found no map.
+      setMapReady(true);
+    })();
+
     return () => {
+      cancelled = true;
       popupRef.current?.remove();
       popupRef.current = null;
-      map.remove();
+      mapRef.current?.remove();
       mapRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Re-skin the basemap when the site theme toggles.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const observer = new MutationObserver(() => map.setStyle(buildStyle(currentThemeIsDark())));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
   }, []);
 
   // Place pins from the search result whenever it changes (new search, new
@@ -274,62 +242,120 @@ export default function StaysMap({
     const run = () => drawMarkers(stays, true);
     if (map.isStyleLoaded()) run();
     else map.once("load", run);
-  }, [stays, drawMarkers]);
+    // A new result set replaces whatever an area search had put on the map, so
+    // any pending "search this area" offer and its note no longer apply.
+    setDirty(false);
+    setNote(null);
+    // `mapReady` is the async-mount signal: without it this effect runs once
+    // against a null map and never again, so the pins never appear.
+  }, [stays, drawMarkers, mapReady]);
 
-  // "Search this area": panning or zooming the map refetches hotels for the
-  // new viewport, like every major booking site's map view. Only genuine user
-  // gestures trigger it — `originalEvent` is unset on our own fitBounds/setStyle
-  // calls, so those don't cause the map to refetch itself.
+  // Arm the button when the guest moves the camera themselves. `originalEvent`
+  // is unset on our own fitBounds and on setStyle re-renders, so the map never
+  // arms itself and a theme toggle does not look like a pan.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-
     const onMoveEnd = (e: MapMovementEvent) => {
       if (!e.originalEvent) return;
-
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(async () => {
-        const b = map.getBounds();
-        const center = b.getCenter();
-        const ne = b.getNorthEast();
-        const radius = haversineMeters(center.lat, center.lng, ne.lat, ne.lng);
-        if (radius > 30000) return; // too zoomed out for a meaningful "this area" search
-
-        const seq = ++refreshSeq.current;
-        setRefreshing(true);
-        try {
-          const params = new URLSearchParams({
-            lat: String(center.lat),
-            lng: String(center.lng),
-            radius: String(Math.round(radius)),
-            checkin: latest.current.checkin,
-            nights: String(latest.current.nights),
-          });
-          const res = await fetch(`/api/stays-in-area?${params}`);
-          const data = await res.json();
-          if (seq !== refreshSeq.current) return; // superseded by a later move
-          if (Array.isArray(data.items)) drawMarkers(data.items, false);
-        } catch {
-          // network hiccup — leave the existing pins as they are
-        } finally {
-          if (seq === refreshSeq.current) setRefreshing(false);
-        }
-      }, 450);
+      setDirty(true);
+      setNote(null);
     };
-
     map.on("moveend", onMoveEnd);
     return () => {
       map.off("moveend", onMoveEnd);
-      if (debounceRef.current) clearTimeout(debounceRef.current);
     };
+  }, [mapReady]);
+
+  // "Search this area" — explicit, because it is a real supplier fan-out
+  // costing about five seconds. This used to run automatically on a debounced
+  // moveend, which meant a guest reading the map paid for a search on every
+  // pan, and it bailed out silently above a 30 km radius, so zooming out looked
+  // exactly like a city with no hotels in it.
+  const searchThisArea = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const b = map.getBounds();
+    const center = b.getCenter();
+    const ne = b.getNorthEast();
+    const radius = haversineMeters(center.lat, center.lng, ne.lat, ne.lng);
+
+    const seq = ++refreshSeq.current;
+    setRefreshing(true);
+    setNote(null);
+    try {
+      const params = new URLSearchParams({
+        lat: String(center.lat),
+        lng: String(center.lng),
+        radius: String(Math.round(radius)),
+        checkin: latest.current.checkin,
+        nights: String(latest.current.nights),
+      });
+      const res = await fetch(`/api/stays-in-area?${params}`);
+      const data = await res.json();
+      if (seq !== refreshSeq.current) return; // superseded by a later search
+
+      if (!Array.isArray(data.items)) {
+        setNote("Could not search this area. Try again.");
+        return;
+      }
+      // `fit: false` on purpose — the guest chose this framing by moving here,
+      // and refitting the camera to the results would move it out from under
+      // them and re-arm the button.
+      drawMarkers(data.items, false);
+      setDirty(false);
+
+      const n = data.items.length;
+      if (n === 0) {
+        setNote("No stays found in this area.");
+      } else if (data.clamped) {
+        // The viewport was wider than AREA_MAX_RADIUS_M, so what came back is
+        // the middle of it, not all of it. Saying so beats a pin pattern that
+        // silently ignores the edges of the screen.
+        setNote(`${n} ${n === 1 ? "stay" : "stays"} near the centre of this view`);
+      } else {
+        setNote(`${n} ${n === 1 ? "stay" : "stays"} in this area`);
+      }
+    } catch {
+      if (seq === refreshSeq.current) setNote("Could not search this area. Try again.");
+    } finally {
+      if (seq === refreshSeq.current) setRefreshing(false);
+    }
   }, [drawMarkers]);
 
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
-      {refreshing && (
-        <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-[12px] font-medium text-white backdrop-blur-sm">
-          Searching this area…
+      {/* A blank rectangle reads as a broken page. Say what happened and point
+          at the list, which does not depend on the basemap. */}
+      {basemapFailed && (
+        <div className="absolute inset-0 grid place-items-center px-6 text-center text-[13px] text-soft">
+          The map is unavailable right now — the list view has the same stays.
+        </div>
+      )}
+      {/* One slot, three states: the offer, the progress, the outcome. Keeping
+          them in the same place means the button does not jump away from the
+          cursor the moment it is clicked. */}
+      {!basemapFailed && (
+        <div className="absolute left-1/2 top-3 -translate-x-1/2">
+          {refreshing ? (
+            <div className="pointer-events-none rounded-full bg-black/60 px-3.5 py-1.5 text-[12px] font-medium text-white backdrop-blur-sm">
+              Searching this area…
+            </div>
+          ) : dirty ? (
+            <button
+              type="button"
+              onClick={searchThisArea}
+              className="smooth rounded-full border border-line bg-surface px-4 py-1.5 text-[13px] font-medium text-ink shadow-lg hover:border-brass focus-visible:border-brass focus-visible:outline-none"
+            >
+              Search this area
+            </button>
+          ) : note ? (
+            <div className="pointer-events-none rounded-full bg-black/55 px-3.5 py-1.5 text-[12px] font-medium text-white backdrop-blur-sm">
+              {note}
+            </div>
+          ) : null}
         </div>
       )}
     </div>

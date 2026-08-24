@@ -74,6 +74,11 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+@keyframes atmosphere-twinkle {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.85; }
+}
+
 /* Hide scrollbars everywhere but keep scrolling. */
 html {
   scrollbar-width: none; /* Firefox */
@@ -382,4 +387,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover {
     animation: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Single-property marker on the hotel page. No price on it — there is only one
+   hotel, so a number here would just repeat the room list below. */
+.hotel-map-pin {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--brass-glow), var(--brass));
+  border: 3px solid var(--surface);
+  box-shadow: var(--shadow-md), var(--glow-brass);
 }

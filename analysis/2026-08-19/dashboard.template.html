@@ -1,0 +1,636 @@
+<title>Rate Plan Inspector</title>
+<style>
+  /* Instrument palette: cool slate ground, single cyan signal, semantic
+     colours reserved for meaning (tax vs fee vs unknown). Light is the
+     primary design; dark redefines only tokens. */
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --rail: #eef1f5;
+    --ink: #10141b;
+    --ink-2: #4a5566;
+    --ink-3: #78849a;
+    --line: #dde3ec;
+    --line-2: #eaeef4;
+    --signal: #0e7490;
+    --signal-soft: #cff3fb;
+    --tax: #2563a8;
+    --tax-soft: #dbe9fa;
+    --fee: #a2620d;
+    --fee-soft: #fbeed6;
+    --unk: #6b7280;
+    --unk-soft: #e9ebef;
+    --good: #157347;
+    --bad: #b02a37;
+    --warn: #9a6700;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1017; --panel: #141922; --rail: #111620;
+      --ink: #e7ecf3; --ink-2: #9aa7ba; --ink-3: #6b7a90;
+      --line: #232c3a; --line-2: #1b2330;
+      --signal: #35c8e0; --signal-soft: #0d3b47;
+      --tax: #7db3f0; --tax-soft: #16304d;
+      --fee: #e0a94a; --fee-soft: #3d2f13;
+      --unk: #8b95a6; --unk-soft: #232a36;
+      --good: #4ec98a; --bad: #f2777f; --warn: #e0b44a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1017; --panel: #141922; --rail: #111620;
+    --ink: #e7ecf3; --ink-2: #9aa7ba; --ink-3: #6b7a90;
+    --line: #232c3a; --line-2: #1b2330;
+    --signal: #35c8e0; --signal-soft: #0d3b47;
+    --tax: #7db3f0; --tax-soft: #16304d;
+    --fee: #e0a94a; --fee-soft: #3d2f13;
+    --unk: #8b95a6; --unk-soft: #232a36;
+    --good: #4ec98a; --bad: #f2777f; --warn: #e0b44a;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.45 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* ---- shell ---- */
+  .shell { display: grid; grid-template-columns: 310px minmax(0, 1fr); min-height: 100vh; }
+  @media (max-width: 900px) { .shell { grid-template-columns: 1fr; } }
+
+  .rail {
+    background: var(--rail); border-right: 1px solid var(--line);
+    padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 18px;
+    max-height: 100vh; overflow-y: auto; position: sticky; top: 0;
+  }
+  @media (max-width: 900px) { .rail { position: static; max-height: none; } }
+
+  .brand { display: flex; align-items: baseline; gap: 8px; }
+  .brand h1 { margin: 0; font-size: 15px; letter-spacing: -.01em; font-weight: 650; }
+  .brand .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--signal); }
+  .sub { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); }
+
+  .grp { display: flex; flex-direction: column; gap: 7px; }
+  .grp > h2 {
+    margin: 0; font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--ink-3); font-weight: 600;
+  }
+  .stat {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    padding: 6px 9px; background: var(--panel); border: 1px solid var(--line-2);
+    border-radius: 5px;
+  }
+  .stat .k { color: var(--ink-2); font-size: 12px; }
+  .stat .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .stat.flag { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .stat.flag .v { color: var(--warn); }
+
+  .bar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; }
+  .bar i { display: block; height: 100%; }
+
+  /* ---- main ---- */
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .toolbar {
+    position: sticky; top: 0; z-index: 20; background: var(--bg);
+    border-bottom: 1px solid var(--line); padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+  input[type="search"], select {
+    font: 12.5px var(--sans); color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px;
+  }
+  input[type="search"] { min-width: 230px; flex: 1 1 230px; }
+  input[type="search"]:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 2px solid var(--signal); outline-offset: 1px;
+  }
+  .chipbtn {
+    font: 12px var(--sans); cursor: pointer; user-select: none;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+    padding: 4px 9px; border-radius: 999px;
+  }
+  .chipbtn[aria-pressed="true"] {
+    background: var(--signal-soft); border-color: var(--signal); color: var(--signal);
+    font-weight: 600;
+  }
+  .spacer { flex: 1; }
+  button.act {
+    font: 12px var(--sans); cursor: pointer; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); padding: 5px 10px; border-radius: 5px;
+  }
+  button.act:hover { border-color: var(--signal); color: var(--signal); }
+
+  .tablewrap { overflow: auto; flex: 1; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12.5px; }
+  thead th {
+    position: sticky; top: 0; z-index: 10; background: var(--panel);
+    border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap;
+    padding: 7px 9px; font-size: 11px; font-weight: 600; color: var(--ink-2);
+    cursor: pointer; user-select: none;
+  }
+  thead th:hover { color: var(--signal); }
+  thead th.num { text-align: right; }
+  thead th .ind { color: var(--signal); font-size: 9px; }
+  tbody td {
+    padding: 5px 9px; border-bottom: 1px solid var(--line-2); vertical-align: top;
+  }
+  tbody tr:hover > td { background: color-mix(in srgb, var(--signal) 5%, transparent); }
+  tbody tr.exp > td { background: var(--signal-soft); }
+  .room { max-width: 300px; }
+  .room b { font-weight: 550; }
+  .muted { color: var(--ink-3); }
+  .tag {
+    display: inline-block; font: 10.5px var(--mono); padding: 1px 5px;
+    border-radius: 3px; background: var(--unk-soft); color: var(--unk); white-space: nowrap;
+  }
+  .tag.tax { background: var(--tax-soft); color: var(--tax); }
+  .tag.fee { background: var(--fee-soft); color: var(--fee); }
+  .tag.pkg { background: var(--fee-soft); color: var(--fee); }
+  .tag.on  { background: var(--signal-soft); color: var(--signal); }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .detail td { background: var(--panel); }
+  .detail pre {
+    margin: 0; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+    color: var(--ink-2); max-height: 320px; overflow: auto;
+  }
+  .expbtn {
+    cursor: pointer; border: 0; background: none; color: var(--ink-3);
+    font: 11px var(--mono); padding: 0 4px;
+  }
+  .expbtn:hover { color: var(--signal); }
+  .pager {
+    display: flex; gap: 8px; align-items: center; padding: 10px 16px;
+    border-top: 1px solid var(--line); background: var(--bg);
+  }
+  .note {
+    font-size: 11.5px; color: var(--ink-3); padding: 0 16px 14px; line-height: 1.5;
+  }
+  .note b { color: var(--ink-2); font-weight: 600; }
+</style>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>Rate Plan Inspector</h1>
+    </div>
+    <div class="sub" id="meta"></div>
+    <div id="stats"></div>
+  </aside>
+
+  <div class="main">
+    <div class="toolbar">
+      <div class="row">
+        <input type="search" id="q" placeholder="filter room, hotel, fee description…" />
+        <select id="hotelSel"><option value="">all hotels</option></select>
+        <select id="vocabSel"><option value="">all fee vocabularies</option></select>
+        <span class="spacer"></span>
+        <button class="act" id="csv">Download CSV</button>
+        <button class="act" id="theme">Theme</button>
+      </div>
+      <div class="row" id="facets"></div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr id="head"></tr></thead>
+        <tbody id="body"></tbody>
+      </table>
+    </div>
+
+    <div class="pager">
+      <button class="act" id="prev">Prev</button>
+      <span class="sub" id="pageinfo"></span>
+      <button class="act" id="next">Next</button>
+      <span class="spacer"></span>
+      <select id="per">
+        <option>50</option><option selected>100</option><option>250</option><option>1000</option>
+      </select>
+      <span class="sub">rows/page</span>
+    </div>
+
+    <p class="note">
+      <b>net</b> is what LiteAPI charges us and already contains every <b>included</b> line.
+      <b>all-in (net)</b> adds what the property collects on arrival, and is the only figure
+      that compares two plans fairly. <b>our price</b> applies the margin; <b>guest all-in</b>
+      is what the guest actually parts with. Fee amounts already cover the whole stay —
+      a per-night charge is pre-multiplied by LiteAPI, so never multiply again.
+    </p>
+  </div>
+</div>
+
+<script id="payload" type="application/json">__DATA__</script>
+<script>
+(function () {
+  const RAW = JSON.parse(document.getElementById("payload").textContent);
+  const META = RAW.meta, ROWS = RAW.rows;
+
+  const money = (n) => n == null ? "" : "$" + n.toFixed(2);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+  // ---- columns ----------------------------------------------------------
+  const COLS = [
+    { k: "_x",        t: "",              w: 26, cell: (r, i) => `<button class="expbtn" data-i="${i}" aria-label="details">▸</button>` },
+    { k: "hotel",     t: "Hotel",         cell: r => `<span class="muted">${esc(r.hotel)}</span>` },
+    // The only field that reconciles one physical room across suppliers.
+    // roomTypeId is 1:1 with plans and useless for grouping.
+    { k: "mappedRoomId", t: "mapped room", cell: r => {
+        const n = ROOM_NAMES[r.mappedRoomId];
+        return `<span class="tag ${n > 1 ? "on" : ""}" title="${n} supplier name${n > 1 ? "s" : ""}">`
+             + `${esc(r.mappedRoomId) || "—"}${n > 1 ? ` ×${n}` : ""}</span>`;
+      } },
+    { k: "room",      t: "Room",          cls: "room", cell: r => `<b>${esc(r.room) || "<i>unnamed</i>"}</b>` },
+    { k: "rateType",  t: "Type",          cell: r => r.rateType === "package"
+        ? `<span class="tag pkg">package</span>` : `<span class="tag">standard</span>` },
+    { k: "board",     t: "Board",         cell: r => esc(r.board) },
+    { k: "_ups",      t: "Upsells",       sort: r => (r.breakfast?4:0)+(r.view?2:0)+(r.suite?1:0), cell: r =>
+        [r.breakfast && `<span class="tag on">breakfast</span>`,
+         r.view && `<span class="tag on">view</span>`,
+         r.suite && `<span class="tag on">suite</span>`,
+         r.accessible && `<span class="tag">accessible</span>`].filter(Boolean).join(" ") },
+    { k: "refundable",t: "Refund",        cell: r => r.refundable
+        ? `<span class="tag on">free cancel</span>` : `<span class="tag">non-refund</span>` },
+    { k: "net",       t: "net",           num: 1, cell: r => money(r.net) },
+    // Tax and non-tax are never summed together: an "includes" of $103.75 that
+    // is $62.72 tax + $41.03 extra-person reads as a different tax rate from a
+    // pure $72.17 tax, when both are levied at exactly 13%.
+    { k: "incTax",    t: "inc tax",       num: 1, cell: r => r.incTax
+        ? `${money(r.incTax)}<br>${r.incFees.filter(f=>f.k==="tax").map(f=>`<span class="tag tax">${esc(f.d)||"?"}</span>`).join(" ")}` : `<span class="muted">—</span>` },
+    { k: "incOther",  t: "inc other",     num: 1, cell: r => r.incOther
+        ? `${money(r.incOther)}<br>${r.incFees.filter(f=>f.k!=="tax").map(f=>`<span class="tag ${f.k}">${esc(f.d)||"?"}</span>`).join(" ")}` : `<span class="muted">—</span>` },
+    { k: "excTax",    t: "exc tax",       num: 1, cell: r => r.excTax
+        ? `${money(r.excTax)}<br>${r.excFees.filter(f=>f.k==="tax").map(f=>`<span class="tag tax">${esc(f.d)||"?"}</span>`).join(" ")}` : `<span class="muted">—</span>` },
+    { k: "excOther",  t: "exc other",     num: 1, cell: r => r.excOther
+        ? `${money(r.excOther)}<br>${r.excFees.filter(f=>f.k!=="tax").map(f=>`<span class="tag ${f.k}">${esc(f.d)||"?"}</span>`).join(" ")}` : `<span class="muted">—</span>` },
+    { k: "taxBase",   t: "tax base",      num: 1, cell: r => `<span class="muted">${money(r.taxBase)}</span>` },
+    { k: "taxRate",   t: "tax %",         num: 1, cell: r => r.taxRate == null ? `<span class="muted">—</span>`
+        : `<span class="${r._offRate ? "bad" : ""}">${r.taxRate.toFixed(2)}</span>` },
+    { k: "allInNet",  t: "all-in (net)",  num: 1, cell: r => `<b>${money(r.allInNet)}</b>` },
+    { k: "ssp",       t: "SSP",           num: 1, cell: r => r.ssp == null ? `<span class="muted">—</span>`
+        : `${money(r.ssp)}<br><span class="tag ${r.realSsp ? "on" : ""}">${r.realSsp ? esc(r.sspSource) : "placeholder"}</span>` },
+    { k: "spread",    t: "spread",        num: 1, cell: r => r.spread == null ? "" : r.spread.toFixed(3) },
+    { k: "margin",    t: "margin %",      num: 1, cell: r => r.margin.toFixed(1) },
+    { k: "ourPrice",  t: "our price",     num: 1, cell: r => money(r.ourPrice) },
+    { k: "guestAllIn",t: "guest all-in",  num: 1, cell: r => `<b>${money(r.guestAllIn)}</b>` },
+    // Source keys. `supplier` is "nuitee" on every row and the offerId's
+    // internal sid is 2 on every row, so neither identifies the wholesaler.
+    // feeVocab is the only thing that varies with it.
+    { k: "feeVocab",  t: "fee vocabulary (source proxy)", cell: r =>
+        `<span class="tag" title="${esc(r.feeVocab)}">${esc(r.feeVocab).slice(0, 46)}</span>` },
+    { k: "sspSource", t: "SSP src",       cell: r => `<span class="muted">${esc(r.sspSource) || "—"}</span>` },
+    { k: "payment",   t: "Pay",           cell: r => `<span class="muted">${esc(r.payment)}</span>` },
+    { k: "supplier",  t: "Supplier",      cell: r => `<span class="muted">${esc(r.supplier)}/${r.supplierId}</span>` },
+  ];
+
+  const FACETS = [
+    { id: "standard",   label: "standard only",   fn: r => r.rateType === "standard" },
+    { id: "package",    label: "package only",    fn: r => r.rateType === "package" },
+    { id: "refundable", label: "refundable",      fn: r => r.refundable },
+    { id: "nonref",     label: "non-refundable",  fn: r => !r.refundable },
+    { id: "realssp",    label: "real SSP",        fn: r => r.realSsp },
+    { id: "fakessp",    label: "placeholder SSP", fn: r => !r.realSsp },
+    { id: "hasexc",     label: "has excludes",    fn: r => r.excSum > 0 },
+    { id: "noexc",      label: "no excludes",     fn: r => !r.excSum },
+    { id: "breakfast",  label: "breakfast",       fn: r => r.breakfast },
+    { id: "view",       label: "view",            fn: r => r.view },
+    { id: "acc",        label: "accessible",      fn: r => r.accessible },
+    { id: "taxonly",    label: "excl. = tax",     fn: r => r.excFees.length > 0 && r.excFees.every(f => f.k === "tax") },
+    { id: "feeonly",    label: "excl. = fee",     fn: r => r.excFees.length > 0 && r.excFees.every(f => f.k === "fee") },
+    { id: "offrate",    label: "off modal tax %", fn: r => r._offRate },
+    { id: "notax",      label: "no tax declared", fn: r => !r.incTax && !r.excTax },
+    { id: "multiname",  label: "multi-supplier room", fn: r => r._multiName },
+  ];
+
+  // Declared BEFORE the IIFEs below, which assign them. `let` is hoisted but
+  // sits in the temporal dead zone until evaluated, so assigning it from
+  // earlier code throws a ReferenceError and takes the whole page down.
+  let MODAL = {};
+  let ROOM_NAMES = {};
+
+  // How many distinct supplier spellings each mapped room absorbed — the
+  // measure of what the mapping actually did for us.
+  (function countNames() {
+    const byRoom = {};
+    for (const r of ROWS) (byRoom[r.mappedRoomId] ||= new Set()).add(r.room);
+    for (const k in byRoom) ROOM_NAMES[k] = byRoom[k].size;
+    for (const r of ROWS) r._multiName = ROOM_NAMES[r.mappedRoomId] > 1;
+  })();
+
+  // A hotel's statutory rate is whatever the bulk of its own plans agree on.
+  // Flagging deviation per hotel (not globally) avoids treating two cities'
+  // different lawful rates as an anomaly.
+  (function markOffRate() {
+    const byHotel = {};
+    for (const r of ROWS) if (r.taxRate != null) (byHotel[r.hotelId] ||= []).push(r.taxRate);
+    const modal = {};
+    for (const k in byHotel) {
+      const c = {};
+      for (const v of byHotel[k]) { const b = v.toFixed(2); c[b] = (c[b] || 0) + 1; }
+      modal[k] = +Object.keys(c).reduce((a, b) => c[a] >= c[b] ? a : b);
+    }
+    MODAL = modal;
+    for (const r of ROWS) {
+      r._offRate = r.taxRate != null && modal[r.hotelId] != null
+        && Math.abs(r.taxRate - modal[r.hotelId]) > 0.5;
+    }
+  })();
+
+  let state = { q: "", hotel: "", vocab: "", on: new Set(), sort: "allInNet", dir: 1, page: 0, per: 100, exp: new Set() };
+
+  // ---- filtering / sorting ---------------------------------------------
+  function view() {
+    const q = state.q.trim().toLowerCase();
+    let out = ROWS.filter(r => {
+      if (state.hotel && r.hotelId !== state.hotel) return false;
+      if (state.vocab && r.feeVocab !== state.vocab) return false;
+      for (const f of FACETS) if (state.on.has(f.id) && !f.fn(r)) return false;
+      if (!q) return true;
+      return (r.room + " " + r.hotel + " " + r.board + " " +
+        r.incFees.map(f => f.d).join(" ") + " " + r.excFees.map(f => f.d).join(" ")
+      ).toLowerCase().includes(q);
+    });
+    const col = COLS.find(c => c.k === state.sort);
+    const get = col && col.sort ? col.sort : (r => r[state.sort]);
+    out.sort((a, b) => {
+      const x = get(a), y = get(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === "string" ? x.localeCompare(y) : x - y) * state.dir;
+    });
+    return out;
+  }
+
+  // ---- stats ------------------------------------------------------------
+  function pct(n, d) { return d ? (100 * n / d).toFixed(1) + "%" : "—"; }
+
+  function renderStats(rows) {
+    const n = rows.length;
+    const std = rows.filter(r => r.rateType === "standard").length;
+    const real = rows.filter(r => r.realSsp).length;
+    const exc = rows.filter(r => r.excSum > 0).length;
+    const refn = rows.filter(r => r.refundable).length;
+
+    // The headline defect: does ranking on `net` pick a different plan than
+    // ranking on what the guest actually pays?
+    const byHotel = {};
+    for (const r of rows) (byHotel[r.hotelId] ||= []).push(r);
+    let diverge = 0, hotels = 0, worst = 0;
+    for (const k in byHotel) {
+      const g = byHotel[k]; hotels++;
+      const a = g.reduce((m, r) => r.net < m.net ? r : m);
+      const b = g.reduce((m, r) => r.allInNet < m.allInNet ? r : m);
+      if (a !== b) { diverge++; worst = Math.max(worst, a.allInNet - b.allInNet); }
+    }
+
+    const taxN = rows.filter(r => r.excFees.some(f => f.k === "tax")).length;
+    const feeN = rows.filter(r => r.excFees.some(f => f.k === "fee")).length;
+    const unkN = rows.filter(r => r.excFees.some(f => f.k === "unspecified")).length;
+    const off = rows.filter(r => r._offRate).length;
+    const mappedSet = new Set(rows.map(r => r.mappedRoomId));
+    const mappedN = mappedSet.size;
+    const multiN = [...mappedSet].filter(k => ROOM_NAMES[k] > 1).length;
+    const roomTypeN = new Set(rows.map(r => r.roomTypeId)).size;
+    const vc = new Map();
+    for (const r of rows) vc.set(r.feeVocab, (vc.get(r.feeVocab) || 0) + 1);
+    const vocabN = vc.size;
+    const supN = new Set(rows.map(r => r.supplier + "/" + r.supplierId)).size;
+    const sspN = new Set(rows.map(r => r.sspSource).filter(Boolean)).size;
+    // Cheapest all-in per vocabulary: the practical use of the proxy, since
+    // one wholesaler undercutting another on identical inventory is the
+    // whole reason these duplicates are worth keeping.
+    const cheapest = new Map();
+    for (const r of rows) {
+      const c = cheapest.get(r.feeVocab);
+      if (!c || r.allInNet < c.allInNet) cheapest.set(r.feeVocab, r);
+    }
+    const vocabTop = [...vc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => {
+      const c = cheapest.get(k);
+      return `<div class="stat"><span class="k" title="${esc(k)}">${esc(k).slice(0, 26)}` +
+             `<br><span class="muted">${n} plans</span></span>` +
+             `<span class="v">${money(c.allInNet)}</span></div>`;
+    }).join("");
+    const noTax = rows.filter(r => !r.incTax && !r.excTax).length;
+    const rateSet = [...new Set(rows.filter(r => r.hotelId).map(r => MODAL[r.hotelId]))]
+      .filter(v => v != null).map(v => v.toFixed(2) + "%").join(", ") || "—";
+
+    const S = (k, v, flag) => `<div class="stat${flag ? " flag" : ""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+    const barPct = (a, b, c) => {
+      const t = a + b + c || 1;
+      return `<div class="bar"><i style="width:${100*a/t}%;background:var(--tax)"></i>` +
+             `<i style="width:${100*b/t}%;background:var(--fee)"></i>` +
+             `<i style="width:${100*c/t}%;background:var(--unk)"></i></div>`;
+    };
+
+    document.getElementById("stats").innerHTML = `
+      <div class="grp"><h2>Selection</h2>
+        ${S("plans shown", n.toLocaleString())}
+        ${S("hotels", hotels)}
+        ${S("standard", `${std} · ${pct(std, n)}`)}
+        ${S("package", `${n - std} · ${pct(n - std, n)}`)}
+        ${S("refundable", `${refn} · ${pct(refn, n)}`)}
+      </div>
+      <div class="grp"><h2>Room mapping</h2>
+        ${S("distinct mapped rooms", mappedN)}
+        ${S("plans per mapped room", (n / Math.max(mappedN, 1)).toFixed(1))}
+        ${S("rooms absorbing >1 name", `${multiN} · ${pct(multiN, mappedN)}`)}
+        ${S("distinct roomTypeId", roomTypeN)}
+        <div class="sub">roomMapping:true also dedupes server-side — the same
+        hotel returns 5000 plans without it and 135 with. roomTypeId is 1:1
+        with plans and cannot group.</div>
+      </div>
+      <div class="grp"><h2>Ranking risk</h2>
+        ${S("hotels where cheapest net ≠ cheapest all-in", diverge, diverge > 0)}
+        ${S("worst overpay if ranked on net", money(worst), worst > 0)}
+      </div>
+      <div class="grp"><h2>Public rate evidence</h2>
+        ${S("sourced SSP", `${real} · ${pct(real, n)}`)}
+        ${S("placeholder SSP", `${n - real} · ${pct(n - real, n)}`, n - real > n / 2)}
+      </div>
+      <div class="grp"><h2>Sources</h2>
+        ${S("distinct fee vocabularies", vocabN, vocabN > 1)}
+        ${S("LiteAPI supplier values", supN)}
+        ${S("SSP sources", sspN)}
+        <div class="sub">Every rate reports supplier <b>nuitee/2</b>, and the
+        offerId's internal sid is 2 on every row — the wholesaler is not
+        exposed. Fee wording is an inferred proxy, not a fact.</div>
+        ${vocabTop}
+      </div>
+      <div class="grp"><h2>Tax rate</h2>
+        ${S("modal rate per hotel", rateSet)}
+        ${S("plans off their hotel's rate", `${off} · ${pct(off, n)}`, off > 0)}
+        ${S("no tax declared at all", noTax, noTax > 0)}
+        <div class="sub">Rate = all tax ÷ (net − included tax). Non-tax lines
+        such as ExtraPersonCharge stay in the base, not the numerator.</div>
+      </div>
+      <div class="grp"><h2>Collected at property</h2>
+        ${S("plans with a charge", `${exc} · ${pct(exc, n)}`)}
+        ${S("contains a tax", taxN)}
+        ${S("contains a fee", feeN)}
+        ${S("unspecified wording", unkN, unkN > 0)}
+        ${barPct(taxN, feeN, unkN)}
+        <div class="sub">tax · fee · unspecified</div>
+      </div>
+      <div class="grp"><h2>Price</h2>
+        ${S("median net", money(med(rows.map(r => r.net))))}
+        ${S("median all-in", money(med(rows.map(r => r.allInNet))))}
+        ${S("median guest all-in", money(med(rows.map(r => r.guestAllIn))))}
+        ${S("median margin", (med(rows.map(r => r.margin)) || 0).toFixed(1) + "%")}
+      </div>`;
+  }
+
+  function med(a) {
+    if (!a.length) return 0;
+    const s = [...a].sort((x, y) => x - y);
+    return s[Math.floor(s.length / 2)];
+  }
+
+  // ---- render -----------------------------------------------------------
+  function render() {
+    const rows = view();
+    renderStats(rows);
+
+    const pages = Math.max(1, Math.ceil(rows.length / state.per));
+    if (state.page >= pages) state.page = pages - 1;
+    const start = state.page * state.per;
+    const slice = rows.slice(start, start + state.per);
+
+    document.getElementById("head").innerHTML = COLS.map(c =>
+      `<th data-k="${c.k}" class="${c.num ? "num" : ""}">${c.t}` +
+      (state.sort === c.k ? `<span class="ind"> ${state.dir > 0 ? "▲" : "▼"}</span>` : "") + `</th>`
+    ).join("");
+
+    document.getElementById("body").innerHTML = slice.map((r, i) => {
+      const gi = start + i;
+      const open = state.exp.has(gi);
+      const tr = `<tr class="${open ? "exp" : ""}">` + COLS.map(c =>
+        `<td class="${c.cls || ""} ${c.num ? "num" : ""}">${c.cell(r, gi)}</td>`).join("") + `</tr>`;
+      if (!open) return tr;
+      return tr + `<tr class="detail"><td colspan="${COLS.length}"><pre>${esc(JSON.stringify(r, null, 2))}</pre></td></tr>`;
+    }).join("");
+
+    document.getElementById("pageinfo").textContent =
+      `${rows.length ? start + 1 : 0}–${Math.min(start + state.per, rows.length)} of ${rows.length.toLocaleString()}`;
+  }
+
+  // ---- wire up ----------------------------------------------------------
+  document.getElementById("meta").textContent =
+    `${META.city} · ${META.checkin} → ${META.checkout} · ${META.nights}n · 2 adults · cap ${META.cap} · timeout ${META.timeout}s · margin 0 · roomMapping ${META.roomMapping}`;
+
+  const hs = [...new Set(ROWS.map(r => r.hotelId))];
+  document.getElementById("hotelSel").insertAdjacentHTML("beforeend",
+    hs.map(id => `<option value="${id}">${esc(ROWS.find(r => r.hotelId === id).hotel)}</option>`).join(""));
+
+  document.getElementById("facets").innerHTML = FACETS.map(f =>
+    `<button class="chipbtn" data-f="${f.id}" aria-pressed="false">${f.label}</button>`).join("");
+
+  document.getElementById("facets").addEventListener("click", e => {
+    const b = e.target.closest("[data-f]"); if (!b) return;
+    const id = b.dataset.f;
+    if (state.on.has(id)) state.on.delete(id); else state.on.add(id);
+    b.setAttribute("aria-pressed", state.on.has(id));
+    state.page = 0; state.exp.clear(); render();
+  });
+
+  document.getElementById("head").addEventListener("click", e => {
+    const th = e.target.closest("th"); if (!th || th.dataset.k === "_x") return;
+    const k = th.dataset.k;
+    if (state.sort === k) state.dir *= -1; else { state.sort = k; state.dir = 1; }
+    state.exp.clear(); render();
+  });
+
+  document.getElementById("body").addEventListener("click", e => {
+    const b = e.target.closest(".expbtn"); if (!b) return;
+    const i = +b.dataset.i;
+    if (state.exp.has(i)) state.exp.delete(i); else state.exp.add(i);
+    render();
+  });
+
+  document.getElementById("q").addEventListener("input", e => {
+    state.q = e.target.value; state.page = 0; state.exp.clear(); render();
+  });
+  document.getElementById("hotelSel").addEventListener("change", e => {
+    state.hotel = e.target.value; state.page = 0; state.exp.clear(); render();
+  });
+  const vsel = document.getElementById("vocabSel");
+  const vcounts = new Map();
+  for (const r of ROWS) vcounts.set(r.feeVocab, (vcounts.get(r.feeVocab) || 0) + 1);
+  vsel.insertAdjacentHTML("beforeend", [...vcounts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `<option value="${esc(k)}">${esc(k).slice(0, 40)} (${n})</option>`).join(""));
+  vsel.addEventListener("change", e => {
+    state.vocab = e.target.value; state.page = 0; state.exp.clear(); render();
+  });
+  document.getElementById("per").addEventListener("change", e => {
+    state.per = +e.target.value; state.page = 0; state.exp.clear(); render();
+  });
+  document.getElementById("prev").addEventListener("click", () => {
+    if (state.page > 0) { state.page--; state.exp.clear(); render(); }
+  });
+  document.getElementById("next").addEventListener("click", () => {
+    state.page++; state.exp.clear(); render();
+  });
+  document.getElementById("theme").addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme");
+    const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+  });
+
+  // CSV of the CURRENT filtered+sorted view, flattening fee lists so the
+  // structure survives a trip through a spreadsheet.
+  function buildCsv() {
+    const rows = view();
+    const cols = ["hotel","mappedRoomId","roomTypeId","room","rateType","board","breakfast","view","suite","accessible",
+      "refundable","cancelBy","net","incTax","incOther","incDetail","excTax","excOther","excDetail",
+      "taxBase","taxRate","allInNet","ssp","sspSource","realSsp","spread","margin","ourPrice",
+      "guestAllIn","feeVocab","supplier","supplierId","payment"];
+    const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const flat = f => f.map(x => `${x.d || "?"}:${x.a}:${x.k}`).join(" | ");
+    const body = rows.map(r => cols.map(c =>
+      c === "incDetail" ? q(flat(r.incFees)) :
+      c === "excDetail" ? q(flat(r.excFees)) : q(r[c])).join(",")).join("\n");
+    return cols.join(",") + "\n" + body;
+  }
+
+  // A frame can never save a file on its own here — the viewer confirms every
+  // write through the downloads capability. Absent capability means the button
+  // could not do anything, so it is removed rather than left to fail silently.
+  const csvBtn = document.getElementById("csv");
+  (async () => {
+    const downloads = await claude.use("downloads");
+    if (!downloads) { csvBtn.remove(); return; }
+    csvBtn.addEventListener("click", async () => {
+      const label = csvBtn.textContent;
+      csvBtn.disabled = true;
+      try {
+        await downloads.save({ filename: "rate-plans.csv", data: buildCsv() });
+        csvBtn.textContent = "Saved";
+      } catch (err) {
+        const code = err && err.code;
+        if (code === "extension_not_enabled") {
+          // .csv sits in the extended allowlist and may be off for this view;
+          // .txt is always permitted and opens in a spreadsheet just the same.
+          try {
+            await downloads.save({ filename: "rate-plans.csv.txt", data: buildCsv() });
+            csvBtn.textContent = "Saved as .txt";
+          } catch { csvBtn.textContent = "Save failed"; }
+        } else if (code === "declined") {
+          csvBtn.textContent = label;
+        } else if (code === "rate_limited") {
+          csvBtn.textContent = "Try again";
+        } else {
+          csvBtn.textContent = "Unavailable";
+        }
+      } finally {
+        csvBtn.disabled = false;
+        setTimeout(() => { csvBtn.textContent = label; }, 2500);
+      }
+    });
+  })();
+
+  render();
+})();
+</script>
