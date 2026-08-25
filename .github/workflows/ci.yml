@@ -1,0 +1,42 @@
+name: CI
+
+# The four checks docs/conventions.md section 7 already requires locally,
+# run on every push and PR so "it works on my machine" can't ship silently.
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # `npm run build` imports src/db/index.ts, which throws immediately if
+      # DATABASE_URL is unset, so build needs a real value even though no
+      # query actually runs at build time. Add these in the repo's Settings
+      # -> Secrets and variables -> Actions before this workflow can pass.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LITEAPI_KEY: ${{ secrets.LITEAPI_KEY }}
+      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

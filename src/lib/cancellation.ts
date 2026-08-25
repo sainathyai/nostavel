@@ -122,12 +122,20 @@ export function buildCancelPolicy(
   now: Date = new Date(),
 ): CancelPolicy {
   const infos = (raw?.cancelPolicyInfos ?? []).filter((i) => i?.cancelTime);
-  const nonRefundableTag = (raw?.refundableTag || "") === "NRFN";
 
-  // No ladder at all is how a non-refundable rate arrives: nothing is ever
-  // free, and there is no rung to show because the penalty is simply the whole
-  // stay from the moment of booking.
-  if (nonRefundableTag || infos.length === 0) {
+  // The `refundableTag` is NOT used to decide anything here. LiteAPI's own
+  // docs say NRFN applies if ANY portion of a booking is unrefunded, and an
+  // NRFN-tagged rate "still may refund most of the cost" — the ladder below
+  // is the only honest source for what a guest actually loses. An earlier
+  // version short-circuited on `refundableTag === "NRFN"` and discarded
+  // `cancelPolicyInfos` unread, which told guests a partially-refundable rate
+  // could not be refunded at all. cancellationPolicy is stored raw in the
+  // ledger regardless, so nothing here needed a backfill — only this read.
+  //
+  // No ladder at all is how a true non-refundable rate arrives: nothing is
+  // ever free, and there is no rung to show because the penalty is simply the
+  // whole stay from the moment of booking.
+  if (infos.length === 0) {
     return { refundable: false, freeUntilShort: null, freeUntilLong: null, tiers: [], zone };
   }
 

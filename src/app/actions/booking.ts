@@ -6,6 +6,7 @@
 // attached to their account.
 import { getCurrentUser } from "@/lib/dal";
 import { quoteMatchesSession } from "@/lib/quote-token";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 import {
   prepareBooking,
   confirmBooking,
@@ -15,6 +16,12 @@ import {
   type ConfirmResult,
   type GuestInput,
 } from "@/lib/booking-service";
+
+// Every action here either costs a real LiteAPI supplier call (prepare,
+// confirm) or writes to the ledger (guest details). Placeholder limits — no
+// traffic to measure against yet, since there's no deploy — tune once real
+// numbers exist (docs/conventions.md section 5).
+const TOO_MANY = "Too many attempts. Wait a moment and try again.";
 
 // The client supplies the selection snapshot + an idempotency key; the server
 // fills identity.
@@ -33,6 +40,10 @@ export type PrepareBookingResponse =
 export async function prepareBookingAction(
   args: PrepareBookingArgs,
 ): Promise<PrepareBookingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-prepare:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
   const user = await getCurrentUser();
 
   // TIER GUARD. `args.offerId` was priced by LiteAPI at whichever margin the
@@ -72,6 +83,10 @@ export type SaveGuestResponse = { ok: true } | { ok: false; error: string };
 
 // Persist the lead guest before payment. Called from the checkout page.
 export async function saveGuestAction(input: GuestInput): Promise<SaveGuestResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-guest:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
   try {
     await saveBookingGuest(input);
     return { ok: true };
@@ -87,6 +102,10 @@ export type ConfirmBookingResponse =
 // Finalizes a prepared booking on the returnUrl. The bookingId scopes the row;
 // the guest + transaction were already stored, so no other input is needed.
 export async function confirmBookingAction(bookingId: string): Promise<ConfirmBookingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-confirm:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
   try {
     const data = await confirmBooking({ bookingId });
     return { ok: true, data };

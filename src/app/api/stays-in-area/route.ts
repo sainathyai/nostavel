@@ -1,5 +1,6 @@
 import { searchStaysInArea } from "@/lib/liteapi";
 import { getCurrentUser } from "@/lib/dal";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 // Backs the map's "Search this area" button: the client sends the current
 // viewport as a center + radius when the guest ASKS for it, and we return the
@@ -8,7 +9,20 @@ import { getCurrentUser } from "@/lib/dal";
 // Deliberately a button, not a moveend handler. Every call here is a paid
 // supplier fan-out costing ~5s, and the old debounced auto-refresh fired one on
 // every pan the guest made while reading the map.
+//
+// Rate-limited: this was an unauthenticated GET hitting a paid API with no
+// guard at all — the exact gap docs/production-readiness.md called out.
+// Placeholder limit, no traffic yet to measure against.
 export async function GET(request: Request) {
+  const ip = await clientIp();
+  const rl = rateLimit(`stays-in-area:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  if (!rl.ok) {
+    return Response.json(
+      { error: "Too many area searches. Wait a moment and try again." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rl.retryAfterMs / 1000)) } },
+    );
+  }
+
   const params = new URL(request.url).searchParams;
   const lat = Number(params.get("lat"));
   const lng = Number(params.get("lng"));

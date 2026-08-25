@@ -457,6 +457,16 @@ export default function CheckoutClient({
                   <span className="font-medium text-ink">{cancel.freeUntilLong}</span>
                   <span className="text-soft"> and you are refunded in full.</span>
                 </p>
+              ) : cancel.tiers.length > 0 ? (
+                // Not free-cancellable, but the ladder below still shows real
+                // partial refundability — LiteAPI's own docs say an NRFN-tagged
+                // rate can still refund most of the cost, and a flat "cannot be
+                // refunded at all" line here would contradict the list right
+                // underneath it.
+                <p className="text-soft">
+                  Free cancellation has already passed for this booking. Part of
+                  your payment may still be refunded — see below.
+                </p>
               ) : (
                 <p className="text-soft">
                   This rate cannot be refunded or changed once booked. It is priced lower than

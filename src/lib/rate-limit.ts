@@ -1,4 +1,14 @@
 import "server-only";
+import { headers } from "next/headers";
+
+// The IP a rate limit keys on. Works from both a server action and a route
+// handler — `headers()` reads the same incoming request either way. Was
+// duplicated verbatim in find.ts and interpret-query.ts before this existed;
+// consolidated here since it exists only to feed rateLimit() a key.
+export async function clientIp(): Promise<string> {
+  const h = await headers();
+  return (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "local";
+}
 
 // Best-effort in-memory rate limiter (per server instance). Adequate for the
 // current friends-&-family scope; swap for a shared store (Redis/Upstash)

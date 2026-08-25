@@ -15,6 +15,7 @@ import {
 import { prebook, book } from "@/lib/liteapi";
 import { sendBookingConfirmation } from "@/lib/email";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
+import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
 
 export type HotelSnapshot = {
   name: string;
@@ -485,11 +486,29 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
 
   // Send the confirmation email. Best-effort and only on this real transition
   // (the already-confirmed early return above skips it, so it fires once).
-  const hotelSnap = (row.hotelSnapshot ?? {}) as { name?: string; city?: string };
+  const hotelSnap = (row.hotelSnapshot ?? {}) as {
+    name?: string;
+    city?: string;
+    lat?: number | null;
+    lng?: number | null;
+  };
   const roomSnap = (row.roomSnapshot ?? {}) as { title?: string; board?: string };
-  const refundLine = row.refundableUntil
-    ? `Free cancellation until ${row.refundableUntil.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-    : "Non-refundable rate";
+  // Same source of truth as the checkout page, not the old refundableUntil ?
+  // "Free until X" : "Non-refundable" ternary — that binary is exactly the
+  // NRFN-discards-the-ladder bug fixed in cancellation.ts, and the email was
+  // carrying its own copy of the same mistake.
+  const emailCancel = buildCancelPolicy(
+    row.cancellationPolicy as RawCancelPolicies | null,
+    row.amountTotalMinor / 100,
+    zoneFor(hotelSnap.lat, hotelSnap.lng),
+  );
+  const emailTiers = describeTiers(emailCancel, row.currency);
+  const refundLine =
+    emailCancel.refundable && emailCancel.freeUntilLong
+      ? `Free cancellation until ${emailCancel.freeUntilLong}`
+      : emailTiers.length > 0
+        ? `Free cancellation has passed, but part of your payment may still be refunded: ${emailTiers.join(" ")}`
+        : "Non-refundable rate";
   await sendBookingConfirmation({
     to: row.contactEmail,
     bookingId: row.id,

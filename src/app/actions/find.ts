@@ -1,8 +1,8 @@
 "use server";
 
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { findConfirmedBookingsByEmailAndLastName } from "@/lib/bookings";
 import { sendGuestCode } from "@/lib/email";
 import {
@@ -41,11 +41,6 @@ function cookieOpts(maxAgeSec: number) {
     path: "/",
     maxAge: maxAgeSec,
   };
-}
-
-async function clientIp(): Promise<string> {
-  const h = await headers();
-  return (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "local";
 }
 
 // Step 1: locate a booking by email + lead last name, and (if found) email a code.

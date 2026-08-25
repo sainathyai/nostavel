@@ -75,6 +75,32 @@ describe("buildCancelPolicy", () => {
     expect(p.tiers).toHaveLength(2);
   });
 
+  it("ignores refundableTag entirely — the ladder decides, not the tag", () => {
+    // LiteAPI: NRFN applies if ANY portion is unrefunded, and an NRFN rate
+    // "still may refund most of the cost". A tag-driven short-circuit here
+    // previously discarded cancelPolicyInfos whenever the tag said NRFN, which
+    // told a partially-refundable guest they could not be refunded at all.
+    const nrfnWithLadder = { refundableTag: "NRFN", cancelPolicyInfos: TWO_TIER.cancelPolicyInfos };
+    const p = buildCancelPolicy(nrfnWithLadder, 573.7, null, BEFORE);
+    expect(p.tiers).toHaveLength(2);
+    // BEFORE is ahead of both rungs in TWO_TIER, so a free window still exists
+    // — proving refundability comes from the ladder's own timing, not the tag.
+    expect(p.refundable).toBe(true);
+  });
+
+  it("an NRFN rate whose ladder has already started still shows what's refundable", () => {
+    // The realistic NRFN shape: the tag says non-refundable and the first rung
+    // is already active, so there is no free window (`refundable: false`) —
+    // but the tiers are not thrown away, so the guest still sees what portion
+    // of their money is recoverable.
+    const after = new Date("2026-10-18T00:00:00Z");
+    const nrfnWithLadder = { refundableTag: "NRFN", cancelPolicyInfos: TWO_TIER.cancelPolicyInfos };
+    const p = buildCancelPolicy(nrfnWithLadder, 573.7, null, after);
+    expect(p.refundable).toBe(false);
+    expect(p.freeUntilShort).toBeNull();
+    expect(p.tiers).toHaveLength(2);
+  });
+
   it("orders rungs by time even if the supplier does not", () => {
     const scrambled = {
       refundableTag: "RFN",
