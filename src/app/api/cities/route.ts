@@ -82,12 +82,16 @@ export async function GET(request: Request) {
     .map((d) => ({ dest: d.key, name: d.name, sub: `${d.region}, US` }));
   const curatedNames = new Set(curated.map((c) => c.name.toLowerCase()));
 
-  let matches = rankedMatch(q);
+  const matches = rankedMatch(q);
   // Only reach for typo tolerance when the exact/prefix/substring pass is thin —
   // it's slower (scans the whole dataset) and a real match should win outright.
   if (matches.length < 5) {
     const seen = new Set(matches.map((x) => x.c));
-    for (const x of fuzzyMatch(q)) if (!seen.has(x.c)) (seen.add(x.c), matches.push(x));
+    for (const x of fuzzyMatch(q)) {
+      if (seen.has(x.c)) continue;
+      seen.add(x.c);
+      matches.push(x);
+    }
   }
 
   const cities: CitySuggestion[] = matches

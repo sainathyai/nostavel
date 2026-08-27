@@ -17,7 +17,7 @@ export default function SupportPage() {
         terms are shown before you pay and again on your confirmation.
       </Section>
       <Section heading="Contact">
-        Email <a className="text-brass underline underline-offset-2 hover:text-brassglow" href="mailto:help@nostavel.travel">help@nostavel.travel</a>{" "}
+        Email <a className="text-brass underline underline-offset-2 hover:text-brassglow" href="mailto:help@nostavel.com">help@nostavel.com</a>{" "}
         and we will get back to you. This is a demo environment, so bookings run in a secure sandbox
         and no real card is charged.
       </Section>

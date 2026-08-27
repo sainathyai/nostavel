@@ -55,7 +55,11 @@ export async function findConfirmedBookingsByEmailAndLastName(
   // Dedupe by id (defensive — one lead per booking, but joins can surprise).
   const seen = new Set<string>();
   const out: Booking[] = [];
-  for (const r of rows) if (!seen.has(r.booking.id)) (seen.add(r.booking.id), out.push(r.booking));
+  for (const r of rows) {
+    if (seen.has(r.booking.id)) continue;
+    seen.add(r.booking.id);
+    out.push(r.booking);
+  }
   return out;
 }
 

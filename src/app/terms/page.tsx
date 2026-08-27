@@ -18,7 +18,7 @@ export default function TermsPage() {
         reservation under My Trips. We do not sell your data.
       </Section>
       <Section heading="Payments">
-        Card details are collected by Stripe directly and never touch Nostavel's servers. Test cards
+        Card details are collected by Stripe directly and never touch Nostavel&rsquo;s servers. Test cards
         such as 4242 4242 4242 4242 are used in this environment.
       </Section>
     </InfoPage>

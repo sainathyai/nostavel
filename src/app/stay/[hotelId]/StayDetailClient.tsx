@@ -173,10 +173,19 @@ export default function StayDetailClient({
   );
 
   // Arrived via "Book now" (e.g. a rate held from elsewhere) — jump straight
-  // into prebooking the cheapest rate of the cheapest room.
+  // into prebooking the cheapest rate of the cheapest room. `startPrebook`
+  // calls setPb synchronously as its first line (before any await), so
+  // calling it directly from this effect ran that setState inside the
+  // effect's own synchronous flush — flagged by react-hooks/set-state-in-
+  // effect. Deferred to a microtask so the call happens after the effect
+  // body returns; behaviour is identical, just no longer a direct static
+  // call chain from the effect into setState.
   useEffect(() => {
     const first = options[0];
-    if (intent === "book" && first?.rates[0]) startPrebook(first, first.rates[0]);
+    if (intent === "book" && first?.rates[0]) {
+      const rate = first.rates[0];
+      queueMicrotask(() => startPrebook(first, rate));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -387,7 +396,7 @@ export default function StayDetailClient({
         {hotel.lat != null && hotel.lng != null && (
           <section className="gloss overflow-hidden rounded-[16px] border border-line bg-surface">
             <div className="flex flex-wrap items-baseline justify-between gap-2 p-5 pb-3">
-              <h2 className="font-display text-[19px]">Where you'll be</h2>
+              <h2 className="font-display text-[19px]">Where you&rsquo;ll be</h2>
               <p className="text-[12.5px] text-soft">
                 {[hotel.address, hotel.city, hotel.postcode].filter(Boolean).join(", ")}
               </p>

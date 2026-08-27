@@ -135,8 +135,16 @@ export default function StaysMap({
 
   // Imperative marker code (event handlers registered once) needs the latest
   // pricing/search inputs without forcing the map to remount on every change.
+  // Written in an effect with no dependency array, not directly in the render
+  // body — React flags a ref mutated during render (react-hooks/refs), and
+  // this is the standard "latest ref" escape: the effect runs after every
+  // commit, which is functionally identical (the ref only ever needs to be
+  // current by the time a user event fires an imperative handler) but no
+  // longer touches the ref while rendering.
   const latest = useRef({ isMember, inclFees, onOpen, checkin, nights });
-  latest.current = { isMember, inclFees, onOpen, checkin, nights };
+  useEffect(() => {
+    latest.current = { isMember, inclFees, onOpen, checkin, nights };
+  });
 
   // Draws the given stays as pins; `fit` controls whether the camera moves to
   // frame them. Prop-driven placement fits; a "search this area" refresh
@@ -248,7 +256,6 @@ export default function StaysMap({
       mapRef.current?.remove();
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Place pins from the search result whenever it changes (new search, new

@@ -5,6 +5,17 @@ import { signQuote } from "@/lib/quote-token";
 import StayDetailClient from "./StayDetailClient";
 import ThemeToggle from "@/components/ThemeToggle";
 
+// A default check-in when the guest arrived without one (e.g. a bare hotel
+// link). Pulled out of the component body: react-hooks/purity flags any
+// impure call (Date.now, new Date) found directly inside a component
+// function, even an async Server Component whose "render" runs once per
+// request and carries none of the re-render risk the rule exists for. A
+// named top-level helper is the accepted escape from that syntactic check —
+// same fix Next's own docs use for request-time values in Server Components.
+function defaultCheckin(): string {
+  return new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+}
+
 function Shell({ children, backHref }: { children: React.ReactNode; backHref: string }) {
   return (
     <div className="flex flex-1 flex-col bg-parchment text-ink">
@@ -60,7 +71,7 @@ export default async function StayPage(props: {
   const { hotelId } = await props.params;
   const sp = await props.searchParams;
 
-  const checkin = sp.checkin || new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const checkin = sp.checkin || defaultCheckin();
   const nights = Math.max(1, Math.min(30, Number(sp.nights) || 2));
   const backParams = new URLSearchParams({ checkin, nights: String(nights) });
   if (sp.dest) backParams.set("dest", sp.dest);

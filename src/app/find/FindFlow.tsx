@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useState } from "react";
 import { requestGuestCode, verifyGuestCode, initialFindState } from "@/app/actions/find";
 
 const inputClass =
@@ -9,19 +9,22 @@ const inputClass =
 const label = "text-[11px] font-semibold uppercase tracking-[0.1em] text-soft";
 
 export default function FindFlow() {
-  const [step, setStep] = useState<"locate" | "code">("locate");
-  const [email, setEmail] = useState("");
-
   const [locState, locAction, locPending] = useActionState(requestGuestCode, initialFindState);
   const [verState, verAction, verPending] = useActionState(verifyGuestCode, initialFindState);
 
-  // When the locate step reports a code was (maybe) sent, advance to the code step.
-  useEffect(() => {
-    if (locState.stage === "code") {
-      setEmail(locState.email);
-      setStep("code");
-    }
-  }, [locState]);
+  // `step` follows locState.stage directly rather than being copied into its
+  // own state via an effect (that copy was flagged by
+  // react-hooks/set-state-in-effect, and was redundant besides — locState
+  // already carries the email once a code is sent). The one thing that IS
+  // real local state is "the guest chose to go back". It resets on the next
+  // real submission, via the form's own action — not by comparing against a
+  // stored copy of locState: holding useActionState's own return value in a
+  // second useState broke static prerendering ("Server Functions cannot be
+  // called during initial render"), so nothing here keeps a reference to it
+  // beyond this render.
+  const [wentBack, setWentBack] = useState(false);
+  const step: "locate" | "code" = !wentBack && locState.stage === "code" ? "code" : "locate";
+  const email = locState.email;
 
   if (step === "code") {
     return (
@@ -67,7 +70,7 @@ export default function FindFlow() {
         </form>
         <button
           type="button"
-          onClick={() => setStep("locate")}
+          onClick={() => setWentBack(true)}
           className="self-start text-[13px] text-brass underline underline-offset-2 hover:text-brassglow"
         >
           Use a different email
@@ -78,7 +81,13 @@ export default function FindFlow() {
 
   return (
     <form
-      action={locAction}
+      action={(formData: FormData) => {
+        // Clears the "went back" override on every real submission, so
+        // resubmitting after clicking back correctly advances to the code
+        // step again once a new code is sent.
+        setWentBack(false);
+        return locAction(formData);
+      }}
       className="gloss flex w-full max-w-[440px] flex-col gap-3 rounded-xl border border-line bg-surface p-5"
     >
       <label className="flex flex-col gap-1">

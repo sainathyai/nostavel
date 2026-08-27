@@ -126,10 +126,6 @@ function prettyDate(iso: string) {
   });
 }
 
-function truncate(s: string, n = 30) {
-  return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
-}
-
 type Intent = "view" | "book";
 
 // When true, displayed prices include the mandatory fee collected at the hotel.
@@ -282,20 +278,28 @@ export default function Experience({
   // navigating to a hotel's page, read once when the list mounts (e.g. on
   // browser back), then faded out — a lightweight substitute for a full
   // shared-element transition.
-  const [justViewedId, setJustViewedId] = useState<string | null>(null);
-  useEffect(() => {
+  // Lazy initializer, not an effect: the read (and the removeItem side effect
+  // that must happen exactly once) belongs to computing the INITIAL value,
+  // not to synchronizing state after a render. Setting it from inside an
+  // effect body was flagged by react-hooks/set-state-in-effect and also cost
+  // an extra render on every mount for no reason — the value is known before
+  // the first paint.
+  const [justViewedId, setJustViewedId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
     try {
       const id = sessionStorage.getItem("lastViewedStayId");
-      if (id) {
-        setJustViewedId(id);
-        sessionStorage.removeItem("lastViewedStayId");
-        const t = setTimeout(() => setJustViewedId(null), 2600);
-        return () => clearTimeout(t);
-      }
+      if (id) sessionStorage.removeItem("lastViewedStayId");
+      return id;
     } catch {
       // sessionStorage unavailable (privacy mode etc.) — no highlight, no harm
+      return null;
     }
-  }, []);
+  });
+  useEffect(() => {
+    if (!justViewedId) return;
+    const t = setTimeout(() => setJustViewedId(null), 2600);
+    return () => clearTimeout(t);
+  }, [justViewedId]);
 
   // A tile click opens a lightweight preview first — more photos, rating,
   // amenities, price — with no booking machinery in it, so there's nothing
@@ -329,10 +333,10 @@ export default function Experience({
       <SeasonalAtmosphere variant={atmosphere} twinkle={holidayTwinkle} />
       <header className="sticky top-0 z-40 border-b border-line bg-parchment">
         <div className="mx-auto flex h-14 max-w-[1440px] items-center justify-between px-6">
-          <a href="/" className="flex items-center gap-2.5 font-display text-[20px]">
+          <Link href="/" className="flex items-center gap-2.5 font-display text-[20px]">
             <span className="h-2.5 w-2.5 rounded-full bg-brass shadow-[0_0_14px_2px_var(--brass-glow)]" />
             Nosta<span className="italic text-brass">vel</span>
-          </a>
+          </Link>
           <div className="flex items-center gap-2.5">
             <ThemeToggle />
             <AccountMenu account={account} />

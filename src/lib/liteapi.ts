@@ -1102,29 +1102,6 @@ function tidyLabel(s: string): string {
 
 const BREAKFAST_BOARDS = new Set(["BB", "HB", "FB", "AI"]);
 
-// The supplier's taxesAndFees items each carry a `description` ("TAX",
-// "RESORT_FEE", etc.) — verified live that a plain La Quinta comes back with
-// description "TAX" only (i.e. ordinary hotel/occupancy tax, not a resort
-// fee). Map to honest wording instead of a single hardcoded "resort/facility
-// fee" label, which was misrepresenting plain taxes as a resort charge.
-function describeFeeKind(desc: string): string {
-  const d = (desc || "").toUpperCase();
-  if (/RESORT/.test(d)) return "resort fee";
-  if (/CLEAN/.test(d)) return "cleaning fee";
-  if (/SERVICE/.test(d)) return "service fee";
-  if (/CITY/.test(d)) return "city tax";
-  if (/OCCUPANC/.test(d)) return "occupancy tax";
-  if (/TAX/.test(d)) return "tax";
-  return "hotel fee";
-}
-
-function buildMandatoryFeeLine(fees: any[], feeSum: number): string | null {
-  if (!feeSum) return null;
-  const kinds = [...new Set(fees.map((f: any) => describeFeeKind(f?.description)))];
-  const label = kinds.length === 1 ? kinds[0] : "taxes & fees";
-  return `+ $${feeSum} ${label} due at the hotel`;
-}
-
 // Pandemic-era health-protocol / packaging tags the supplier lists as
 // "facilities". They read as noise (and "Breakfast takeaway containers" even
 // gets mistaken for breakfast being served), so drop them outright.
