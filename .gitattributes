@@ -1,0 +1,17 @@
+# Normalize text to LF in the repository and working tree, on every OS.
+# Without this, Windows checkouts (core.autocrlf=true) and Linux CI disagree
+# about line endings and produce noisy diffs.
+* text=auto eol=lf
+
+# Binary files: never normalize or diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.psd binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.pmtiles binary

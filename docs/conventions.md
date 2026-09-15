@@ -129,6 +129,11 @@ say what to look for. API and CLI checks are Claude's to run.
 - Scripts that touch the live API live in `analysis/<date>/` with a docstring
   saying what question they answer. They are kept, not deleted; they are the
   provenance for the constants.
+- **Script outputs are never committed.** Raw responses, CSV and JSON results,
+  and generated dashboards stay on your machine: git ignores them and the
+  pre-commit guard rejects them. They can carry supplier net pricing, and the
+  repository is public. The script and its date are the provenance; re-run it
+  to regenerate the output. See `analysis/README.md`.
 - Fixtures that write to the ledger are labelled as such and their rows are
   disposable. Never leave a fixture writing something a report might be run over.
 - **Never delete or rewrite ledger rows to tidy up.** The booking ledger is the

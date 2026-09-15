@@ -1,24 +1,27 @@
 name: CI
 
-# The four checks docs/conventions.md section 7 already requires locally,
-# run on every push and PR so "it works on my machine" can't ship silently.
+# The four checks docs/conventions.md section 7 requires locally, run on every
+# pull request and on main so "it works on my machine" can't ship silently.
+#
+# Needs NO secrets. The database client connects on first query, not on import
+# (src/db/index.ts), so lint, types, tests and build all run without
+# credentials. That matters on a public repository: pull requests from forks
+# never receive secrets.
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-latest
-    env:
-      # `npm run build` imports src/db/index.ts, which throws immediately if
-      # DATABASE_URL is unset, so build needs a real value even though no
-      # query actually runs at build time. Add these in the repo's Settings
-      # -> Secrets and variables -> Actions before this workflow can pass.
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      LITEAPI_KEY: ${{ secrets.LITEAPI_KEY }}
-      AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +31,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # Same rules as the pre-commit hook, applied to every tracked file, so a
+      # commit made with --no-verify is still caught here.
+      - name: Repository guard
+        run: npm run guard
 
       - name: Lint
         run: npm run lint
