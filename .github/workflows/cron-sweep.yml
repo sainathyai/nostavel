@@ -1,0 +1,22 @@
+name: Cron - sweep abandoned holds
+
+# docs/production-readiness.md §2.2. Runs as a scheduled GitHub Actions
+# workflow rather than a platform-specific cron (Vercel Cron / Cloud
+# Scheduler) because no deploy target is chosen yet — this works under any
+# future host. Add APP_URL (Settings -> Secrets and variables -> Actions ->
+# Variables) and CRON_SECRET (-> Secrets, matching the value in the deployed
+# app's env) before this can pass; until then a red run here just means
+# there's nothing deployed to sweep yet.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call sweep endpoint
+        run: |
+          curl -fsS -X POST "${{ vars.APP_URL }}/api/cron/sweep" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

@@ -11,11 +11,14 @@ import {
   prepareBooking,
   confirmBooking,
   saveBookingGuest,
+  cancelBooking,
   type PrepareInput,
   type PrepareResult,
   type ConfirmResult,
   type GuestInput,
+  type CancelBookingResult,
 } from "@/lib/booking-service";
+import { getBookingById } from "@/lib/bookings";
 
 // Every action here either costs a real LiteAPI supplier call (prepare,
 // confirm) or writes to the ledger (guest details). Placeholder limits — no
@@ -108,6 +111,35 @@ export async function confirmBookingAction(bookingId: string): Promise<ConfirmBo
 
   try {
     const data = await confirmBooking({ bookingId });
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export type CancelBookingResponse =
+  | { ok: true; data: CancelBookingResult }
+  | { ok: false; error: string };
+
+// Guest-initiated cancellation from /trips. Identity is resolved server-side
+// (never trust a client-supplied bookingId alone) — a signed-in guest can only
+// cancel a booking that belongs to their own account, matching every other
+// action in this file.
+export async function cancelBookingAction(bookingId: string): Promise<CancelBookingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-cancel:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
+  const user = await getCurrentUser();
+  if (!user?.id) return { ok: false, error: "Sign in to manage this booking." };
+
+  const booking = await getBookingById(bookingId);
+  if (!booking || booking.userId !== user.id) {
+    return { ok: false, error: "Booking not found." };
+  }
+
+  try {
+    const data = await cancelBooking(bookingId, { actor: "user" });
     return { ok: true, data };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

@@ -3,8 +3,10 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/dal";
 import { getUserBookings } from "@/lib/bookings";
 import { signOutAction } from "@/app/actions/auth";
+import { buildCancelPolicy, describeTiers, zoneFor } from "@/lib/cancellation";
 import type { Booking } from "@/db/schema";
 import ThemeToggle from "@/components/ThemeToggle";
+import CancelTripButton from "./CancelTripButton";
 
 export const dynamic = "force-dynamic";
 
@@ -106,11 +108,23 @@ function TripCard({ trip }: { trip: Booking }) {
     name?: string;
     city?: string;
     image?: string;
+    lat?: number | null;
+    lng?: number | null;
   };
   const money = `${trip.currency} ${(trip.amountTotalMinor / 100).toFixed(2)}`;
 
+  // Same source of truth as checkout (buildCancelPolicy over the STORED
+  // cancellationPolicy, never the bare refundableTag — see cancellation.ts and
+  // docs/production-readiness.md §1.1, the bug Phase 1 fixed on display and
+  // this must not reintroduce on cancellation).
+  const cancel = buildCancelPolicy(
+    trip.cancellationPolicy as Parameters<typeof buildCancelPolicy>[0],
+    trip.amountTotalMinor / 100,
+    zoneFor(hotel.lat, hotel.lng),
+  );
+
   return (
-    <div className="gloss smooth flex items-center gap-4 rounded-2xl border border-line bg-surface p-4 hover:border-brass/40">
+    <div className="gloss smooth flex flex-wrap items-center gap-4 rounded-2xl border border-line bg-surface p-4 hover:border-brass/40">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <p className="truncate font-display text-[18px] text-ink">{hotel.name || "Stay"}</p>
@@ -134,6 +148,16 @@ function TripCard({ trip }: { trip: Booking }) {
       <div className="shrink-0 text-right font-mono text-[15px] font-bold tabular-nums text-ink">
         {money}
       </div>
+      {trip.status === "confirmed" && (
+        <div className="w-full">
+          <CancelTripButton
+            bookingId={trip.id}
+            refundable={cancel.refundable}
+            freeUntilLong={cancel.freeUntilLong}
+            tierLines={describeTiers(cancel, trip.currency)}
+          />
+        </div>
+      )}
     </div>
   );
 }

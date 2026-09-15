@@ -396,6 +396,40 @@ export async function book(input: {
   return (d as any).data ?? d;
 }
 
+// Cancel a CONFIRMED booking. Verified against the reference docs (not yet a
+// live sandbox call — see docs/production-readiness.md §2.1): `PUT
+// /bookings/{bookingId}`, no request body, response `data.status` is
+// `CANCELLED` (fully refundable, no charges) or `CANCELLED_WITH_CHARGES`
+// (non-refundable or past the free window), plus `cancellation_fee` and
+// `refund_amount` in the rate's currency. `bookingId` here is LiteAPI's own
+// id (`bookings.liteapiBookingId`), never our internal uuid or humanRef.
+export type CancelResult = {
+  status: "CANCELLED" | "CANCELLED_WITH_CHARGES" | string;
+  cancellationFeeMinor: number;
+  refundAmountMinor: number;
+  currency: string;
+};
+
+export async function cancelBooking(liteapiBookingId: string): Promise<CancelResult> {
+  const d = await api("PUT", `/bookings/${liteapiBookingId}`);
+  const data = (d as any).data ?? d;
+  return {
+    status: data.status,
+    // LiteAPI states these in major units (dollars), matching every other
+    // money field this client reads before *100 into the ledger's minor units.
+    cancellationFeeMinor: Math.round(Number(data.cancellation_fee ?? 0) * 100),
+    refundAmountMinor: Math.round(Number(data.refund_amount ?? 0) * 100),
+    currency: data.currency ?? "USD",
+  };
+}
+
+// One booking's live status from LiteAPI, for reconciliation — compares
+// against what our ledger believes without touching it.
+export async function getSupplierBooking(liteapiBookingId: string): Promise<any> {
+  const d = await api("GET", `/bookings/${liteapiBookingId}`);
+  return (d as any).data ?? d;
+}
+
 // The Stripe publishable key for LiteAPI's payment account, from their payment
 // wrapper's config endpoint. Public by design (used client-side). Cached per
 // process; keyed to our environment (sandbox vs live).

@@ -1,0 +1,19 @@
+name: Cron - nightly reconciliation
+
+# docs/production-readiness.md §2.4. Same infra as cron-sweep.yml (a scheduled
+# workflow calling a secret-protected route, no platform-specific cron), on a
+# nightly schedule — low traffic, ~2am US-Central. Needs the same APP_URL /
+# CRON_SECRET configured before it can pass.
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reconcile endpoint
+        run: |
+          curl -fsS -X POST "${{ vars.APP_URL }}/api/cron/reconcile" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

@@ -15,6 +15,18 @@ export async function getBookingById(bookingId: string): Promise<Booking | null>
   return rows[0] ?? null;
 }
 
+// A single booking by LiteAPI's own booking id — used by the webhook receiver
+// and reconciliation, both of which only ever hear the SUPPLIER's id, never
+// ours.
+export async function findBookingByLiteapiId(liteapiBookingId: string): Promise<Booking | null> {
+  const rows = await db
+    .select()
+    .from(bookings)
+    .where(eq(bookings.liteapiBookingId, liteapiBookingId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 // A single booking looked up by its human ref + contact email — the guest path
 // (no account needed). Both must match so a ref alone can't reveal a booking.
 export async function findGuestBooking(humanRef: string, email: string): Promise<Booking | null> {

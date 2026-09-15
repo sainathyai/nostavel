@@ -10,9 +10,10 @@ import {
   bookingEvents,
   bookingGuests,
   payments,
+  cancellations,
   type NewBooking,
 } from "@/db/schema";
-import { prebook, book } from "@/lib/liteapi";
+import { prebook, book, cancelBooking as cancelSupplierBooking } from "@/lib/liteapi";
 import { sendBookingConfirmation } from "@/lib/email";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
 import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
@@ -534,4 +535,155 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
     liteapiBookingId,
     supplierStatus,
   };
+}
+
+export type CancelBookingResult = {
+  bookingId: string;
+  humanRef: string;
+  status: "cancelled";
+  refundAmountMinor: number;
+  cancellationFeeMinor: number;
+  currency: string;
+  /** True when the guest gets some or all of their money back. */
+  refunded: boolean;
+};
+
+/**
+ * Guest- or admin-initiated cancellation of a CONFIRMED booking.
+ *
+ * The penalty preview shown before this is called is computed from the SAME
+ * stored `cancellationPolicy` (buildCancelPolicy over cancelPolicyInfos, never
+ * the bare refundableTag — see the long note in cancellation.ts and
+ * docs/production-readiness.md §1.1, the bug this must not reintroduce on the
+ * cancellation side after Phase 1 fixed it on display). This function does not
+ * recompute that preview; it trusts the caller showed it and asked to proceed,
+ * then reads the REAL outcome back from LiteAPI's own response rather than
+ * assuming the preview was exact.
+ */
+export async function cancelBooking(
+  bookingId: string,
+  opts: { actor: "user" | "admin" } = { actor: "user" },
+): Promise<CancelBookingResult> {
+  const rows = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
+  const row = rows[0];
+  if (!row) throw new Error("Booking not found");
+
+  if (row.status === "cancelled") {
+    // Idempotent: a retry (double-click, redelivered action) returns the
+    // stored outcome instead of calling the supplier again.
+    const existing = await db
+      .select()
+      .from(cancellations)
+      .where(eq(cancellations.bookingId, row.id))
+      .limit(1);
+    const c = existing[0];
+    return {
+      bookingId: row.id,
+      humanRef: row.humanRef,
+      status: "cancelled",
+      refundAmountMinor: c?.refundAmountMinor ?? 0,
+      cancellationFeeMinor: 0,
+      currency: row.currency,
+      refunded: (c?.refundAmountMinor ?? 0) > 0,
+    };
+  }
+  if (row.status !== "confirmed" || !row.liteapiBookingId) {
+    throw new Error(`Booking cannot be cancelled (status: ${row.status})`);
+  }
+
+  await db.insert(bookingEvents).values({
+    bookingId: row.id,
+    type: "booking.cancel.requested",
+    actor: opts.actor,
+  });
+
+  let result;
+  try {
+    result = await cancelSupplierBooking(row.liteapiBookingId);
+  } catch (e) {
+    await db.insert(bookingEvents).values({
+      bookingId: row.id,
+      type: "booking.cancel.failed",
+      actor: "system",
+      payload: { error: (e as Error).message },
+    });
+    throw e;
+  }
+
+  const now = new Date();
+  await db
+    .update(bookings)
+    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+    .where(eq(bookings.id, row.id));
+
+  await db.insert(cancellations).values({
+    bookingId: row.id,
+    status: result.status,
+    refundAmountMinor: result.refundAmountMinor,
+  });
+
+  await db.insert(bookingEvents).values({
+    bookingId: row.id,
+    type: "booking.cancel.confirmed",
+    actor: opts.actor,
+    payload: result,
+  });
+
+  return {
+    bookingId: row.id,
+    humanRef: row.humanRef,
+    status: "cancelled",
+    refundAmountMinor: result.refundAmountMinor,
+    cancellationFeeMinor: result.cancellationFeeMinor,
+    currency: result.currency,
+    refunded: result.refundAmountMinor > 0,
+  };
+}
+
+/**
+ * A SUPPLIER-initiated cancellation or refund, learned from a webhook rather
+ * than asked for. If our row is already `cancelled` (we did it, or a
+ * redelivered webhook is telling us twice) this is a no-op — the row already
+ * reflects the truth and re-writing it would duplicate the ledger's audit
+ * trail. Otherwise this is exactly the gap docs/production-readiness.md §2.3
+ * calls the single highest-value missing piece: without it, a hotel or
+ * wholesaler cancelling on their end is invisible to us until someone checks
+ * LiteAPI's dashboard by hand.
+ */
+export async function recordSupplierCancellation(
+  liteapiBookingId: string,
+  payload: { refundAmountMinor?: number | null; status?: string | null; raw: unknown },
+): Promise<{ bookingId: string; alreadyRecorded: boolean } | null> {
+  const rows = await db
+    .select()
+    .from(bookings)
+    .where(eq(bookings.liteapiBookingId, liteapiBookingId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  if (row.status === "cancelled") {
+    return { bookingId: row.id, alreadyRecorded: true };
+  }
+
+  const now = new Date();
+  await db
+    .update(bookings)
+    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+    .where(eq(bookings.id, row.id));
+
+  await db.insert(cancellations).values({
+    bookingId: row.id,
+    status: payload.status ?? "confirmed",
+    refundAmountMinor: payload.refundAmountMinor ?? null,
+  });
+
+  await db.insert(bookingEvents).values({
+    bookingId: row.id,
+    type: "webhook.booking.cancel",
+    actor: "webhook",
+    payload: payload.raw as object,
+  });
+
+  return { bookingId: row.id, alreadyRecorded: false };
 }
