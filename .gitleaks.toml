@@ -1,0 +1,11 @@
+title = "nostavel"
+
+# Start from gitleaks' built-in rules.
+[extend]
+useDefault = true
+
+# Known fake values used in tests and fixtures. Add to this list only with a
+# comment saying where the value lives and why it is not a real secret.
+[[allowlists]]
+description = "Fake payment secret seeded by the sweeper fixture (analysis/2026-08-27/sweep_seed.mts)"
+regexes = ['''pi_test_secret_should_be_cleared''']

@@ -1,36 +1,83 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Nostavel
 
-## Getting Started
+Hotel booking on [LiteAPI](https://www.liteapi.travel/), growing into an AI trip
+planner. Built in public as a production-style system: honest pricing, an
+auditable booking ledger, and a Claude-agent team workflow.
 
-First, run the development server:
+> **Status: prototype.** Runs against LiteAPI's **sandbox** only. It takes no
+> real bookings and no real payments.
+
+## What it does today
+
+- Search stays by city, curated destination or map area, with member and public
+  prices kept at rate parity
+- Hotel detail: room and rate options, cancellation deadlines in property-local
+  time, and fees due at the property shown separately
+- Guest checkout through LiteAPI's payment SDK. LiteAPI is merchant of record,
+  so card details never touch this app.
+- Trips: confirmation, guest lookup by email code, and cancellation with a
+  penalty preview
+- Booking lifecycle (in progress): webhook receiver, abandoned-hold sweeper,
+  nightly reconciliation
+
+## Stack
+
+| Layer | Choice |
+|---|---|
+| App | Next.js 16 (App Router, server actions), React 19, Tailwind CSS 4 |
+| Supplier and payments | LiteAPI rates, prebook and book; LiteAPI payment SDK |
+| Data | Neon Postgres with Drizzle ORM; append-only booking event trail |
+| Auth | Auth.js v5 (Google, email magic link); guest checkout without an account |
+| Maps | MapLibre GL with Protomaps |
+| AI | Anthropic Claude (structured outputs) |
+| Tests | Vitest |
+
+## How the code is built
+
+Read [`docs/conventions.md`](docs/conventions.md) before changing anything. In short:
+
+- Pure rules import nothing; queries live in `*-store.ts`, orchestration in `*-service.ts`.
+- Money is stored as integer minor units, and never compared across different bases.
+- Anything shown to a guest (a saving, a deadline, a fee) must come from the API
+  or from a measurement in `analysis/`.
+- Verify by running it, not just by rendering it.
+
+More docs:
+[production readiness](docs/production-readiness.md) ·
+[AI planner research](docs/planner-research.md) ·
+[testing strategy](docs/testing-strategy.md) ·
+[cars and flights assessment](docs/verticals-cars-flights.md)
+
+## Local development
+
+Requires Node 24, a Neon Postgres database and a LiteAPI sandbox key.
 
 ```bash
+npm ci                        # also installs the git pre-commit guard
+cp .env.example .env.local    # then fill in the values
+npm run db:migrate            # applies src/db/migrations
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The checks CI runs:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run lint && npx tsc --noEmit && npm test && npm run build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Repository rules
 
-## Learn More
+- Never commit secrets or `.env*` files. Only `.env.example` is tracked.
+- `analysis/` commits scripts, never their outputs (see
+  [`analysis/README.md`](analysis/README.md)).
+- The pre-commit guard, [`scripts/git-guard.mjs`](scripts/git-guard.mjs), blocks
+  both, plus files over 2 MB and anything shaped like a credential. Don't bypass
+  it with `--no-verify`.
 
-To learn more about Next.js, take a look at the following resources:
+## Security
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+See [SECURITY.md](SECURITY.md). Please report vulnerabilities privately.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## License
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**All rights reserved.** The source is public to read, not to reuse. See [LICENSE](LICENSE).
