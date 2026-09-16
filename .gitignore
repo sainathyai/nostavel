@@ -26,13 +26,32 @@
 
 # debug
 dev.log
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files: never commit real values. .env.example is the documented template.
 .env*
+!.env.example
+
+# analysis outputs. The scripts ARE committed (they are the provenance for
+# constants); their outputs are regenerable, can carry supplier net pricing and
+# offer ids, and must never be committed. See analysis/README.md. The
+# pre-commit guard (scripts/git-guard.mjs) enforces the same list.
+analysis/**/raw/
+analysis/**/*.csv
+analysis/**/*.json
+analysis/**/dashboard.html
+analysis/**/_*_out*.txt
+analysis/pricing-observations.md
+
+# design source files (the app ships exported assets from public/)
+design-assets/
+
+# local-only agent and editor settings
+.claude/settings.local.json
 
 # vercel
 .vercel

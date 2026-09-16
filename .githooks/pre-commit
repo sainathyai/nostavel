@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by `npm ci` / `npm install` (package.json "prepare" points
+# core.hooksPath at .githooks). Checks exactly what is staged.
+exec node scripts/git-guard.mjs
