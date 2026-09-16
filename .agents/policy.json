@@ -1,0 +1,20 @@
+{
+  "$comment": "Neutral agent policy. Enforcement lives in scripts/agent-guards (every tool's pre-tool hook calls it). These lists are generated into each tool's own permission system as a first, cheaper layer. Edit here, then run npm run agents:sync.",
+  "hook": "scripts/agent-guards/hook.mjs",
+  "deny": {
+    "read": [".env", ".env.local", ".env.*.local", ".env.development", ".env.production", ".env.test"],
+    "write": [".env", ".env.local", ".env.*.local", ".env.development", ".env.production", ".env.test"],
+    "shell": ["gh pr merge", "gh repo delete", "gh repo edit", "gh repo rename", "npm run db:push", "npx drizzle-kit push", "git commit --no-verify"]
+  },
+  "ask": {
+    "shell": ["git push", "npm run db:migrate", "npx drizzle-kit migrate"]
+  },
+  "allow": {
+    "shell": [
+      "npm run verify", "npm test", "npm run test:agents", "npm run lint", "npm run guard",
+      "npm run agents:sync", "npm run agents:check", "npx tsc --noEmit",
+      "git status", "git diff", "git log", "git show", "git branch",
+      "gh pr view", "gh pr checks", "gh pr list"
+    ]
+  }
+}

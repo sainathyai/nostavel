@@ -1,0 +1,8 @@
+{
+  "$comment": "Roles declare a tier, never a model. This is the only file that names provider models. null means the tool's own default. Aliases are used where the tool supports them, so upgrades don't need edits here.",
+  "tiers": {
+    "deep": { "description": "architecture, security, ambiguous trade-offs", "claude": "opus", "gemini": "pro", "codex": null },
+    "standard": { "description": "implementation, review, most day-to-day work", "claude": "sonnet", "gemini": "pro", "codex": null },
+    "fast": { "description": "mechanical checks, summaries, triage", "claude": "haiku", "gemini": "flash", "codex": null }
+  }
+}

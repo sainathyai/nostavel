@@ -1,0 +1,45 @@
+---
+name: verify-change
+description: Verify a change before calling it done. Runs the repository's full check suite (guards, lint, types, unit tests, build), reports the first real failure with its cause, and lists what still has to be checked by hand. Use before opening or updating a pull request, or when asked whether a change works.
+license: Proprietary. See LICENSE.
+compatibility: Requires Node.js 24+, npm and git.
+metadata:
+  owner: nostavel
+  version: "1"
+---
+
+# Verify a change
+
+A clean build is not proof that something works (docs/conventions.md §7). This skill
+runs every automated check, then says plainly what automation could not prove.
+
+## Steps
+
+1. **See what changed.** Run `git status` and `git diff --stat main...HEAD`. Note which
+   areas the change touches: UI (`src/app/**/*.tsx`, `src/components/**`), server
+   (`src/lib/**`, `src/app/actions/**`, `src/app/api/**`), database (`src/db/**`),
+   agent layer (`.agents/**`, `scripts/**`).
+2. **Run the suite.** Run `npm run verify`. It stops at the first failing stage, in order:
+   repository guard, agent-layer tests, agent adapter drift check, lint, type check,
+   unit tests, build.
+3. **If a stage fails**, report:
+   - the stage name and the first error, quoted exactly (file and line);
+   - the likely cause in one sentence;
+   - the smallest fix. Do not weaken a guard, skip a test or loosen a type to get green.
+   If the adapter drift check fails, run `npm run agents:sync` and include the
+   regenerated files; never hand-edit generated adapter files.
+4. **If everything passes**, list the checks automation did not cover, based on step 1:
+   - **UI changed:** the URL(s) to open and exactly what to look at (light and dark theme,
+     a narrow phone width, keyboard focus). Visual checks belong to the human owner.
+   - **Server or money logic changed:** the API call or page flow that exercises it, and
+     the expected result. Run it if it needs no secrets.
+   - **Database changed:** the migration file name, and confirmation it is additive.
+   - **Agent layer changed:** which tools' adapters were regenerated.
+
+## Report format
+
+```
+Verify: PASS | FAIL at <stage>
+Changed areas: <list>
+<failure details, or "Still to check by hand:" list>
+```

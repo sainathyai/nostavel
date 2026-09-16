@@ -1,0 +1,23 @@
+{
+  "context": {
+    "fileName": [
+      "AGENTS.md"
+    ]
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command|write_file|replace|read_file|read_many_files",
+        "hooks": [
+          {
+            "name": "repository-guard",
+            "type": "command",
+            "command": "node scripts/agent-guards/hook.mjs",
+            "timeout": 15000
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {}
+}
