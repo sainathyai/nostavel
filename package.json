@@ -23,7 +23,7 @@
     "@protomaps/basemaps": "^5.7.2",
     "drizzle-orm": "^0.45.2",
     "maplibre-gl": "^6.3.0",
-    "next": "16.2.12",
+    "next": "16.3.5",
     "next-auth": "^5.0.0-beta.32",
     "pmtiles": "^4.5.0",
     "react": "19.2.4",
