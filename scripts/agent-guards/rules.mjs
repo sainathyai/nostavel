@@ -146,3 +146,47 @@ export function checkRead(repoPaths) {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Role boundaries (docs/team/roles.md). A tool passes --role <name> when it runs
+// a role; the role's neutral definition in .agents/roles supplies `owns` (globs
+// it may edit) and `capabilities`. Matchers are passed in to keep this file pure.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {{name: string, owns?: string[]}} role
+ * @param {(string|null)[]} repoPaths repo-relative paths (null = outside the repo, not ours to police)
+ * @param {(glob: string) => RegExp} toRegExp
+ * @param {Array<{name: string, owns?: string[]}>} [allRoles] to name the owner in the message
+ */
+export function checkRoleWrite(role, repoPaths, toRegExp, allRoles = []) {
+  const owns = (role.owns ?? []).map(toRegExp);
+  for (const p of repoPaths) {
+    if (p == null) continue;
+    if (owns.some((re) => re.test(p))) continue;
+    const owner = allRoles.find((r) => r.name !== role.name && (r.owns ?? []).some((g) => toRegExp(g).test(p)));
+    const who = owner ? `it belongs to ${owner.name}` : "no role owns it";
+    return `${p} is outside what ${role.name} may edit (${who}). Hand it off through the ticket or pull request instead of editing it.`;
+  }
+  return null;
+}
+
+const MUTATING_SHELL = [
+  /\bgit\b(?:\s+-[Cc]\s+\S+)*\s+(add|commit|push|reset|restore|rm|mv|merge|rebase|stash|tag|cherry-pick|revert|switch\s+-c|checkout\s+-b|checkout\s+--|apply|am)\b/,
+  /(^|[\s;&|(])(rm|rmdir|mv|cp|mkdir|touch|del|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Content|Add-Content|Out-File)\b/,
+  /\bsed\s+(-\w*\s+)*-i\b/,
+  /\bnpm\s+(install|i|ci|uninstall|update|add)\b|\bnpm\s+run\s+(db:migrate|db:generate|agents:sync|vendored:fix)\b|\bdrizzle-kit\s+(migrate|generate|push)\b/,
+  /\bgh\s+(pr|issue)\s+(create|edit|close|comment|review)\b/,
+  // Redirecting output into a file (but not 2>&1 or into the null device).
+  /(^|[^\d&<>])>{1,2}\s*(?!&|\/dev\/null\b|\$null\b|nul\b)[^\s|;&]/i,
+];
+
+/** A role without the edit capability may run checks, never change anything. */
+export function checkRoleShell(role, command) {
+  if ((role.capabilities ?? []).includes("edit")) return null;
+  const cmd = command ?? "";
+  if (MUTATING_SHELL.some((re) => re.test(cmd))) {
+    return `${role.name} is a read-only role: it may run checks and read history, not change files, git state or pull requests. Report the finding and hand it off.`;
+  }
+  return null;
+}

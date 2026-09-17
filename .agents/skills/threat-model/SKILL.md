@@ -1,0 +1,55 @@
+---
+name: threat-model
+description: Threat-model a feature, route or flow in this app - assets, trust boundaries, entry points, threats by category, existing controls verified in code, gaps with severity and proposed tickets - saved as docs/security/<scope>.md. Use before building anything touching auth, payments, webhooks, personal data or secrets, and for existing entry points without a model.
+license: Proprietary. See LICENSE.
+compatibility: Works in any agent that can read files, search code and write Markdown. Running tests or reading git history is optional supporting evidence.
+metadata:
+  owner: nostavel
+  role: security-architect
+  version: "1"
+---
+
+# Threat model
+
+A threat model answers: what are we protecting, who can reach it, how could it go wrong,
+and what stops that today. Every "control exists" claim must be verified in the code,
+never assumed from a name or a comment.
+
+## Steps
+
+1. **Set the scope.** Name the feature or entry point, and the files that implement it.
+   Keep it to one flow; split big areas into separate models.
+2. **List the assets.** Guest personal data, payment state, booking and ledger integrity,
+   secrets, supplier net pricing and margins, availability.
+3. **Draw the trust boundaries.** Browser ↔ server, server ↔ LiteAPI, supplier webhooks →
+   server, server ↔ database, cron → server. Say who controls each input.
+4. **Enumerate entry points in scope.** For each: route or action, method,
+   authentication, what input it accepts, what it changes.
+5. **Find threats by category** (spoofing, tampering, repudiation, information disclosure,
+   denial of service, elevation of privilege). For each entry point, ask how each
+   category applies. Include this app's known classes:
+   - replayed or forged webhooks, and duplicate delivery;
+   - acting on someone else's booking (missing ownership check);
+   - tampering with price, tier or IDs sent from the browser;
+   - races: double confirm, confirm vs. sweeper expiry, concurrent cancel;
+   - secrets or raw supplier errors in responses, logs or client props;
+   - rate-limit bypass (spoofed forwarding headers, in-memory limits across instances).
+6. **Verify the controls in code.** For each threat, find the control and cite
+   `file:line`. Read enough of the code to know whether it really holds (constant-time
+   comparison, `onConflictDoNothing` dedupe, `db.batch`, ownership checks). Record what
+   you checked and how.
+7. **Rate the gaps.** Severity: critical / high / medium / low, with the reasoning:
+   exploitability now (sandbox only? authentication needed?) and impact (money, guest
+   data, integrity). Every gap gets a concrete failure scenario.
+8. **Propose fixes as tickets.** Owning role, a one-line acceptance criterion, and a
+   label. Don't fix code yourself.
+9. **Write it** from `assets/threat-model-template.md` to `docs/security/<scope>.md`.
+10. **Update the known-gaps table** in `.agents/rules/security.md` for new high or
+    critical gaps, then run the agent sync so every tool gets it.
+
+## Public repository care
+This repository is public. For a gap that is **exploitable today with real impact**,
+record only the category and a ticket reference in the committed document. Send the
+details to the owner through private vulnerability reporting (`SECURITY.md`). Gaps that
+are already documented publicly (the known-gaps table, `docs/production-readiness.md`),
+or that are only reachable in the sandbox, may be described.

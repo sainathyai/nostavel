@@ -118,3 +118,51 @@ test("an absolute env file path through a write tool is blocked end to end", () 
   const payload = { tool_name: "write_file", tool_input: { file_path: "/repo/.env.local", content: "A=1" } };
   blocks(decide(payload, { branch: "feature", repoRoot: "/repo" }));
 });
+
+// --- role boundaries -------------------------------------------------------
+import { checkRoleShell, checkRoleWrite } from "./rules.mjs";
+import { globToRegExp } from "../agents-sync.mjs";
+
+const backend = { name: "backend-engineer", capabilities: ["read", "edit", "shell"], owns: ["src/lib/**", "src/app/actions/**", "src/db/**"] };
+const frontend = { name: "frontend-engineer", capabilities: ["read", "edit", "shell"], owns: ["src/app/**/*.tsx", "src/components/**"] };
+const reviewer = { name: "code-reviewer", capabilities: ["read", "shell"] };
+const roster = [backend, frontend, reviewer];
+
+test("a role may edit what it owns, including co-located tests", () => {
+  allows(checkRoleWrite(backend, ["src/lib/fees.ts", "src/lib/fees.test.ts"], globToRegExp, roster));
+});
+
+test("a role editing another role's files is blocked and told who owns them", () => {
+  const reason = checkRoleWrite(backend, ["src/components/ThemeToggle.tsx"], globToRegExp, roster);
+  blocks(reason);
+  assert.match(reason, /belongs to frontend-engineer/);
+  assert.match(checkRoleWrite(frontend, ["docs/adr/0003-x.md"], globToRegExp, roster), /no role owns it/);
+});
+
+test("writes outside the repository are not a role boundary", () => {
+  allows(checkRoleWrite(backend, [null], globToRegExp, roster));
+});
+
+test("a read-only role can run checks and read history", () => {
+  for (const cmd of ["npm test", "npm run verify", "git diff main...HEAD", "git log --oneline -5", "gh pr view 12", "npm test 2>&1 | tail -5", "ls > /dev/null"]) {
+    allows(checkRoleShell(reviewer, cmd));
+  }
+});
+
+test("a read-only role cannot change files, git state or pull requests", () => {
+  for (const cmd of ["git commit -m fix", "git add -A", "git push", "rm src/lib/fees.ts", "echo x > src/lib/fees.ts",
+    "sed -i s/a/b/ file.ts", "npm install left-pad", "npm run agents:sync", "gh pr comment 12 -b ok", "Set-Content a.txt x"]) {
+    blocks(checkRoleShell(reviewer, cmd));
+  }
+});
+
+test("roles with the edit capability are not limited by the read-only shell rule", () => {
+  allows(checkRoleShell(backend, "git commit -m fix"));
+});
+
+test("the hook applies role boundaries on top of the repository guard", () => {
+  const payload = { tool_name: "Write", tool_input: { file_path: "/repo/src/components/X.tsx", content: "x" } };
+  blocks(decide(payload, { branch: "feature", repoRoot: "/repo", role: backend, roles: roster }));
+  allows(decide(payload, { branch: "feature", repoRoot: "/repo", role: frontend, roles: roster }));
+  allows(decide(payload, { branch: "feature", repoRoot: "/repo" }));
+});

@@ -126,14 +126,27 @@ export function validateSkill(dirName, text, file, errors) {
   checkNeutralText(file, text, errors);
 }
 
-export function validateRole(fileName, text, file, errors, tiers) {
+/**
+ * @param {string[]} [skillNames] skills that exist in .agents/skills (omit to skip the check)
+ */
+export function validateRole(fileName, text, file, errors, tiers, skillNames) {
   const { data } = parseFrontmatter(text);
   if (!data) return errors.push(`${file}: missing frontmatter`);
   for (const k of Object.keys(data)) if (!ROLE_KEYS.has(k)) errors.push(`${file}: unknown role field "${k}"`);
   if (!data.name || !NAME.test(data.name)) errors.push(`${file}: name must be lowercase words joined by hyphens`);
+  if (data.name && !fileName.startsWith("_") && `${data.name}.md` !== fileName) errors.push(`${file}: name "${data.name}" must match the file name`);
   if (!data.description) errors.push(`${file}: description is required`);
   if (!tiers[data.tier]) errors.push(`${file}: tier must be one of ${Object.keys(tiers).join(", ")}`);
+  if (!Array.isArray(data.capabilities) || data.capabilities.length === 0) errors.push(`${file}: capabilities must be a non-empty list`);
   for (const c of data.capabilities ?? []) if (!CAPABILITIES.test(c)) errors.push(`${file}: unknown capability "${c}"`);
+  const canEdit = (data.capabilities ?? []).includes("edit");
+  if (canEdit && (!Array.isArray(data.owns) || data.owns.length === 0)) {
+    errors.push(`${file}: a role with the edit capability must declare owns (the globs it may edit)`);
+  }
+  if (!canEdit && Array.isArray(data.owns) && data.owns.length) errors.push(`${file}: owns is set but the role has no edit capability`);
+  if (skillNames) {
+    for (const s of data.skills ?? []) if (!skillNames.includes(s)) errors.push(`${file}: skill "${s}" does not exist in .agents/skills`);
+  }
   checkNeutralText(file, text, errors);
 }
 
@@ -224,6 +237,7 @@ function claudePermissions(policy) {
 
 function mcpFor(tool, servers) {
   const out = {};
+  // `description` documents the server in the neutral file only; tools don't accept it.
   for (const [name, s] of Object.entries(servers)) {
     if (s.url) out[name] = tool === "claude" ? { type: "http", url: s.url, ...(s.headers && { headers: s.headers }) }
       : { httpUrl: s.url, ...(s.headers && { headers: s.headers }) };
@@ -232,8 +246,91 @@ function mcpFor(tool, servers) {
   return out;
 }
 
-export function buildAdapters({ policy, mcp, skills, rules = [], agentsMd = null }) {
+// Capability -> each tool's tool names. A role never names tools itself.
+export const TOOL_MAP = {
+  claude: {
+    read: ["Read", "Grep", "Glob"],
+    edit: ["Edit", "Write"],
+    shell: ["Bash", "PowerShell"],
+    web: ["WebFetch", "WebSearch"],
+    mcp: (server) => [`mcp__${server}`],
+  },
+  gemini: {
+    read: ["read_file", "read_many_files", "glob", "grep_search", "list_directory"],
+    edit: ["write_file", "replace"],
+    shell: ["run_shell_command"],
+    web: ["web_fetch", "google_web_search"],
+    mcp: (server) => [`mcp_${server}_*`],
+  },
+};
+
+export function toolsFor(tool, capabilities) {
+  const map = TOOL_MAP[tool];
+  return capabilities.flatMap((c) => (c.startsWith("mcp:") ? map.mcp(c.slice(4)) : map[c]));
+}
+
+/** Claude Code subagent. Its own PreToolUse hook passes --role so the guard enforces `owns`. */
+function claudeAgent(role, models, policy) {
+  const { data, body } = role;
+  const q = JSON.stringify;
+  const lines = [
+    "---",
+    `name: ${data.name}`,
+    `description: ${q(data.description)}`,
+    `tools: ${toolsFor("claude", data.capabilities).join(", ")}`,
+    `model: ${models.tiers[data.tier].claude ?? "inherit"}`,
+  ];
+  if (data.skills?.length) lines.push("skills:", ...data.skills.map((s) => `  - ${s}`));
+  lines.push(
+    "hooks:",
+    "  PreToolUse:",
+    `    - matcher: ${q("Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit")}`,
+    "      hooks:",
+    "        - type: command",
+    `          command: ${q(`node "\${CLAUDE_PROJECT_DIR}/${policy.hook}" --role ${data.name}`)}`,
+    "          timeout: 15",
+    "---",
+  );
+  return lines.join("\n") + "\n" + roleBody(role, "claude");
+}
+
+/** Gemini CLI subagent. Subagent files have no hooks, so `owns` is advisory here (see .agents/README.md). */
+function geminiAgent(role, models) {
+  const { data } = role;
+  const configured = models.tiers[data.tier].gemini;
+  // Gemini subagents need an exact model id; tier aliases fall back to the session model.
+  const model = typeof configured === "string" && /^gemini-/.test(configured) ? configured : "inherit";
+  return [
+    "---",
+    `name: ${data.name}`,
+    `description: ${JSON.stringify(data.description)}`,
+    "kind: local",
+    "tools:",
+    ...toolsFor("gemini", data.capabilities).map((t) => `  - ${JSON.stringify(t)}`),
+    `model: ${model}`,
+    "---",
+  ].join("\n") + "\n" + roleBody(role, "gemini");
+}
+
+function roleBody({ data, body }, tool) {
+  const owns = data.owns?.length
+    ? `You may edit only: ${data.owns.map((g) => `\`${g}\``).join(", ")}. Anything else belongs to another role; hand it off through the ticket or pull request.`
+    : "You do not edit files. Report findings and hand off through the ticket or pull request.";
+  const enforcement = tool === "claude" ? " The repository guard enforces this." : "";
+  return `\n<!-- generated by npm run agents:sync from .agents/roles/${data.name}.md; edit the source, not this copy -->\n` +
+    body.replace(/^\n+/, "\n").replace(/\n*$/, "\n") +
+    `\n## Boundaries (generated)\n\n${owns}${enforcement}\n\n` +
+    "Follow `AGENTS.md`, `docs/conventions.md` and the area rules for every file you touch " +
+    "(see the Rules index in `AGENTS.md`). Your full charter is in `docs/team/roles.md`.\n";
+}
+
+export function buildAdapters({ policy, mcp, skills, rules = [], roles = [], models = null, agentsMd = null }) {
   const files = new Map();
+
+  for (const role of roles) {
+    files.set(`.claude/agents/${role.data.name}.md`, claudeAgent(role, models, policy));
+    files.set(`.gemini/agents/${role.data.name}.md`, geminiAgent(role, models));
+  }
 
   // Every tool: the rules index inside AGENTS.md (the only file all tools read).
   if (agentsMd !== null) {
@@ -294,7 +391,7 @@ export function buildAdapters({ policy, mcp, skills, rules = [], agentsMd = null
 }
 
 // Directories the generator owns completely: anything in them it didn't produce is stale.
-export const OWNED_DIRS = [".claude/skills", ".claude/rules"];
+export const OWNED_DIRS = [".claude/skills", ".claude/rules", ".claude/agents", ".gemini/agents"];
 
 // ---------------------------------------------------------------------------
 // Filesystem.
@@ -346,14 +443,29 @@ function loadSources(root, errors) {
     if (!example) rules.push(parseFrontmatter(text));
   }
 
-  // Role adapters arrive with the roles themselves (2.4).
-  const rolesDir = join(agents, "roles");
-  for (const f of existsSync(rolesDir) ? readdirSync(rolesDir).filter((f) => f.endsWith(".md")) : []) {
-    validateRole(f, read(join(rolesDir, f)), `.agents/roles/${f}`, errors, models.tiers);
+  const roles = loadRoles(root, errors, models.tiers, skills.map((s) => s.name));
+  for (const role of roles) {
+    for (const c of role.data.capabilities ?? []) {
+      if (c.startsWith("mcp:") && !mcp.servers[c.slice(4)]) {
+        errors.push(`.agents/roles/${role.data.name}.md: capability "${c}" names a server missing from .agents/mcp.json`);
+      }
+    }
   }
-
   const agentsMd = read(join(root, "AGENTS.md"));
-  return { policy, models, mcp, skills, rules, agentsMd };
+  return { policy, models, mcp, skills, rules, roles, agentsMd };
+}
+
+/** Neutral roles (non-example), validated. Shared with the role-aware guard. */
+export function loadRoles(root, errors = [], tiers = null, skillNames = undefined) {
+  const rolesDir = join(root, ".agents", "roles");
+  const modelTiers = tiers ?? JSON.parse(read(join(root, ".agents", "models.json"))).tiers;
+  const roles = [];
+  for (const f of existsSync(rolesDir) ? readdirSync(rolesDir).filter((f) => f.endsWith(".md")).sort() : []) {
+    const text = read(join(rolesDir, f));
+    validateRole(f, text, `.agents/roles/${f}`, errors, modelTiers, skillNames);
+    if (!f.startsWith("_")) roles.push(parseFrontmatter(text));
+  }
+  return roles;
 }
 
 function main() {

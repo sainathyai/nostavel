@@ -10,8 +10,10 @@
 // guard must not stop all work, and the git pre-commit guard plus CI still
 // enforce the repository rules for anything that slips through.
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
-import { checkRead, checkShell, checkWrite, normalize, toRepoPath } from "./rules.mjs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { globToRegExp, loadRoles } from "../agents-sync.mjs";
+import { checkRead, checkRoleShell, checkRoleWrite, checkShell, checkWrite, normalize, toRepoPath } from "./rules.mjs";
 
 function git(args, cwd) {
   try {
@@ -27,10 +29,19 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export function decide(payload, { branch, repoRoot }) {
+/**
+ * @param {{branch?: string, repoRoot?: string, role?: object, roles?: object[]}} ctx
+ *   role: the neutral role definition when the tool runs as a role (--role)
+ */
+export function decide(payload, { branch, repoRoot, role = null, roles = [] }) {
   const call = normalize(payload);
-  if (call.kind === "shell") return checkShell(call.command, { branch });
-  if (call.kind === "write") return checkWrite(call.paths.map((p) => toRepoPath(p, repoRoot)), call.content);
+  if (call.kind === "shell") {
+    return checkShell(call.command, { branch }) ?? (role ? checkRoleShell(role, call.command) : null);
+  }
+  if (call.kind === "write") {
+    const paths = call.paths.map((p) => toRepoPath(p, repoRoot));
+    return checkWrite(paths, call.content) ?? (role ? checkRoleWrite(role, paths, globToRegExp, roles) : null);
+  }
   if (call.kind === "read") return checkRead(call.paths.map((p) => toRepoPath(p, repoRoot) ?? p.replace(/\\/g, "/")));
   return null;
 }
@@ -43,7 +54,19 @@ async function main() {
     process.exit(0);
   }
   const cwd = typeof payload?.cwd === "string" ? payload.cwd : process.cwd();
+  const roleName = process.argv[process.argv.indexOf("--role") + 1];
+  let role = null;
+  let roles = [];
+  if (process.argv.includes("--role") && roleName) {
+    // Roles are read from this checkout (the script's own repository), not the cwd.
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+    roles = loadRoles(root).map((r) => r.data);
+    role = roles.find((r) => r.name === roleName) ?? null;
+    if (!role) process.stderr.write(`repository guard: unknown role "${roleName}", role boundaries not enforced\n`);
+  }
   const reason = decide(payload, {
+    role,
+    roles,
     // Not `rev-parse --abbrev-ref HEAD`: that fails in a repository with no
     // commits yet, which would silently allow the first commit onto main.
     branch: git(["branch", "--show-current"], cwd),

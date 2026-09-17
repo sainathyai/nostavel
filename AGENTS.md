@@ -49,7 +49,7 @@ into each tool's config. See `.agents/README.md` and
 | `.agents/policy.json` | `.claude/settings.json`, `.gemini/settings.json` |
 | `.agents/mcp.json` | `.mcp.json`, `.gemini/settings.json` |
 | `.agents/rules/<area>.md` | `.claude/rules/`, and the Rules index below |
-| `.agents/roles/`, `.agents/models.json` | per-tool role files, as roles are added |
+| `.agents/roles/<role>.md` (charters: `docs/team/roles.md`) | `.claude/agents/`, `.gemini/agents/` |
 
 After editing a source, run `npm run agents:sync`. CI fails if generated files drift.
 

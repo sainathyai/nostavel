@@ -44,12 +44,12 @@ by responsibilities, artifacts and capabilities, never by a tool or a model.
 | Group | Role | Tier | Capabilities | Built in |
 |---|---|---|---|---|
 | Product | [product-manager](#product-manager) | standard | read, web, mcp:tracker | 2.5 |
-| Product | [ux-designer](#ux-designer) | standard | read, web, mcp:playwright, edit (design docs) | 2.4 |
+| Product | [ux-designer](#ux-designer) | standard | read, web, mcp:playwright, edit (design docs) | ✅ 2.4 |
 | Lead | [tech-lead](#tech-lead) | deep | read, shell, mcp:tracker | 2.5 |
-| Architecture | [software-architect](#software-architect) | deep | read, web, edit (ADRs and design docs) | 2.4 |
-| Architecture | [security-architect](#security-architect) | deep | read, web, shell, edit (threat models, security rule) | 2.4 |
-| Engineering | [frontend-engineer](#frontend-engineer) | standard | read, edit, shell, mcp:playwright | 2.4 |
-| Engineering | [backend-engineer](#backend-engineer) | standard | read, edit, shell | 2.4 |
+| Architecture | [software-architect](#software-architect) | deep | read, web, edit (ADRs) | ✅ 2.4 |
+| Architecture | [security-architect](#security-architect) | deep | read, web, shell, edit (threat models, security rule) | ✅ 2.4 |
+| Engineering | [frontend-engineer](#frontend-engineer) | standard | read, edit, shell, mcp:playwright | ✅ 2.4 |
+| Engineering | [backend-engineer](#backend-engineer) | standard | read, edit, shell | ✅ 2.4 |
 | Engineering | [ai-engineer](#ai-engineer) | standard | read, edit, shell, web | 2.7 |
 | Engineering | [devops-sre](#devops-sre) | standard | read, edit, shell, web | 2.7 |
 | Quality | [qa-engineer](#qa-engineer) | standard | read, edit (tests only), shell | 2.5 |
@@ -152,7 +152,7 @@ that shape it.
 | **Does not own** | Security controls (security-architect), implementation details within a layer (engineers) |
 | **Inputs** | Tickets labelled `needs-design`; pull requests labelled `migration` or adding a dependency; design questions from engineers |
 | **Outputs** | `docs/adr/NNNN-<slug>.md`; review comments on `migration` and dependency pull requests |
-| **Tier / capabilities** | deep; read, web, edit limited to `docs/adr/**` and `docs/**/design*.md` |
+| **Tier / capabilities** | deep; read, web, edit limited to `docs/adr/**` |
 | **Skills** | `write-adr`, `design-review` |
 | **Done when** | The ADR states context, options, the decision and its consequences; the pull request respects layers and additive migrations, or the exception is recorded in an ADR |
 | **Hands off to** | the engineers (the ADR); tech-lead (a changed plan) |
@@ -190,7 +190,7 @@ engineer implements and the security architect reviews. Revisit if the team grow
 
 | | |
 |---|---|
-| **Owns** | `src/app/**/*.tsx`, `src/components/**`, `src/app/globals.css` |
+| **Owns** | `src/app/**/*.tsx`, `src/components/**`, `src/app/globals.css`, `public/**` |
 | **Does not own** | Server logic, database, pricing rules (backend-engineer); design decisions (ux-designer) |
 | **Inputs** | A sub-task; the design brief; the frontend and money-and-claims rules; the failing test from qa-engineer where one applies |
 | **Outputs** | A branch and pull request with verification evidence, plus a URL and exactly what the owner should look at |
@@ -207,7 +207,7 @@ bookings and guest data are involved.
 
 | | |
 |---|---|
-| **Owns** | `src/lib/**`, `src/app/actions/**`, `src/app/api/**`, `src/db/**` (schema and generated migrations) |
+| **Owns** | `src/lib/**`, `src/app/actions/**`, `src/app/api/**`, `src/db/**` (schema and generated migrations), `drizzle.config.ts` |
 | **Does not own** | UI (frontend-engineer), architecture decisions (software-architect), security design (security-architect) |
 | **Inputs** | A sub-task; ADRs; the backend, money-and-claims, database and security rules; the failing test from qa-engineer |
 | **Outputs** | A branch and pull request with verification evidence (the commands run and the actual API or CLI results) |

@@ -1,4 +1,10 @@
 {
-  "$comment": "Neutral MCP server list, generated into each tool's config. stdio: {command, args, env}; remote: {url}. Values use ${VAR} for secrets, never literals. Empty until a role needs a server: Playwright arrives with the designer and UI reviewer (2.4), the Jira tracker with 2.6.",
-  "servers": {}
+  "$comment": "Neutral MCP server list, generated into each tool's config. stdio: {command, args, env}; remote: {url}. Values use ${VAR} for secrets, never literals. Roles reference a server as the capability mcp:<name>. The Jira tracker server arrives with Segment 2.6.",
+  "servers": {
+    "playwright": {
+      "description": "Browser automation for ux-designer (capture current UI) and frontend-engineer / ui-reviewer (check rendered states). Local only; no credentials.",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
 }
