@@ -45,6 +45,11 @@ jobs:
       - name: Agent adapters up to date
         run: npm run agents:check
 
+      # public/ copies of package files (MapLibre worker) must match the installed
+      # version, or the map breaks with no build error. Dependabot bumps don't re-copy.
+      - name: Vendored files match installed packages
+        run: npm run vendored:check
+
       - name: Lint
         run: npm run lint
 
