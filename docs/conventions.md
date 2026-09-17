@@ -121,8 +121,12 @@ broken: the Stripe element that reported `ready` into a zero-height host, the
 basemap whose pinned URL had expired, the map whose worker 404'd silently. A page
 that returns 200 is not a page that works.
 
-Visual and interaction checks are Sainatha's, not Claude's: hand over a URL and
-say what to look for. API and CLI checks are Claude's to run.
+`npm run verify` runs all four, plus the repository guard and the agent-layer
+checks, in one command.
+
+Visual and interaction checks belong to the human owner (Sainatha), not to a coding
+agent: hand over a URL and say what to look for. API and CLI checks are the agent's
+to run.
 
 ## 8. Live data, fixtures, and the ledger
 

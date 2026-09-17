@@ -12,7 +12,7 @@ guardrails, tool servers) is written here **once**, in formats no single provide
 | `../AGENTS.md` | [AGENTS.md](https://agents.md) (Linux Foundation, Agentic AI Foundation) | Codex, Copilot, Cursor; Gemini CLI via generated `context.fileName`; Claude Code via `CLAUDE.md` = `@AGENTS.md` |
 | `skills/<name>/SKILL.md` | [Agent Skills](https://agentskills.io/specification), standard fields only | Codex, Gemini CLI, Copilot, Cursor; Claude Code via the generated `.claude/skills/` copy |
 | `roles/<role>.md` | neutral frontmatter (below) | no tool yet: per-tool files are generated once roles are added |
-| `rules/<area>.md` | `name`, `description`, `globs` + body | no tool yet: per-tool files are generated once rules are added; also indexed in `AGENTS.md` |
+| `rules/<area>.md` | `name` (= file name), `description`, `globs` + body citing `docs/conventions.md` §n | Claude Code via generated `.claude/rules/` (`paths`); every other tool via the generated Rules index in `AGENTS.md` |
 | `policy.json` | denied paths and commands, ask-first and allowed commands | generated into each tool's permissions |
 | `mcp.json` | MCP servers: `{command, args, env}` or `{url}` | generated into each tool's MCP config |
 | `models.json` | tier → model per tool | the **only** place provider models are named |
@@ -53,9 +53,9 @@ Mission, inputs, outputs, done-when, hands-off-to.
 
 | Tool | Status | Generated files |
 |---|---|---|
-| Claude Code | adapter | `.claude/skills/`, `.claude/settings.json` (permissions + guard hook), `.mcp.json` |
+| Claude Code | adapter | `.claude/skills/`, `.claude/rules/`, `.claude/settings.json` (permissions + guard hook), `.mcp.json` |
 | Gemini CLI | adapter | `.gemini/settings.json` (AGENTS.md context, guard hook, MCP servers) |
-| Codex, Copilot, Cursor | read `AGENTS.md` and `.agents/skills` natively | hook, role and MCP adapters added when the tool is adopted |
+| Codex, Copilot, Cursor | read `AGENTS.md` (including the Rules index) and `.agents/skills` natively | hook, rule, role and MCP adapters added when the tool is adopted |
 
 ## Adding a tool
 
