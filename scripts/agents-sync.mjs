@@ -271,7 +271,7 @@ export function toolsFor(tool, capabilities) {
 
 /** Claude Code subagent. Its own PreToolUse hook passes --role so the guard enforces `owns`. */
 function claudeAgent(role, models, policy) {
-  const { data, body } = role;
+  const { data } = role;
   const q = JSON.stringify;
   const lines = [
     "---",
