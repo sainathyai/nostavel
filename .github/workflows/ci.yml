@@ -37,6 +37,14 @@ jobs:
       - name: Repository guard
         run: npm run guard
 
+      # The provider-neutral agent layer (.agents/README.md): guard and generator
+      # tests, then fail if any tool's generated config drifted from its source.
+      - name: Agent layer tests
+        run: npm run test:agents
+
+      - name: Agent adapters up to date
+        run: npm run agents:check
+
       - name: Lint
         run: npm run lint
 

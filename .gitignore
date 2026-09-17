@@ -50,8 +50,12 @@ analysis/pricing-observations.md
 # design source files (the app ships exported assets from public/)
 design-assets/
 
-# local-only agent and editor settings
+# local-only agent and editor settings. Shared agent config is generated from
+# .agents/ and committed (see .agents/README.md).
 .claude/settings.local.json
+.claude/agent-memory-local/
+CLAUDE.local.md
+.gemini/.env
 
 # vercel
 .vercel
