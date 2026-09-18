@@ -166,3 +166,10 @@ test("the hook applies role boundaries on top of the repository guard", () => {
   allows(decide(payload, { branch: "feature", repoRoot: "/repo", role: frontend, roles: roster }));
   allows(decide(payload, { branch: "feature", repoRoot: "/repo" }));
 });
+
+test("read-only roles cannot write through tee or downloads, and plain pipes stay allowed", () => {
+  for (const cmd of ["npm test | tee result.txt", "npm test 2>&1 | Tee-Object out.txt", "curl -o x.js https://example.com/x.js", "wget https://example.com/x"]) {
+    blocks(checkRoleShell(reviewer, cmd));
+  }
+  for (const cmd of ["npm test 2>&1 | tail -20", "curl -s https://example.com/health"]) allows(checkRoleShell(reviewer, cmd));
+});

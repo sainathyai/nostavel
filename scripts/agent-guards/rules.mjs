@@ -173,7 +173,9 @@ export function checkRoleWrite(role, repoPaths, toRegExp, allRoles = []) {
 
 const MUTATING_SHELL = [
   /\bgit\b(?:\s+-[Cc]\s+\S+)*\s+(add|commit|push|reset|restore|rm|mv|merge|rebase|stash|tag|cherry-pick|revert|switch\s+-c|checkout\s+-b|checkout\s+--|apply|am)\b/,
-  /(^|[\s;&|(])(rm|rmdir|mv|cp|mkdir|touch|del|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Content|Add-Content|Out-File)\b/,
+  /(^|[\s;&|(])(rm|rmdir|mv|cp|mkdir|touch|del|tee|dd|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Content|Add-Content|Out-File|Tee-Object)\b/,
+  // Downloads written to disk.
+  /\bcurl\b[^|;&\n]*\s(-o|--output|-O|--remote-name)\b|\bwget\b/,
   /\bsed\s+(-\w*\s+)*-i\b/,
   /\bnpm\s+(install|i|ci|uninstall|update|add)\b|\bnpm\s+run\s+(db:migrate|db:generate|agents:sync|vendored:fix)\b|\bdrizzle-kit\s+(migrate|generate|push)\b/,
   /\bgh\s+(pr|issue)\s+(create|edit|close|comment|review)\b/,
@@ -181,7 +183,11 @@ const MUTATING_SHELL = [
   /(^|[^\d&<>])>{1,2}\s*(?!&|\/dev\/null\b|\$null\b|nul\b)[^\s|;&]/i,
 ];
 
-/** A role without the edit capability may run checks, never change anything. */
+/**
+ * A role without the edit capability may run checks, never change anything.
+ * This is a deny-list, so it is defence in depth, not a sandbox: an interpreter
+ * one-liner can still write a file. Git hooks, CI and review remain the backstop.
+ */
 export function checkRoleShell(role, command) {
   if ((role.capabilities ?? []).includes("edit")) return null;
   const cmd = command ?? "";
