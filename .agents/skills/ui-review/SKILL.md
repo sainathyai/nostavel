@@ -15,9 +15,13 @@ metadata:
 
 1. Read the design brief (`docs/design/NOS-<n>.md`) and the pull request. List every
    state and screen you must reach, and how to trigger each one.
-2. Build and start the app on a free port, and check the port is actually yours before
-   trusting what you see: a stale server from an earlier run can serve an old build.
-3. Stop the server when you finish.
+2. Build and start the app on a free port, in the background, and check the port is
+   actually yours before trusting what you see: a stale server from an earlier run can
+   serve an old build. If you keep a server log, write it to the system temp directory.
+   This role doesn't create or change files in the repository.
+3. Let the browser tool save screenshots where it normally does. Don't create folders
+   for them, and cite each screenshot's path in the report.
+4. Stop the server when you finish.
 
 ## What to check
 
