@@ -45,6 +45,9 @@
       "Bash(gh pr list*)"
     ]
   },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
   "hooks": {
     "PreToolUse": [
       {

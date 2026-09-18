@@ -365,6 +365,10 @@ export function buildAdapters({ policy, mcp, skills, rules = [], roles = [], mod
   }
   files.set(".claude/settings.json", json({
     permissions: claudePermissions(policy),
+    // Project servers are not loaded until approved, which a headless run can't do,
+    // so roles with mcp:<server> silently had no tools (found in the 2.5 live check).
+    // Claude Code still applies this only once the folder is trusted.
+    enabledMcpjsonServers: Object.keys(mcp.servers),
     hooks: {
       PreToolUse: [{
         matcher: "Bash|PowerShell|Read|Write|Edit|MultiEdit|NotebookEdit",

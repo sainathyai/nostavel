@@ -60,6 +60,7 @@ test("generates Claude and Gemini adapters from one policy, with the same guard"
   const claude = JSON.parse(files.get(".claude/settings.json"));
   assert.deepEqual(claude.permissions.deny, ["Read(./.env.local)", "Edit(./.env.local)", "Bash(gh pr merge*)"]);
   assert.match(claude.hooks.PreToolUse[0].hooks[0].command, /scripts\/agent-guards\/hook\.mjs/);
+  assert.deepEqual(claude.enabledMcpjsonServers, ["tracker", "docs"], "neutral servers are pre-approved so roles get their tools");
 
   const gemini = JSON.parse(files.get(".gemini/settings.json"));
   assert.deepEqual(gemini.context.fileName, ["AGENTS.md"]);
