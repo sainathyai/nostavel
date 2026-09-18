@@ -1,0 +1,54 @@
+---
+name: test-first
+description: Turn acceptance criteria into failing tests before the code is written - one per criterion, named for the behaviour, with an injected clock, honest fixtures and both the money-losing and guest-harming directions covered. Use at the start of any ticket with logic in it.
+license: Proprietary. See LICENSE.
+compatibility: Requires Node.js 24+ and npm. Unit tests run with Vitest; script and agent-layer tests with the Node test runner.
+metadata:
+  owner: nostavel
+  role: qa-engineer
+  version: "1"
+---
+
+# Write the failing tests first
+
+A test written after the code tends to assert what the code does. Written first, it
+asserts what was asked for.
+
+## Steps
+
+1. **Read the acceptance criteria** and the tests area rule. If a criterion isn't
+   testable as written, hand it back to product-manager instead of inventing one.
+2. **Find the unit under test.** Pure rules live in `src/lib/<name>.ts` and are tested
+   directly. If the behaviour only exists inside a page, action or route, the rule needs
+   extracting first: that's a sub-task for the engineering role, not a reason to write a
+   slow integration test (conventions §6).
+3. **Read the existing tests for the area** and follow their patterns and naming.
+4. **Write one test per criterion:**
+   - name the behaviour, not the function ("rejects a member price used by a signed-out
+     visitor");
+   - pass `now` explicitly for anything time-dependent;
+   - assert exact values, including at boundaries (the instant of expiry, the rounding
+     edge);
+   - use real figures from `analysis/` measurements; if the real value would be null, the
+     fixture uses null.
+5. **For money or guest-facing changes,** write both directions: the case where we lose
+   money and the case where the guest is harmed or misled.
+6. **For guards and validators,** write the blocked case *and* its allowed look-alike, so
+   the check can't pass by blocking everything.
+7. **Assemble fake credentials at runtime** (for example `"sk-" + "ant-" + "x".repeat(30)`)
+   so the test file doesn't trip the secret guards.
+8. **Run them and watch them fail** (`npm test`, or `npm run test:agents` for script
+   tests). A test that passes before the change proves nothing. Record the failure output.
+9. **Hand off** to the engineering role with a handoff block
+   (`docs/team/workflow.md`), listing which criterion each test covers and what it can't
+   cover yet.
+
+## Test plan for risky changes
+For anything labelled `money`, `security` or `migration`, also write a short plan: what is
+covered automatically, what must be checked by hand and by whom, and what can only be
+proved after deployment.
+
+## Quality bar
+- Every criterion maps to a named test.
+- Each test failed first, for the right reason.
+- No test asserts an implementation detail that a refactor would break.
