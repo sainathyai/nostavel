@@ -123,3 +123,51 @@ test("refuses to guess where the index goes when AGENTS.md lost its markers", ()
   const policy = { hook: "h.mjs", deny: { read: [], write: [], shell: [] }, ask: { shell: [] }, allow: { shell: [] } };
   assert.throws(() => buildAdapters({ policy, mcp: { servers: {} }, skills: [], rules: [], agentsMd: "# no markers\n" }), /markers/);
 });
+
+// --- roles -----------------------------------------------------------------
+import { toolsFor } from "./agents-sync.mjs";
+
+const tiers = { deep: { claude: "opus", gemini: "pro" }, standard: { claude: "sonnet", gemini: "gemini-9-pro-exact" }, fast: {} };
+const roleText = (fm) => `---\n${fm}\n---\n\n## Mission\nDo the work.\n`;
+
+test("a role must declare what it may edit when it can edit, and only then", () => {
+  const errors = [];
+  validateRole("a.md", roleText("name: a\ndescription: d\ntier: standard\ncapabilities: [read, edit]"), "a.md", errors, tiers);
+  validateRole("b.md", roleText("name: b\ndescription: d\ntier: standard\ncapabilities: [read]\nowns:\n  - \"src/**\""), "b.md", errors, tiers);
+  assert.ok(errors.some((e) => e.startsWith("a.md") && e.includes("must declare owns")));
+  assert.ok(errors.some((e) => e.startsWith("b.md") && e.includes("no edit capability")));
+});
+
+test("a role may only reference skills that exist", () => {
+  const errors = [];
+  validateRole("a.md", roleText("name: a\ndescription: d\ntier: fast\ncapabilities: [read]\nskills: [verify-change, telepathy]"), "a.md", errors, tiers, ["verify-change"]);
+  assert.deepEqual(errors, ['a.md: skill "telepathy" does not exist in .agents/skills']);
+});
+
+test("capabilities map to each tool's own tool names", () => {
+  assert.deepEqual(toolsFor("claude", ["read", "shell", "mcp:playwright"]), ["Read", "Grep", "Glob", "Bash", "PowerShell", "mcp__playwright"]);
+  assert.deepEqual(toolsFor("gemini", ["edit", "mcp:playwright"]), ["write_file", "replace", "mcp_playwright_*"]);
+});
+
+test("generates Claude and Gemini subagents with tier models and a role-scoped guard", () => {
+  const policy = { hook: "scripts/agent-guards/hook.mjs", deny: { read: [], write: [], shell: [] }, ask: { shell: [] }, allow: { shell: [] } };
+  const role = parseFrontmatter(roleText('name: backend-engineer\ndescription: "Server work: rules, stores."\ntier: deep\ncapabilities: [read, edit, shell]\nskills: [verify-change]\nowns:\n  - "src/lib/**"'));
+  const files = buildAdapters({ policy, mcp: { servers: {} }, skills: [], roles: [role], models: { tiers } });
+
+  const claude = files.get(".claude/agents/backend-engineer.md");
+  const c = parseFrontmatter(claude.replace(/\nhooks:[\s\S]*?\n---/, "\n---")).data;
+  assert.equal(c.model, "opus");
+  assert.equal(c.tools, "Read, Grep, Glob, Edit, Write, Bash, PowerShell");
+  assert.deepEqual(c.skills, ["verify-change"]);
+  assert.match(claude, /hook\.mjs\\" --role backend-engineer"/, "the per-agent hook passes the role");
+  assert.match(claude, /You may edit only: `src\/lib\/\*\*`/);
+
+  const gemini = parseFrontmatter(files.get(".gemini/agents/backend-engineer.md")).data;
+  assert.equal(gemini.model, "inherit", "tier aliases are not exact Gemini model ids");
+  assert.equal(gemini.kind, "local");
+  assert.ok(gemini.tools.includes("run_shell_command"));
+
+  const std = parseFrontmatter(roleText("name: x\ndescription: d\ntier: standard\ncapabilities: [read]"));
+  assert.equal(parseFrontmatter(buildAdapters({ policy, mcp: { servers: {} }, skills: [], roles: [std], models: { tiers } }).get(".gemini/agents/x.md")).data.model,
+    "gemini-9-pro-exact", "an exact model id in models.json is used as is");
+});

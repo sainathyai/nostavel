@@ -11,7 +11,7 @@ guardrails, tool servers) is written here **once**, in formats no single provide
 |---|---|---|
 | `../AGENTS.md` | [AGENTS.md](https://agents.md) (Linux Foundation, Agentic AI Foundation) | Codex, Copilot, Cursor; Gemini CLI via generated `context.fileName`; Claude Code via `CLAUDE.md` = `@AGENTS.md` |
 | `skills/<name>/SKILL.md` | [Agent Skills](https://agentskills.io/specification), standard fields only | Codex, Gemini CLI, Copilot, Cursor; Claude Code via the generated `.claude/skills/` copy |
-| `roles/<role>.md` | neutral frontmatter (below) | no tool yet: per-tool files are generated once roles are added |
+| `roles/<role>.md` | neutral frontmatter (below) | Claude Code via generated `.claude/agents/`; Gemini CLI via generated `.gemini/agents/` |
 | `rules/<area>.md` | `name` (= file name), `description`, `globs` + body citing `docs/conventions.md` §n | Claude Code via generated `.claude/rules/` (`paths`); every other tool via the generated Rules index in `AGENTS.md` |
 | `policy.json` | denied paths and commands, ask-first and allowed commands | generated into each tool's permissions |
 | `mcp.json` | MCP servers: `{command, args, env}` or `{url}` | generated into each tool's MCP config |
@@ -53,9 +53,24 @@ Mission, inputs, outputs, done-when, hands-off-to.
 
 | Tool | Status | Generated files |
 |---|---|---|
-| Claude Code | adapter | `.claude/skills/`, `.claude/rules/`, `.claude/settings.json` (permissions + guard hook), `.mcp.json` |
-| Gemini CLI | adapter | `.gemini/settings.json` (AGENTS.md context, guard hook, MCP servers) |
+| Claude Code | adapter | `.claude/skills/`, `.claude/rules/`, `.claude/agents/` (subagents with a role-scoped guard hook), `.claude/settings.json` (permissions + guard hook), `.mcp.json` |
+| Gemini CLI | adapter | `.gemini/settings.json` (AGENTS.md context, guard hook, MCP servers), `.gemini/agents/` (subagents) |
 | Codex, Copilot, Cursor | read `AGENTS.md` (including the Rules index) and `.agents/skills` natively | hook, rule, role and MCP adapters added when the tool is adopted |
+
+## Roles in each tool
+
+A role is a neutral definition (`roles/<role>.md`) that the generator turns into each tool's subagent. Charters: `docs/team/roles.md`.
+
+| | Claude Code | Gemini CLI |
+|---|---|---|
+| Run a role | ask for the role by name ("use the backend-engineer subagent to…"), or `claude --agent backend-engineer` | `@backend-engineer …`, or let the main agent delegate |
+| Tools | capabilities mapped to Claude tool names | capabilities mapped to Gemini tool names |
+| Model | tier → alias from `models.json` | `inherit`, unless `models.json` gives an exact Gemini model id |
+| Skills | preloaded from the role's `skills` | discovered from `.agents/skills` |
+| `owns` (edit boundary) | **enforced**: the subagent's own hook calls the guard with `--role` | **advisory only**: Gemini subagent files have no hooks. The session guard, git hooks and CI still apply |
+| Read-only roles (no `edit`) | mutating shell commands blocked by the role guard | advisory only |
+
+Capability → tool mapping lives in `TOOL_MAP` in `scripts/agents-sync.mjs`. A role never names tools itself.
 
 ## Adding a tool
 

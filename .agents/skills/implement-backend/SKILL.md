@@ -1,0 +1,77 @@
+---
+name: implement-backend
+description: Implement a server-side change in this codebase - pure domain rules with tests, stores, services, server actions, API routes and additive Drizzle migrations - with correct money handling and an injected clock, then prove the behaviour by exercising it. Use for any change to src/lib, src/app/actions, src/app/api or src/db.
+license: Proprietary. See LICENSE.
+compatibility: Requires Node.js 24+, npm and git. Exercising supplier-backed behaviour needs the sandbox credentials in the local environment file (never read or printed by the agent).
+metadata:
+  owner: nostavel
+  role: backend-engineer
+  version: "1"
+---
+
+# Implement a backend change
+
+## Before writing code
+1. **Read the inputs:** the ticket's acceptance criteria and any linked ADR
+   (`docs/adr/`) or threat model (`docs/security/`).
+2. **Read the area rules for every file you will touch:** backend, plus
+   money-and-claims, database and security where they apply (Rules index in
+   `AGENTS.md`).
+3. **Read the existing code first.** `docs/production-readiness.md` §0 lists tables and
+   supplier endpoints that already exist unused. Reuse before adding.
+4. **Branch:** `git switch -c NOS-<n>-short-slug` from an up-to-date `main`.
+
+## Put each piece in the right layer (conventions §1)
+
+| What you're writing | Where | May import |
+|---|---|---|
+| A decision, calculation or validation | `src/lib/<name>.ts` (pure) | nothing |
+| Database reads and writes | `src/lib/<name>-store.ts` | `db`, the rule file |
+| Coordinating supplier, stores and rules | `src/lib/<name>-service.ts` | supplier client, stores, rules |
+| The entry point | `src/app/actions/*` or `src/app/api/**/route.ts` | anything above |
+
+If a test needs a database to import your rule, the rule is in the wrong file.
+
+## Building
+- **Tests first.** Start from qa-engineer's failing tests if they exist. Otherwise write
+  the rule's tests before the rule. Name behaviours, inject `now`, and test both the
+  money-losing and the guest-harming direction for money logic (conventions §6).
+- **Server boundary.** Anything holding a secret, a supplier response or net pricing
+  gets `import "server-only"` (§2).
+- **Money.** Integer minor units plus currency; convert supplier floats once, at the
+  edge; never compare across bases; round in the guest's favour (§3).
+- **Entry points.**
+  - Decide authorization first: the member owns the booking, or a signed guest token
+    proves access.
+  - Validate input, rate-limit, and return `{ ok: true, data } | { ok: false, error }`
+    with a message safe to show a guest.
+  - Log the detail on the server.
+- **Atomic writes.** Rows that must change together (for example a status and its
+  `booking_events` entry) go in one `db.batch`. Never update or delete ledger rows (§8).
+- **Schema.**
+  - Edit `src/db/schema.ts`, run `npm run db:generate`, and commit the migration.
+  - Additive only: new columns are nullable or have a default. Never `db:push`.
+  - Label the pull request `migration`.
+- **Constants.** A non-obvious constant gets a comment naming what was measured, when,
+  and the `analysis/` script (§5).
+- **Supplier.** All LiteAPI calls go through `src/lib/liteapi.ts`, with the sandbox key
+  only.
+
+## Verify
+1. Run the `verify-change` skill (`npm run verify`). Fix the first real failure. Never
+   weaken a guard, test or type.
+2. **Exercise the behaviour** (§7): call the route or action against a locally running
+   build, or run the service through a small script, and capture the actual output.
+   A build that compiles is not evidence that the behaviour works.
+3. For concurrency or idempotency changes, exercise the race or the retry, not just the
+   happy path.
+
+## Hand off
+Open a pull request with:
+- **What and why,** linked to NOS-<n>.
+- **How verified:** the commands and the actual outputs from exercising it.
+- **Migration notes,** if any (additive, backfill plan).
+- **Labels:** `money`, `security`, `migration` as they apply.
+
+Request review from code-reviewer, security-architect (`security`/`money`) and
+software-architect (`migration`).

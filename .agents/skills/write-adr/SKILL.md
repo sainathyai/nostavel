@@ -1,0 +1,43 @@
+---
+name: write-adr
+description: Write an Architecture Decision Record for a decision that shapes the system (layers, data model, migrations strategy, dependencies, cross-cutting design, team or tooling structure). Compares real options including doing nothing, states consequences and costs, and saves docs/adr/NNNN-<slug>.md with the next number.
+license: Proprietary. See LICENSE.
+compatibility: Works in any agent that can read files and write Markdown.
+metadata:
+  owner: nostavel
+  role: software-architect
+  version: "1"
+---
+
+# Write an ADR
+
+An ADR records *why*, so a future reader, human or agent, can change the decision
+safely. Write one when a choice is hard to reverse, affects more than one layer or role,
+adds a dependency, or would surprise someone reading the code later.
+
+## Steps
+
+1. **Check it isn't already decided.** Read the existing ADRs in `docs/adr/`. If one
+   covers this, update its status ("superseded by NNNN") instead of contradicting it
+   silently.
+2. **Number it.** List `docs/adr/`, take the highest four-digit number and add one.
+   The file name is `NNNN-<short-kebab-slug>.md`.
+3. **Gather evidence, not opinions.** Read the code involved, `docs/conventions.md`,
+   `docs/production-readiness.md`, and any `analysis/` measurements. When the decision
+   depends on a number (latency, cost, limits), measure it or cite where it was measured
+   (conventions §5). Check current library and vendor docs rather than relying on memory.
+4. **List the real options.**
+   - Always include "do nothing / keep the current approach".
+   - For each option, give what it costs (money, complexity, lock-in, migration) and what
+     it risks.
+5. **Decide, and say what you give up.** The consequences section includes the negatives.
+6. **Separate what needs the owner.** If the decision is hard to reverse, costs money,
+   or changes what guests see, set the status to **proposed**. Then put a decision brief
+   (ID, options, recommendation, default) in the ticket or pull request. The owner
+   accepts it.
+7. **Write it** from `assets/adr-template.md`, and link it from the ticket.
+
+## Quality bar
+- Someone new can tell what was decided, why, and when to revisit it, without asking.
+- Every claim about behaviour, cost or limits has a source or a measurement.
+- It is short. Detail that isn't needed for the decision goes in a linked doc.
