@@ -166,3 +166,25 @@ test("the hook applies role boundaries on top of the repository guard", () => {
   allows(decide(payload, { branch: "feature", repoRoot: "/repo", role: frontend, roles: roster }));
   allows(decide(payload, { branch: "feature", repoRoot: "/repo" }));
 });
+
+test("read-only roles cannot write through tee or downloads, and plain pipes stay allowed", () => {
+  for (const cmd of ["npm test | tee result.txt", "npm test 2>&1 | Tee-Object out.txt", "curl -o x.js https://example.com/x.js", "wget https://example.com/x"]) {
+    blocks(checkRoleShell(reviewer, cmd));
+  }
+  for (const cmd of ["npm test 2>&1 | tail -20", "curl -s https://example.com/health"]) allows(checkRoleShell(reviewer, cmd));
+});
+
+test("a read-only role can run and probe the app, logging only to the temp directory", () => {
+  const ui = { name: "ui-reviewer", capabilities: ["read", "shell", "mcp:playwright"] };
+  for (const cmd of [
+    "npx next start -p 3107 &",
+    "npx next start -p 3107 > /tmp/next.log 2>&1 &",
+    'npx next start -p 3107 > "$TEMP/next.log" 2>&1 &',
+    'curl -s -o /dev/null -w "%{http_code}" http://localhost:3107/',
+    "netstat -ano | grep 3107",
+    "kill 1234",
+  ]) allows(checkRoleShell(ui, cmd));
+  for (const cmd of ["npx next start -p 3107 > server.log 2>&1 &", "mkdir -p .review", "curl -o page.html http://localhost:3107/"]) {
+    blocks(checkRoleShell(ui, cmd));
+  }
+});
