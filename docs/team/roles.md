@@ -50,8 +50,8 @@ by responsibilities, artifacts and capabilities, never by a tool or a model.
 | Architecture | [security-architect](#security-architect) | deep | read, web, shell, edit (threat models, security rule) | ✅ 2.4 |
 | Engineering | [frontend-engineer](#frontend-engineer) | standard | read, edit, shell, mcp:playwright | ✅ 2.4 |
 | Engineering | [backend-engineer](#backend-engineer) | standard | read, edit, shell | ✅ 2.4 |
-| Engineering | [ai-engineer](#ai-engineer) | standard | read, edit, shell, web | 2.7 |
-| Engineering | [devops-sre](#devops-sre) | standard | read, edit, shell, web | 2.7 |
+| Engineering | [ai-engineer](#ai-engineer) | standard | read, edit, shell, web | ✅ 2.7 |
+| Engineering | [devops-sre](#devops-sre) | standard | read, edit, shell, web | ✅ 2.7 |
 | Quality | [qa-engineer](#qa-engineer) | standard | read, edit (tests only), shell | ✅ 2.5 |
 | Quality | [code-reviewer](#code-reviewer) | standard | read, shell | ✅ 2.5 |
 | Quality | [ui-reviewer](#ui-reviewer) | standard | read, shell (build and run the app), mcp:playwright | ✅ 2.5 |
@@ -229,7 +229,7 @@ decide; models interpret and explain.
 | **Inputs** | Tickets for AI features; eval results; production traces (Segment 8) |
 | **Outputs** | Pull requests with eval results before and after; bake-off reports in `docs/ai/`; model choices recorded as ADRs |
 | **Tier / capabilities** | standard; read, edit, shell, web |
-| **Skills** | `change-prompt`, `run-evals`, `model-bakeoff` |
+| **Skills** | `prompt-change`, `verify-change`. Evaluation harness and model bake-off skills arrive with the AI work in Segments 5–8 |
 | **Done when** | The change is measured against the golden set with no regression; cost per request is stated; the model's output is validated before it is used |
 | **Hands off to** | code-reviewer; security-architect (anything sending user or guest data to a model provider) |
 | **Escalates when** | Spend would exceed the AI budget, a model must receive personal data, or evals can't separate the options |
@@ -246,7 +246,7 @@ the team's own tooling healthy.
 | **Inputs** | Merged changes; CI failures; dependency and security alerts; incidents |
 | **Outputs** | Pull requests to CI, infra and the agent layer; release notes; runbooks; incident reports |
 | **Tier / capabilities** | standard; read, edit (owned paths), shell, web |
-| **Skills** | `ship-release`, `upgrade-dependencies`, `write-runbook`, `maintain-agent-layer` |
+| **Skills** | `ci-change`, `write-runbook`, `verify-change`. Release and dependency-upgrade skills arrive with the deployment work in Segment 6 |
 | **Done when** | CI is green and required; a release is reproducible and can be rolled back; a dependency bump is verified by running the app, not just by CI (see the 2026-09-17 MapLibre worker incident) |
 | **Hands off to** | code-reviewer; security-architect (CI permissions, secrets handling, guard changes) |
 | **Escalates when** | A change needs a secret, a repository setting, a paid service, or production access |
