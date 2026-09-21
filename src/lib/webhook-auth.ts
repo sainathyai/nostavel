@@ -8,6 +8,7 @@
 // bytes match, turning forgery from "guess a 32-byte secret" into "guess it
 // one byte at a time." Pulled out of quote-token.ts's identical pattern
 // rather than duplicated inline.
+import "server-only";
 import { timingSafeEqual } from "node:crypto";
 
 export function verifySharedSecret(
