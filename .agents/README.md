@@ -72,17 +72,23 @@ A role is a neutral definition (`roles/<role>.md`) that the generator turns into
 
 Capability → tool mapping lives in `TOOL_MAP` in `scripts/agents-sync.mjs`. A role never names tools itself.
 
-## Known limits (verified 2026-09-17)
+## Tool servers
 
-- **Tool servers in headless Claude Code on this Windows machine.** The standalone CLI
-  (2.1.96) exposed no MCP tools in `-p` runs, even with the server pre-approved
-  (`enabledMcpjsonServers`), passed with `--mcp-config`, or wrapped in `cmd /c npx`, while
-  `claude mcp list` reported it connected. Roles that need the browser (`ui-reviewer`,
-  `ux-designer`, `frontend-engineer`) therefore run in an interactive session for now.
-  Re-check after a CLI update.
+| Server | Used by | Notes |
+|---|---|---|
+| `playwright` | ux-designer, frontend-engineer, ui-reviewer | Local browser; no credentials |
+| `tracker` | product-manager, tech-lead | Our own server, [tools/tracker-mcp](../tools/tracker-mcp/README.md). Vendor-neutral tool names, no delete, one project only. Reads its credentials from `.env.local` itself, so no secret passes through any agent's environment |
+
+A server that needs credentials reads them itself. Never put a secret, or a `${VAR}` that
+expands to one, into `.agents/mcp.json`: that file is generated into every tool's config.
+
+## Known limits (verified 2026-09-21)
+
 - **Gemini CLI subagents** have no per-agent hooks, so `owns` is advisory there (see above).
 - **The read-only shell rule is a deny-list:** defence in depth, not a sandbox. Git hooks,
   CI and review remain the backstop.
+
+**Fixed since:** headless Claude Code exposed no tool servers in CLI 2.1.96; 2.1.276 does.
 
 ## Adding a tool
 

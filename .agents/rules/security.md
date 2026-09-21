@@ -39,16 +39,16 @@ Source of truth: `docs/conventions.md` §2 and `SECURITY.md`. The repository is 
 - Any change to headers, the CSP, auth configuration or cookie settings is flagged "security" in the pull request for security review.
 
 ## Known gaps: do not copy these patterns
-These exist in the code today. Tickets will track the fixes. Don't treat them as precedent, and don't extend them.
+These exist in the code today, each with a ticket. Don't treat them as precedent, and don't extend them.
 
-| Gap | Where |
-|---|---|
-| No ownership check on save-guest and confirm | `saveGuestAction`, `confirmBookingAction` in `src/app/actions/booking.ts` |
-| Rate limit is in-memory and keyed on `x-forwarded-for`, which a client can spoof | `src/lib/rate-limit.ts` |
-| Raw supplier error messages returned to users | actions and `src/app/api/stays-in-area` |
-| One secret (`AUTH_SECRET`) signs sessions, quote tokens and guest cookies | `src/auth.ts`, `quote-token.ts`, `guest-verify.ts` |
-| Booking snapshots not schema-validated | `src/lib/booking-service.ts` |
-| CSP is report-only; no HSTS header | `next.config.ts` |
+| Gap | Where | Ticket |
+|---|---|---|
+| No ownership check on save-guest and confirm | `saveGuestAction`, `confirmBookingAction` in `src/app/actions/booking.ts` | NOS-9 |
+| Rate limit is in-memory and keyed on `x-forwarded-for`, which a client can spoof | `src/lib/rate-limit.ts` | NOS-10 |
+| Raw supplier error messages returned to users | actions and `src/app/api/stays-in-area` | NOS-11 |
+| One secret (`AUTH_SECRET`) signs sessions, quote tokens and guest cookies | `src/auth.ts`, `quote-token.ts`, `guest-verify.ts` | — |
+| Booking snapshots not schema-validated | `src/lib/booking-service.ts` | — |
+| CSP is report-only; no HSTS header | `next.config.ts` | — |
 
 The full list of pre-production gaps is in `docs/production-readiness.md` §4.
 

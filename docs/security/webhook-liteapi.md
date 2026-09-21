@@ -79,6 +79,9 @@ is the HTTP request (headers and body). The `authorization` header is the sole g
 
 ## Gaps
 
+Filed as tickets on 2026-09-21: G1 → NOS-7, G2 → NOS-13, G3 → NOS-14, G4 → NOS-15,
+G5 → NOS-16, G6 → NOS-8. The ticket, not this table, is where the fix is tracked.
+
 | # | Severity | Gap | Failure scenario | Proposed ticket (owner role, acceptance criterion) |
 |---|---|---|---|---|
 | G6 | Medium | Refund events cancel the booking (`route.ts:78-85`, `booking-service.ts:670-687`) | LiteAPI sends `booking.refund` for a partial refund on a stay that still goes ahead. Our ledger marks the booking cancelled, the guest's trip page shows it cancelled, and the audit event is recorded as a cancel. The guest may abandon a valid stay, and reconciliation against payouts is wrong. | backend-engineer: dispatch `booking.refund` to its own handler that records the refund and an event, and changes status only if the supplier status says cancelled. Label: `money`. |

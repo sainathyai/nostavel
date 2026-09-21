@@ -11,6 +11,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // tools/tracker-mcp is run directly by Node 24, which strips types and so
+    // needs the real file name in an import (./jira.ts). Safe here: noEmit.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [

@@ -2,7 +2,7 @@
 name: break-down-work
 description: "Turn a Ready ticket into an ordered list of sub-tasks, each with one owning role, a done-when and its blockers, plus the labels the change will carry and the review gates that follow. Use before implementation starts, and to re-plan when work is blocked."
 license: Proprietary. See LICENSE.
-compatibility: Works in any agent that can read files and run read-only status commands.
+compatibility: "Works in any agent that can read files and run read-only status commands. Recording the breakdown as child issues needs the tracker tool server; without it, put the same breakdown in the pull request body."
 metadata:
   owner: nostavel
   role: tech-lead
@@ -15,8 +15,9 @@ metadata:
 
 ## Steps
 
-1. **Check the ticket is Ready** (`docs/team/workflow.md`). If it isn't, say exactly what
-   is missing and hand it back to product-manager rather than guessing.
+1. **Read the ticket** (`tracker_get`) and **check it is Ready** (`docs/team/workflow.md`).
+   If it isn't, say exactly what is missing, `tracker_comment` it, and hand it back to
+   product-manager rather than guessing.
 2. **Read the code the change will touch,** and the area rules for those paths. The
    breakdown must match how this codebase is actually layered (conventions §1), not a
    generic plan.
@@ -33,9 +34,12 @@ metadata:
    the engineering role starts.
 7. **Set labels and gates.** Choose the labels the change will carry, and list the reviews
    they trigger (review gates table in `docs/team/roles.md`).
-8. **Write the breakdown** on the ticket or pull request using the format below, then
-   delegate the first sub-task, recording a handoff block
-   (`docs/team/workflow.md`).
+8. **Record the breakdown.** `tracker_comment` the format below on the ticket, then
+   `tracker_create` one `Subtask` per step with `parent` set to the ticket, each titled
+   for its role and carrying the labels that apply.
+9. **Start the first one:** move the ticket to `In Progress` (`tracker_transition`),
+   delegate that sub-task to its role, and record a handoff block
+   (`docs/team/workflow.md`) as a comment on the sub-task.
 
 ## Breakdown format
 

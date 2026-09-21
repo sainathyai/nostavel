@@ -66,7 +66,7 @@ Before editing a file, read every rule whose globs match its path.
 
 | Area | Globs | Rule |
 |---|---|---|
-| agent-layer | `.agents/**`<br>`scripts/agent-guards/**`<br>`scripts/agents-sync.mjs`<br>`.claude/**`<br>`.gemini/**`<br>`.mcp.json` | [`.agents/rules/agent-layer.md`](.agents/rules/agent-layer.md) |
+| agent-layer | `.agents/**`<br>`scripts/agent-guards/**`<br>`scripts/agents-sync.mjs`<br>`tools/tracker-mcp/**`<br>`.claude/**`<br>`.gemini/**`<br>`.mcp.json` | [`.agents/rules/agent-layer.md`](.agents/rules/agent-layer.md) |
 | analysis | `analysis/**` | [`.agents/rules/analysis.md`](.agents/rules/analysis.md) |
 | backend | `src/lib/**`<br>`src/app/actions/**`<br>`src/app/api/**` | [`.agents/rules/backend.md`](.agents/rules/backend.md) |
 | database | `src/db/**`<br>`drizzle.config.ts` | [`.agents/rules/database.md`](.agents/rules/database.md) |
