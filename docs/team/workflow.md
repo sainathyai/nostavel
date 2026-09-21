@@ -41,6 +41,33 @@ whole chain.
 | Change record | pull request description | the authoring role |
 | Status and handoffs | tracker comments (pull request comments until the tracker exists) | every role |
 
+## How the roles run together
+
+**Lead-driven delegation** ([ADR 0003](../adr/0003-agent-orchestration.md)):
+- The tech-lead role runs in the main session. It breaks the ticket down
+  (`break-down-work`), then delegates one sub-task at a time to the owning role, running
+  that role as a subagent in whatever tool is in use.
+- Each role does its sub-task within its boundaries, and finishes with a **handoff block**.
+- The tech lead reads the block and delegates the next sub-task, or stops with a decision
+  brief for the owner.
+- Reviews run the same way: the reviewer roles are delegated to after the pull request
+  exists.
+- Nothing depends on one tool's conversation state. The state of the work is in the
+  artifacts, so another tool, another model or the owner can pick it up at any handoff.
+
+### Handoff block
+
+Every role ends its turn by appending this to the pull request or ticket:
+
+```
+Handoff: <from-role> -> <to-role | owner>
+Ticket: NOS-<n>
+Done: <what this role finished, with artifact links>
+Evidence: <commands run and results, or "docs only">
+Next: <the next sub-task, or the review requested>
+Blocked: <none | what, and the decision brief ID>
+```
+
 ## Human checkpoints
 - **Decision briefs:** an ID, 2–3 options, a recommendation and the default if unanswered.
   Only truly blocking questions wait for an answer.
@@ -51,6 +78,5 @@ whole chain.
 
 ## To be completed in 2.7
 - Tracker workflow states and automation.
-- How the tech lead drives the other roles (decided in 2.5).
 - Pull request template and CODEOWNERS.
 - A worked example: bug 6 (the AI prompt's date is fixed at server start) run end to end.

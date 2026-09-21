@@ -54,10 +54,13 @@ async function main() {
     process.exit(0);
   }
   const cwd = typeof payload?.cwd === "string" ? payload.cwd : process.cwd();
-  const roleName = process.argv[process.argv.indexOf("--role") + 1];
+  const roleFlag = process.argv.indexOf("--role");
+  const roleName = roleFlag === -1 ? undefined : process.argv[roleFlag + 1];
   let role = null;
   let roles = [];
-  if (process.argv.includes("--role") && roleName) {
+  if (roleFlag !== -1 && (!roleName || roleName.startsWith("-"))) {
+    process.stderr.write("repository guard: --role given without a role name, role boundaries not enforced\n");
+  } else if (roleName) {
     // Roles are read from this checkout (the script's own repository), not the cwd.
     const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
     roles = loadRoles(root).map((r) => r.data);

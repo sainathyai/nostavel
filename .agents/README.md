@@ -72,6 +72,18 @@ A role is a neutral definition (`roles/<role>.md`) that the generator turns into
 
 Capability → tool mapping lives in `TOOL_MAP` in `scripts/agents-sync.mjs`. A role never names tools itself.
 
+## Known limits (verified 2026-09-17)
+
+- **Tool servers in headless Claude Code on this Windows machine.** The standalone CLI
+  (2.1.96) exposed no MCP tools in `-p` runs, even with the server pre-approved
+  (`enabledMcpjsonServers`), passed with `--mcp-config`, or wrapped in `cmd /c npx`, while
+  `claude mcp list` reported it connected. Roles that need the browser (`ui-reviewer`,
+  `ux-designer`, `frontend-engineer`) therefore run in an interactive session for now.
+  Re-check after a CLI update.
+- **Gemini CLI subagents** have no per-agent hooks, so `owns` is advisory there (see above).
+- **The read-only shell rule is a deny-list:** defence in depth, not a sandbox. Git hooks,
+  CI and review remain the backstop.
+
 ## Adding a tool
 
 1. Add an adapter to `buildAdapters()` in `scripts/agents-sync.mjs`: its settings, a hook

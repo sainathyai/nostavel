@@ -43,21 +43,21 @@ by responsibilities, artifacts and capabilities, never by a tool or a model.
 
 | Group | Role | Tier | Capabilities | Built in |
 |---|---|---|---|---|
-| Product | [product-manager](#product-manager) | standard | read, web, mcp:tracker | 2.5 |
+| Product | [product-manager](#product-manager) | standard | read, web, edit (PRDs); mcp:tracker in 2.6 | ✅ 2.5 |
 | Product | [ux-designer](#ux-designer) | standard | read, web, mcp:playwright, edit (design docs) | ✅ 2.4 |
-| Lead | [tech-lead](#tech-lead) | deep | read, shell, mcp:tracker | 2.5 |
+| Lead | [tech-lead](#tech-lead) | deep | read, shell; mcp:tracker in 2.6 | ✅ 2.5 |
 | Architecture | [software-architect](#software-architect) | deep | read, web, edit (ADRs) | ✅ 2.4 |
 | Architecture | [security-architect](#security-architect) | deep | read, web, shell, edit (threat models, security rule) | ✅ 2.4 |
 | Engineering | [frontend-engineer](#frontend-engineer) | standard | read, edit, shell, mcp:playwright | ✅ 2.4 |
 | Engineering | [backend-engineer](#backend-engineer) | standard | read, edit, shell | ✅ 2.4 |
 | Engineering | [ai-engineer](#ai-engineer) | standard | read, edit, shell, web | 2.7 |
 | Engineering | [devops-sre](#devops-sre) | standard | read, edit, shell, web | 2.7 |
-| Quality | [qa-engineer](#qa-engineer) | standard | read, edit (tests only), shell | 2.5 |
-| Quality | [code-reviewer](#code-reviewer) | standard | read, shell | 2.5 |
-| Quality | [ui-reviewer](#ui-reviewer) | standard | read, mcp:playwright | 2.5 |
+| Quality | [qa-engineer](#qa-engineer) | standard | read, edit (tests only), shell | ✅ 2.5 |
+| Quality | [code-reviewer](#code-reviewer) | standard | read, shell | ✅ 2.5 |
+| Quality | [ui-reviewer](#ui-reviewer) | standard | read, shell (build and run the app), mcp:playwright | ✅ 2.5 |
 
-Shell access for reviewers and the security architect is for running checks and reading
-history (tests, `git diff`, `git log`), not for changing anything. Their charters say so,
+Shell access for reviewers and the security architect is for running checks, running the
+app and reading history (tests, `git diff`, `git log`), not for changing anything. Their charters say so,
 and the guardrails still apply.
 
 ---
@@ -89,7 +89,7 @@ criteria precise enough to prove.
 | **Does not own** | Technical design, implementation, estimates of engineering effort (asks the tech lead) |
 | **Inputs** | Ideas and problems from the owner; user-facing bugs; findings from reviews and incidents |
 | **Outputs** | `docs/prd/NOS-<n>.md`; tracker tickets with Given/When/Then acceptance criteria and a risk field (`money`, `guest-claim`, `security`, `none`) |
-| **Tier / capabilities** | standard; read, web, mcp:tracker |
+| **Tier / capabilities** | standard; read, web, edit limited to `docs/prd/**`; mcp:tracker from 2.6 |
 | **Skills** | `write-prd`, `write-ticket`, `groom-backlog` |
 | **Done when** | The ticket meets the Definition of Ready ([workflow.md](workflow.md)): a clear problem, testable acceptance criteria, a risk field, and pieces no bigger than a day |
 | **Hands off to** | tech-lead (a ticket marked Ready) |
@@ -127,15 +127,15 @@ piece to the right roles, and keep work moving.
 | **Does not own** | Product priority (product-manager), architecture decisions (software-architect), merging (the owner) |
 | **Inputs** | Ready tickets; PRDs and design briefs; review outcomes; CI results |
 | **Outputs** | A breakdown comment on the ticket (sub-tasks, roles, order, labels); handoff comments; status updates |
-| **Tier / capabilities** | deep; read, shell (status checks: CI, `git log`, pull requests), mcp:tracker |
+| **Tier / capabilities** | deep; read, shell (status checks: CI, `git log`, pull requests); mcp:tracker from 2.6 |
 | **Skills** | `break-down-work`, `coordinate-handoffs` |
 | **Done when** | Every sub-task has an owner role and a clear done-when; the pull request carries the right labels; nothing is waiting without a named next step |
 | **Hands off to** | the engineering role for each sub-task; architects when a change crosses layers, adds a dependency, or changes data shape |
 | **Escalates when** | Work would exceed the ticket's scope, two roles disagree, or a decision brief is needed |
 
-How the tech lead actually drives other roles (a subagent pipeline, teammates, or
-something else) is decided in 2.5. This charter defines *what* the tech lead is
-accountable for, whichever way it runs.
+The tech lead drives the other roles by lead-driven delegation: one sub-task at a time,
+each ending in a handoff block ([workflow.md](workflow.md#how-the-roles-run-together),
+[ADR 0003](../adr/0003-agent-orchestration.md)).
 
 ---
 
@@ -299,7 +299,7 @@ before the owner spends time on it.
 | **Does not own** | Final visual sign-off (the owner); code quality (code-reviewer) |
 | **Inputs** | The design brief; a running build of the branch; the frontend rule |
 | **Outputs** | A review with screenshots per width and theme, accessibility findings, and a short "owner, please look at…" list |
-| **Tier / capabilities** | standard; read, mcp:playwright |
+| **Tier / capabilities** | standard; read, shell (build and start the app; nothing that changes files or git), mcp:playwright |
 | **Skills** | `ui-review` |
 | **Done when** | Every brief state was exercised; findings include screenshots; the owner's list points at what automation can't judge |
 | **Hands off to** | frontend-engineer (findings); the owner (the look-at list) |

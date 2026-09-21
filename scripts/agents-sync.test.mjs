@@ -60,6 +60,7 @@ test("generates Claude and Gemini adapters from one policy, with the same guard"
   const claude = JSON.parse(files.get(".claude/settings.json"));
   assert.deepEqual(claude.permissions.deny, ["Read(./.env.local)", "Edit(./.env.local)", "Bash(gh pr merge*)"]);
   assert.match(claude.hooks.PreToolUse[0].hooks[0].command, /scripts\/agent-guards\/hook\.mjs/);
+  assert.deepEqual(claude.enabledMcpjsonServers, ["tracker", "docs"], "neutral servers are pre-approved so roles get their tools");
 
   const gemini = JSON.parse(files.get(".gemini/settings.json"));
   assert.deepEqual(gemini.context.fileName, ["AGENTS.md"]);
@@ -170,4 +171,10 @@ test("generates Claude and Gemini subagents with tier models and a role-scoped g
   const std = parseFrontmatter(roleText("name: x\ndescription: d\ntier: standard\ncapabilities: [read]"));
   assert.equal(parseFrontmatter(buildAdapters({ policy, mcp: { servers: {} }, skills: [], roles: [std], models: { tiers } }).get(".gemini/agents/x.md")).data.model,
     "gemini-9-pro-exact", "an exact model id in models.json is used as is");
+});
+
+test("a role's name must match its file name", () => {
+  const errors = [];
+  validateRole("foo.md", roleText("name: bar\ndescription: d\ntier: fast\ncapabilities: [read]"), "foo.md", errors, tiers);
+  assert.ok(errors.some((e) => e.includes('name "bar" must match the file name')));
 });

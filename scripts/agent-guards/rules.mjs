@@ -173,15 +173,23 @@ export function checkRoleWrite(role, repoPaths, toRegExp, allRoles = []) {
 
 const MUTATING_SHELL = [
   /\bgit\b(?:\s+-[Cc]\s+\S+)*\s+(add|commit|push|reset|restore|rm|mv|merge|rebase|stash|tag|cherry-pick|revert|switch\s+-c|checkout\s+-b|checkout\s+--|apply|am)\b/,
-  /(^|[\s;&|(])(rm|rmdir|mv|cp|mkdir|touch|del|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Content|Add-Content|Out-File)\b/,
+  /(^|[\s;&|(])(rm|rmdir|mv|cp|mkdir|touch|del|tee|dd|Remove-Item|Move-Item|Copy-Item|New-Item|Set-Content|Add-Content|Out-File|Tee-Object)\b/,
+  // Downloads written to disk (a status check discarding output to the null device is fine).
+  // Case-sensitive on purpose: curl's -o (output to a named file) and -O (remote name) differ.
+  /\bcurl\b[^|;&\n]*\s(-o|--output)\s+(?!\/dev\/null\b|[Nn][Uu][Ll]\b|\$null\b)\S|\bcurl\b[^|;&\n]*\s(-O|--remote-name)\b|\bwget\b/,
   /\bsed\s+(-\w*\s+)*-i\b/,
   /\bnpm\s+(install|i|ci|uninstall|update|add)\b|\bnpm\s+run\s+(db:migrate|db:generate|agents:sync|vendored:fix)\b|\bdrizzle-kit\s+(migrate|generate|push)\b/,
   /\bgh\s+(pr|issue)\s+(create|edit|close|comment|review)\b/,
-  // Redirecting output into a file (but not 2>&1 or into the null device).
-  /(^|[^\d&<>])>{1,2}\s*(?!&|\/dev\/null\b|\$null\b|nul\b)[^\s|;&]/i,
+  // Redirecting output into a file. Allowed: 2>&1, the null device, and the system temp
+  // directory (a server log while reviewing a running app).
+  /(^|[^\d&<>])>{1,2}\s*(?!&|\/dev\/null\b|\$null\b|nul\b|\/tmp\/|"?\$TMPDIR|"?\$TEMP|"?\$env:TEMP|"?%TEMP%)[^\s|;&]/i,
 ];
 
-/** A role without the edit capability may run checks, never change anything. */
+/**
+ * A role without the edit capability may run checks, never change anything.
+ * This is a deny-list, so it is defence in depth, not a sandbox: an interpreter
+ * one-liner can still write a file. Git hooks, CI and review remain the backstop.
+ */
 export function checkRoleShell(role, command) {
   if ((role.capabilities ?? []).includes("edit")) return null;
   const cmd = command ?? "";
