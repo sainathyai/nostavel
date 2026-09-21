@@ -93,7 +93,38 @@ Blocked: <none | what, and the decision brief ID>
 - **Secrets, repository settings, paid services, production and the money gate:** the
   owner only.
 
-## To be completed in 2.7
-- Tracker automation (the free plan allows 100 rule runs a month, so transitions are made by the roles, not by rules).
-- Pull request template and CODEOWNERS.
-- A worked example: bug 6 (the AI prompt's date is fixed at server start) run end to end.
+## Pull requests
+
+- **Title:** `NOS-<n> <what changed>`. The key is what links the change back to the ticket.
+- **Body:** the template in `.github/pull_request_template.md` — what and why, risk and
+  labels, how it was verified (with the actual output), migration, rollback, handoff block.
+- **Reviews:** `.github/CODEOWNERS` decides who GitHub asks (the owner, today). The
+  pull request's **labels** decide which agent roles must review, per
+  [roles.md](roles.md#review-gates); roles are not GitHub accounts and never appear in
+  CODEOWNERS.
+- **The owner merges.** Squash only, and never by an agent.
+
+## Tracker automation
+
+There is none, deliberately. The free plan allows 100 automation runs a month, and an
+explicit transition by the role doing the work is easier to audit than a rule firing
+invisibly. The one exception is the GitHub link-up, which only displays branches and pull
+requests on the ticket and consumes no automation quota.
+
+## Worked example: NOS-15
+
+The first ticket taken end to end by the roles, kept here as the reference for how a
+change moves. It was chosen for being one line: the point was to prove the chain, not the
+fix.
+
+| Step | Role | What happened | Recorded where |
+|---|---|---|---|
+| Breakdown | tech-lead | Read the ticket, split it, moved it to In Progress | Ticket comment |
+| Failing test | qa-engineer | A convention test asserting every secret-handling module imports `server-only`; it failed on `webhook-auth.ts` | Test file, ticket comment |
+| Fix | backend-engineer | Added the import; the test passed | Pull request |
+| Review | code-reviewer | Checked the diff against the conventions and area rules | Pull request review |
+| Security gate | security-architect | Required by the `security` label | Pull request review |
+| Merge | owner | Squash merge; ticket moved to Done | Ticket, pull request |
+
+The test is the part that outlives the ticket: a new module handling a secret without
+`server-only` now fails the suite.

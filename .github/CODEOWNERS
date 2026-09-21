@@ -1,0 +1,38 @@
+# Who GitHub asks to review what. The owner reviews and merges everything today
+# (solo repository), so every line names the same person; the value is the paths
+# themselves, which say where review matters most and stay correct if the team grows.
+#
+# Roles do not appear here: they are not GitHub accounts. Which agent role must
+# review a change is decided by the pull request's labels
+# (docs/team/roles.md#review-gates).
+
+* @sainathyai
+
+# Money and the booking ledger: a mistake here charges a guest or loses a booking.
+/src/lib/pricing.ts            @sainathyai
+/src/lib/fees.ts               @sainathyai
+/src/lib/member-pricing.ts     @sainathyai
+/src/lib/cancellation.ts       @sainathyai
+/src/lib/booking-service.ts    @sainathyai
+/src/lib/quote-token.ts        @sainathyai
+/src/app/api/webhooks/         @sainathyai
+
+# Schema and migrations: additive only, and irreversible once applied.
+/src/db/                       @sainathyai
+/drizzle.config.ts             @sainathyai
+
+# Secrets, authorization and anything a request can reach unauthenticated.
+/src/auth.ts                   @sainathyai
+/src/lib/dal.ts                @sainathyai
+/src/lib/guest-verify.ts       @sainathyai
+/src/lib/webhook-auth.ts       @sainathyai
+/src/lib/rate-limit.ts         @sainathyai
+/next.config.ts                @sainathyai
+
+# The pipeline and the team's own tooling: a weakened check hides every other risk.
+/.github/                      @sainathyai
+/.agents/                      @sainathyai
+/scripts/                      @sainathyai
+/tools/                        @sainathyai
+/AGENTS.md                     @sainathyai
+/docs/conventions.md           @sainathyai
