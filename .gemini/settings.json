@@ -25,6 +25,12 @@
       "args": [
         "@playwright/mcp@latest"
       ]
+    },
+    "tracker": {
+      "command": "node",
+      "args": [
+        "tools/tracker-mcp/index.ts"
+      ]
     }
   }
 }

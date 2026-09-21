@@ -3,6 +3,7 @@ paths:
   - ".agents/**"
   - "scripts/agent-guards/**"
   - "scripts/agents-sync.mjs"
+  - "tools/tracker-mcp/**"
   - ".claude/**"
   - ".gemini/**"
   - ".mcp.json"
@@ -38,3 +39,13 @@ Source of truth: `.agents/README.md` and `docs/adr/0001-provider-neutral-agent-l
 
 ## Adding a tool
 Follow "Adding a tool" in `.agents/README.md`: add an adapter in `buildAdapters()`, normalize any new hook tool names, add tests, sync, and commit.
+
+## Tool servers (`tools/tracker-mcp`)
+- **Neutral tool names.** A tool is named for the job (`tracker_create`), never the vendor.
+  Vendor details stay inside the adapter; `tracker.ts` is the contract.
+- **No destructive operations** in a tool surface an agent can reach: no delete, no
+  permission or site settings, and a project allowlist on every call.
+- **Secrets are read by the server itself** from `.env.local`, never passed through an
+  agent tool's config or environment.
+- **Tests use a fake transport**, so they need no network and no credentials, and they run
+  in `npm run verify` (conventions §6).

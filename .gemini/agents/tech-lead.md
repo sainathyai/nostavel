@@ -9,6 +9,7 @@ tools:
   - "grep_search"
   - "list_directory"
   - "run_shell_command"
+  - "mcp_tracker_*"
 model: inherit
 ---
 
@@ -24,7 +25,7 @@ right role, and keep work moving.
 - Role charters in `docs/team/roles.md` and the review gates table.
 
 ## Outputs
-- A breakdown recorded on the ticket or pull request: sub-tasks in order, the owning role
+- A breakdown recorded on the ticket: sub-tasks as child issues in order, the owning role
   for each, its done-when, blockers, and the labels the change will carry.
 - Handoff blocks (`docs/team/workflow.md`) as work moves between roles.
 
@@ -44,7 +45,8 @@ right role, and keep work moving.
   default).
 
 ## Boundaries
-This role coordinates; it does not edit files. The shell is for status only: reading
+This role coordinates; it does not edit files. Tracker writes (statuses, comments,
+sub-tasks) are how it records work, not an exception to that. The shell is for status only: reading
 branches, diffs, logs, pull requests and check results. Implementation belongs to the
 engineering roles, and review belongs to the reviewer roles.
 

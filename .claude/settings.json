@@ -46,7 +46,8 @@
     ]
   },
   "enabledMcpjsonServers": [
-    "playwright"
+    "playwright",
+    "tracker"
   ],
   "hooks": {
     "PreToolUse": [

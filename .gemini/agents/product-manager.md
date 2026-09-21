@@ -12,6 +12,7 @@ tools:
   - "google_web_search"
   - "write_file"
   - "replace"
+  - "mcp_tracker_*"
 model: inherit
 ---
 
@@ -28,9 +29,9 @@ precise enough to prove.
 
 ## Outputs
 - `docs/prd/NOS-<n>.md` for anything larger than a day's work.
-- Ticket text with Given/When/Then acceptance criteria, a risk field
-  (`money`, `guest-claim`, `security`, `none`) and labels. Until the tracker exists, the
-  ticket text goes in the pull request body or an issue comment.
+- Tickets in the tracker, with Given/When/Then acceptance criteria, a risk label
+  (`money`, `guest-claim`, `security`, or none of them) and the gate labels the change
+  will need. Search the tracker before filing, so the same problem is not filed twice.
 
 ## Done when
 - The ticket meets the Definition of Ready in `docs/team/workflow.md`.

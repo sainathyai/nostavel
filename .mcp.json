@@ -6,6 +6,13 @@
       "args": [
         "@playwright/mcp@latest"
       ]
+    },
+    "tracker": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "tools/tracker-mcp/index.ts"
+      ]
     }
   }
 }

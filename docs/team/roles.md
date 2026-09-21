@@ -37,15 +37,15 @@ by responsibilities, artifacts and capabilities, never by a tool or a model.
 | **Tier** | How much reasoning a role needs: `deep` (architecture, security, ambiguous trade-offs), `standard` (implementation and review), `fast` (mechanical checks). Mapped to concrete models per tool in `.agents/models.json`. |
 | **Capabilities** | `read` (files, search), `edit` (write files, limited by "Owns"), `shell` (run commands), `web` (fetch documentation), `mcp:<server>` (a tool server: `playwright`, `tracker`). |
 | **Skill** | A reusable playbook in `.agents/skills/`. Names below are the planned skills; they are built with their role. |
-| **Tracker** | The ticketing system: Jira Free project `NOS`, reached through our `tracker` MCP server (Segment 2.6). Until then, status lives in pull request comments. |
+| **Tracker** | The ticketing system: project `NOS`, reached through our own `tracker` tool server ([tools/tracker-mcp](../../tools/tracker-mcp/README.md)), whose tool names are vendor-neutral. |
 
 ## Roster
 
 | Group | Role | Tier | Capabilities | Built in |
 |---|---|---|---|---|
-| Product | [product-manager](#product-manager) | standard | read, web, edit (PRDs); mcp:tracker in 2.6 | ✅ 2.5 |
+| Product | [product-manager](#product-manager) | standard | read, web, edit (PRDs), mcp:tracker | ✅ 2.5 |
 | Product | [ux-designer](#ux-designer) | standard | read, web, mcp:playwright, edit (design docs) | ✅ 2.4 |
-| Lead | [tech-lead](#tech-lead) | deep | read, shell; mcp:tracker in 2.6 | ✅ 2.5 |
+| Lead | [tech-lead](#tech-lead) | deep | read, shell, mcp:tracker | ✅ 2.5 |
 | Architecture | [software-architect](#software-architect) | deep | read, web, edit (ADRs) | ✅ 2.4 |
 | Architecture | [security-architect](#security-architect) | deep | read, web, shell, edit (threat models, security rule) | ✅ 2.4 |
 | Engineering | [frontend-engineer](#frontend-engineer) | standard | read, edit, shell, mcp:playwright | ✅ 2.4 |
@@ -88,8 +88,8 @@ criteria precise enough to prove.
 | **Owns** | Product requirements (PRDs), tickets, acceptance criteria, backlog order, release notes wording |
 | **Does not own** | Technical design, implementation, estimates of engineering effort (asks the tech lead) |
 | **Inputs** | Ideas and problems from the owner; user-facing bugs; findings from reviews and incidents |
-| **Outputs** | `docs/prd/NOS-<n>.md`; tracker tickets with Given/When/Then acceptance criteria and a risk field (`money`, `guest-claim`, `security`, `none`) |
-| **Tier / capabilities** | standard; read, web, edit limited to `docs/prd/**`; mcp:tracker from 2.6 |
+| **Outputs** | `docs/prd/NOS-<n>.md`; tracker tickets with Given/When/Then acceptance criteria and a risk label (`money`, `guest-claim`, `security`) |
+| **Tier / capabilities** | standard; read, web, edit limited to `docs/prd/**`, mcp:tracker |
 | **Skills** | `write-prd`, `write-ticket`, `groom-backlog` |
 | **Done when** | The ticket meets the Definition of Ready ([workflow.md](workflow.md)): a clear problem, testable acceptance criteria, a risk field, and pieces no bigger than a day |
 | **Hands off to** | tech-lead (a ticket marked Ready) |
@@ -127,7 +127,7 @@ piece to the right roles, and keep work moving.
 | **Does not own** | Product priority (product-manager), architecture decisions (software-architect), merging (the owner) |
 | **Inputs** | Ready tickets; PRDs and design briefs; review outcomes; CI results |
 | **Outputs** | A breakdown comment on the ticket (sub-tasks, roles, order, labels); handoff comments; status updates |
-| **Tier / capabilities** | deep; read, shell (status checks: CI, `git log`, pull requests); mcp:tracker from 2.6 |
+| **Tier / capabilities** | deep; read, shell (status checks: CI, `git log`, pull requests), mcp:tracker |
 | **Skills** | `break-down-work`, `coordinate-handoffs` |
 | **Done when** | Every sub-task has an owner role and a clear done-when; the pull request carries the right labels; nothing is waiting without a named next step |
 | **Hands off to** | the engineering role for each sub-task; architects when a change crosses layers, adds a dependency, or changes data shape |

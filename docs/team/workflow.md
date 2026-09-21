@@ -1,8 +1,25 @@
 # Team workflow
 
 How work moves between the roles in [roles.md](roles.md). This page is an outline: it is
-completed in Segment 2.7, once the tracker exists and one real ticket has run through the
-whole chain.
+completed in Segment 2.7, once one real ticket has run through the whole chain.
+
+## The tracker
+
+Tickets live in the `NOS` project of the team's tracker, reached through the `tracker` tool
+server ([tools/tracker-mcp](../../tools/tracker-mcp/README.md)). product-manager and
+tech-lead have that capability; every other role reads the ticket text handed to it and
+replies in its pull request.
+
+| Status | Means |
+|---|---|
+| **To Do** | Filed, not yet Ready: something in the Definition of Ready is missing |
+| **Ready** | Meets the Definition of Ready; the tech lead can break it down |
+| **In Progress** | Broken down, sub-tasks being worked |
+| **In Review** | A pull request is open and `npm run verify` passed |
+| **Done** | Merged by the owner, and released where applicable |
+
+The ticket key drives the rest: branch `NOS-<n>-short-slug`, pull request title starting
+`NOS-<n>`, which is what links the change back to the ticket.
 
 ## Lifecycle
 
@@ -39,7 +56,7 @@ whole chain.
 | Architecture decision | `docs/adr/NNNN-<slug>.md` | software-architect |
 | Threat model | `docs/security/NOS-<n>.md` | security-architect |
 | Change record | pull request description | the authoring role |
-| Status and handoffs | tracker comments (pull request comments until the tracker exists) | every role |
+| Status and handoffs | tracker comments | every role (through the lead when a role has no tracker capability) |
 
 ## How the roles run together
 
@@ -77,6 +94,6 @@ Blocked: <none | what, and the decision brief ID>
   owner only.
 
 ## To be completed in 2.7
-- Tracker workflow states and automation.
+- Tracker automation (the free plan allows 100 rule runs a month, so transitions are made by the roles, not by rules).
 - Pull request template and CODEOWNERS.
 - A worked example: bug 6 (the AI prompt's date is fixed at server start) run end to end.
