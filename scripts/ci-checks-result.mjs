@@ -15,6 +15,23 @@
 import { pathToFileURL } from "node:url";
 
 /**
+ * Renders a job's `result` for a failure message, distinguishing the ways it can
+ * be wrong: absent entirely, explicitly `null`, some non-string GitHub shape, or
+ * a string that just isn't "success" (an unknown value like "neutral" or
+ * "startup_failure" included - this is an allow-list, so a future result string
+ * GitHub adds is a failure here until this script is taught about it, not a
+ * silent pass).
+ * @param {unknown} result
+ * @returns {string}
+ */
+function describeResult(result) {
+  if (result === undefined) return "<missing>";
+  if (result === null) return "null";
+  if (typeof result !== "string") return `<non-string: ${JSON.stringify(result)}>`;
+  return result;
+}
+
+/**
  * @param {Record<string, {result: string}>} needs the `needs` context, one entry
  *   per job named in `checks`'s `needs:` list
  * @param {string} eventName the triggering event, e.g. "pull_request" or "push"
@@ -33,21 +50,32 @@ export function evaluateChecks(needs, eventName) {
         "its needs: list is not empty.",
     };
   }
+  // GitHub Actions always sets GITHUB_EVENT_NAME on every run. Reading an absent
+  // or empty value as "not a pull_request event" would silently forgive pr-title
+  // being skipped on an actual pull_request run - the exact regression the
+  // exemption below exists to catch - so this fails closed instead.
+  if (typeof eventName !== "string" || eventName === "") {
+    return {
+      ok: false,
+      message: "checks: failing - GITHUB_EVENT_NAME is not set. GitHub Actions always sets this " +
+        "environment variable on every run, so its absence means the workflow or this script is " +
+        "misconfigured, not that this run is on some other event.",
+    };
+  }
   const problems = [];
   for (const [name, job] of Object.entries(needs)) {
     const result = job?.result;
-    if (result === "failure" || result === "cancelled") {
-      problems.push(`${name}: ${result}`);
-      continue;
-    }
-    if (result === "skipped") {
-      // The one intentional skip: pr-title's own `if:` scopes it to pull_request
-      // events, so it legitimately does not run on a push to main. Every other
-      // skip - including pr-title skipped ON a pull_request event, which is the
-      // check silently not running - is a failure.
-      const intentional = name === "pr-title" && eventName !== "pull_request";
-      if (!intentional) problems.push(`${name}: skipped`);
-    }
+    // Allow-list: the exact string "success" is the only passing value. Anything
+    // else - failure, cancelled, skipped, a missing key, null, a non-string, or
+    // an unknown status GitHub might add later - is a failure, named below.
+    if (result === "success") continue;
+    // The one intentional skip: pr-title's own `if:` scopes it to pull_request
+    // events, so it legitimately does not run on a push to main. Every other
+    // non-success result - including pr-title skipped ON a pull_request event,
+    // which is the check silently not running - is a failure.
+    const exempt = name === "pr-title" && result === "skipped" && eventName !== "pull_request";
+    if (exempt) continue;
+    problems.push(`${name}: ${describeResult(result)}`);
   }
   if (problems.length) {
     return { ok: false, message: `checks: failing - ${problems.join(", ")}` };
