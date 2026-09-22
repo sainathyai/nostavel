@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:int": "node scripts/test-int.mjs",
     "prepare": "node scripts/git-guard.mjs --install",
     "guard": "node scripts/git-guard.mjs --all",
     "test:agents": "node --test \"scripts/**/*.test.mjs\"",

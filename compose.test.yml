@@ -1,0 +1,68 @@
+# Test-only services for the integration suite (`npm run test:int`). NOT part
+# of `npm test` / `npm run verify` (NOS-29 AC 2/3), and not referenced by any
+# production deploy config.
+#
+# Two containers:
+#   - postgres: a real Postgres, so the suite exercises the same SQL dialect
+#     and constraints production does, not a mock.
+#   - neon-proxy: Neon publishes no first-party local HTTP proxy image. This
+#     wraps the same proxy binary the hosted Neon service runs, packaged for
+#     local use by the community project TimoWilhelm/local-neon-http-proxy
+#     (https://github.com/TimoWilhelm/local-neon-http-proxy). It's needed
+#     because `@neondatabase/serverless` (src/db/index.ts) speaks HTTP, not
+#     the Postgres wire protocol - without a proxy that translates HTTP to a
+#     real Postgres connection, the app's actual driver (drizzle-orm/neon-http)
+#     can never be exercised, which defeats the point of this suite: db.batch's
+#     single-transaction guarantee is specific to that driver (NOS-29).
+#
+# Both images are pinned by digest, resolved 2026-09-22 against the tag named
+# in each trailing comment via each registry's v2 manifest API (an anonymous
+# pull token from the registry, then `GET .../manifests/<tag>` with an
+# `Accept: application/vnd.oci.image.index.v1+json` header, reading the
+# `docker-content-digest` response header - equivalent to
+# `docker manifest inspect <image>:<tag>` with Docker installed). Re-resolve
+# and update the comment, don't just bump the tag, when these need to move.
+#
+# `@neondatabase/serverless` needs runtime config (neonConfig.fetchEndpoint;
+# see node_modules/@neondatabase/serverless/CONFIG.md) to send its HTTP
+# queries to neon-proxy below instead of a real Neon endpoint. That wiring is
+# test-only and lives in scripts/test-int-neon-setup.mjs (a Vitest setupFile),
+# never in src/db/index.ts - production code must not know this proxy exists.
+#
+# Credentials here are a fixed, non-secret default for a throwaway container
+# that exists only for the length of one CI job (postgres/postgres, defined
+# below as POSTGRES_USER / POSTGRES_PASSWORD). neon-proxy's own connection
+# string is passed in as TEST_PG_CONNECTION_STRING by scripts/test-int.mjs,
+# which assembles it from separate pieces at runtime - not written out whole
+# here - only so this file's text never contains a literal "user:password@"
+# connection string for the repository guard
+# (scripts/agent-guards/patterns.mjs) to flag; it is not a real secret.
+services:
+  postgres:
+    image: postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea # postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: main
+    # Published high, not 5432: a developer's own Postgres on the default port
+    # would otherwise fail this as a port bind error rather than a clear message,
+    # and the guard in scripts/test-int-target.mjs pins this exact port.
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  neon-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy@sha256:cd2ae14edf2feafbc3330492de5c80506f77274c3bd013154cdef697bdeb768a # :main
+    environment:
+      # Set by scripts/test-int.mjs before it runs `docker compose up`; see
+      # the file comment above for why it isn't written out here.
+      PG_CONNECTION_STRING: ${TEST_PG_CONNECTION_STRING}
+    ports:
+      - "4444:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy

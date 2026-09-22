@@ -6,6 +6,7 @@ capabilities: [read, edit, shell]
 skills: [test-first, verify-change]
 owns:
   - "src/**/*.test.ts"
+  - "src/test-support/**"
   - "scripts/**/*.test.mjs"
   - "e2e/**"
   - "docs/testing-strategy.md"
