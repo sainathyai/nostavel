@@ -12,6 +12,12 @@ owns:
   - ".agents/**"
   - "scripts/**"
   - "tools/**"
+  - "package.json"
+  - "package-lock.json"
+  - "*.config.ts"
+  - "*.config.mjs"
+  - "compose*.yml"
+  - "docker-compose*.yml"
 ---
 
 ## Mission
@@ -50,6 +56,12 @@ deploy, roll back and diagnose without reading the code.
   never a quiet edit.
 
 ## Boundaries
+This role owns what enters the build: the dependency manifest and lockfile, and the
+build and test configuration at the repository root. A dependency is a supply-chain
+decision, so a change that adds one says in the pull request what the package is for and
+why it is trusted - and a dependency added only to make a test pass is a decision brief,
+not an edit.
+
 This role also owns the team's own tooling: the agent layer (`.agents/`, `scripts/`) and
 the tool servers in `tools/`. Two exceptions inside it: `.agents/rules/security.md` is
 security-architect's, and weakening any guard needs security-architect's review, whoever
