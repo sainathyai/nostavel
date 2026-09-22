@@ -1,12 +1,17 @@
 name: CI
 
-# The four checks docs/conventions.md section 7 requires locally, run on every
+# The checks docs/conventions.md section 7 requires locally (npm run verify), plus
+# the pull request title rule (docs/team/workflow.md), run in parallel on every
 # pull request and on main so "it works on my machine" can't ship silently.
+# `checks` (below) fans them back in: branch protection on main requires a status
+# check named exactly "checks", so that name must never change or be dropped.
 #
 # Needs NO secrets. The database client connects on first query, not on import
-# (src/db/index.ts), so lint, types, tests and build all run without
-# credentials. That matters on a public repository: pull requests from forks
-# never receive secrets.
+# (src/db/index.ts), so every job here runs without credentials. That matters on a
+# public repository: pull requests from forks never receive secrets. The one
+# fork-controlled input, the pull request title, is passed through `env:` and read
+# from process.env in pr-title.mjs - never interpolated into a `run:` block, which
+# would let a fork's title inject shell commands.
 on:
   push:
     branches: [main]
@@ -20,44 +25,139 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
+  # Same rules as the pre-commit hook, applied to every tracked file, so a commit
+  # made with --no-verify is still caught here.
+  guard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-
       - run: npm ci
+      - run: npm run guard
 
-      # Same rules as the pre-commit hook, applied to every tracked file, so a
-      # commit made with --no-verify is still caught here.
-      - name: Repository guard
-        run: npm run guard
+  # The provider-neutral agent layer (.agents/README.md): guard and generator tests.
+  test-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:agents
 
-      # The provider-neutral agent layer (.agents/README.md): guard and generator
-      # tests, then fail if any tool's generated config drifted from its source.
-      - name: Agent layer tests
-        run: npm run test:agents
+  agents-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run agents:check
 
-      - name: Agent adapters up to date
-        run: npm run agents:check
+  # public/ copies of package files (MapLibre worker) must match the installed
+  # version, or the map breaks with no build error. Dependabot bumps don't re-copy.
+  vendored-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run vendored:check
 
-      # public/ copies of package files (MapLibre worker) must match the installed
-      # version, or the map breaks with no build error. Dependabot bumps don't re-copy.
-      - name: Vendored files match installed packages
-        run: npm run vendored:check
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
 
-      - name: Lint
-        run: npm run lint
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
 
-      - name: Type check
-        run: npx tsc --noEmit
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
 
-      - name: Unit tests
-        run: npm test
+      # Reported, not gated (NOS-25): no threshold here, in vitest config or in the
+      # coverage provider, so this can never fail the job on a low or 0% number -
+      # only on coverage failing to generate at all (a missing provider package, or
+      # vitest itself erroring), which does exit non-zero and fail this step.
+      # Scoped to src/lib, where docs/conventions.md section 1 says the real logic
+      # (pure rules) lives. The percentage is printed to the job's own log, so
+      # nobody needs to download an artifact to see it.
+      - name: Coverage report (src/lib, informational only)
+        run: npx vitest run --coverage --coverage.reporter=text --coverage.include='src/lib/**'
 
-      - name: Build
-        run: npm run build
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  # A pull request title must start with its ticket key (docs/team/workflow.md).
+  # Scoped to pull_request only: there is no PR title to check on a push to main.
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check pull request title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/pr-title.mjs
+
+  # The required status check (branch protection on main names this job exactly
+  # "checks"). `if: always()` so it still runs, and reports why, when a job above
+  # failed or was skipped - a bare `needs:` list only blocks this job when a
+  # dependency *fails*, not when one is skipped or cancelled, so without this
+  # aggregation step those states would silently leave no red check at all.
+  checks:
+    if: always()
+    needs: [guard, test-agents, agents-check, vendored-check, lint, typecheck, test, build, pr-title]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Evaluate job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/ci-checks-result.mjs
