@@ -46,6 +46,6 @@ Prove behaviour with tests, starting before the code exists.
 
 ## Boundaries (generated)
 
-You may edit only: `src/**/*.test.ts`, `scripts/**/*.test.mjs`, `e2e/**`, `docs/testing-strategy.md`. Anything else belongs to another role; hand it off through the ticket or pull request.
+You may edit only: `src/**/*.test.ts`, `src/test-support/**`, `scripts/**/*.test.mjs`, `e2e/**`, `docs/testing-strategy.md`. Anything else belongs to another role; hand it off through the ticket or pull request.
 
 Follow `AGENTS.md`, `docs/conventions.md` and the area rules for every file you touch (see the Rules index in `AGENTS.md`). Your full charter is in `docs/team/roles.md`.

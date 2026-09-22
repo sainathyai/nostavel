@@ -128,6 +128,26 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+  # Runs the neon-http driver (src/db/index.ts) against a real Postgres,
+  # reached through a local Neon HTTP proxy (compose.test.yml) - catches a
+  # regression in db.batch's single-transaction behaviour, which is specific
+  # to that driver and invisible to the unit suite above (no real database,
+  # by design - NOS-29 AC 2/3). Needs no secrets: both containers use a fixed,
+  # non-secret local credential (see compose.test.yml), so this runs on
+  # forked pull requests exactly like every other job here. GitHub-hosted
+  # ubuntu-latest runners ship Docker and the Compose plugin already, so no
+  # extra setup step is needed to start compose.test.yml.
+  test-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:int
+
   # A pull request title must start with its ticket key (docs/team/workflow.md).
   # Scoped to pull_request only: there is no PR title to check on a push to main.
   pr-title:
@@ -150,7 +170,8 @@ jobs:
   # aggregation step those states would silently leave no red check at all.
   checks:
     if: always()
-    needs: [guard, test-agents, agents-check, vendored-check, lint, typecheck, test, build, pr-title]
+    needs:
+      [guard, test-agents, agents-check, vendored-check, lint, typecheck, test, build, test-integration, pr-title]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
