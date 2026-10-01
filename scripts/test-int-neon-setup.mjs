@@ -10,7 +10,7 @@
 // instead of a real Neon endpoint. Kept out of src/db/index.ts on purpose:
 // production code must never know a local proxy exists.
 import { neonConfig } from "@neondatabase/serverless";
-import { assertLocalTestTarget } from "./test-int-target.mjs";
+import { assertLocalFetchEndpoint, assertLocalTestTarget } from "./test-int-target.mjs";
 
 // NOS-29 DEFECT 1 (safety): `setupFiles` runs inside each test file's own
 // process, separately from `globalSetup` (scripts/test-int-migrate.mjs),
@@ -24,6 +24,19 @@ assertLocalTestTarget(process.env.DATABASE_URL, {
   source: "process.env.DATABASE_URL, checked by scripts/test-int-neon-setup.mjs before any test file runs",
 });
 
-// Set by scripts/test-int.mjs. Falls back to the proxy's default compose
-// port so this file also works if a test file config imports it directly.
-neonConfig.fetchEndpoint = process.env.NEON_PROXY_URL ?? "http://localhost:4444/sql";
+// NOS-34 DEFECT 2 (safety): this is the leg the queries actually travel -
+// @neondatabase/serverless sends DATABASE_URL, just validated above, as a
+// "Neon-Connection-String" HTTP header to whatever fetchEndpoint names (see
+// assertLocalFetchEndpoint's comment in test-int-target.mjs for where that's
+// confirmed in the driver's own source). Set by scripts/test-int.mjs; falls
+// back to the proxy's default compose port so this file also works if a test
+// file config imports it directly. Compute the effective value first and
+// validate THAT - including the default - before it is ever assigned to
+// neonConfig, so a bad NEON_PROXY_URL can never be installed on the driver.
+const fetchEndpoint = process.env.NEON_PROXY_URL ?? "http://localhost:4444/sql";
+assertLocalFetchEndpoint(fetchEndpoint, {
+  source: "NEON_PROXY_URL (or its default), checked by scripts/test-int-neon-setup.mjs before " +
+    "neonConfig.fetchEndpoint is set",
+});
+
+neonConfig.fetchEndpoint = fetchEndpoint;

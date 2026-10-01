@@ -8,7 +8,7 @@
 // correct BEFORE anything ever tries to connect to it for real.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertLocalTestTarget } from "./test-int-target.mjs";
+import { assertLocalFetchEndpoint, assertLocalTestTarget } from "./test-int-target.mjs";
 
 // Every connection string below is assembled from separate pieces, never
 // written as one literal string with a scheme, a credential pair and a host
@@ -85,5 +85,89 @@ test("names which source a bad value came from, when given one", () => {
     assert.fail("expected assertLocalTestTarget to throw");
   } catch (err) {
     assert.match(err.message, /scripts\/test-int-migrate\.mjs/);
+  }
+});
+
+// NOS-34: assertLocalFetchEndpoint guards the second leg a query travels -
+// neonConfig.fetchEndpoint, sent as the "Neon-Connection-String" header's
+// destination by @neondatabase/serverless (see test-int-target.mjs's comment
+// above the function for where that's confirmed in the driver's own
+// source). Same refusal/acceptance shape as assertLocalTestTarget above, so
+// the same style of test applies.
+
+const endpointRefuses = (value, pattern) => {
+  assert.throws(() => assertLocalFetchEndpoint(value), pattern);
+};
+const endpointAllows = (value) => {
+  assert.doesNotThrow(() => assertLocalFetchEndpoint(value));
+};
+
+test("fetch endpoint: refuses when missing entirely (undefined)", () => {
+  endpointRefuses(undefined, /no fetch endpoint was set/);
+});
+
+test("fetch endpoint: refuses a value that is explicitly set to the empty string", () => {
+  // `NEON_PROXY_URL=""` is not caught by `??`, which only replaces null/undefined -
+  // so an explicit empty override must be refused by this function itself, the
+  // same way an absent value is, not silently treated as "use the default".
+  endpointRefuses("", /no fetch endpoint was set/);
+});
+
+test("fetch endpoint: refuses a value that isn't a URL at all", () => {
+  endpointRefuses("not-a-url", /could not be parsed/);
+});
+
+test("fetch endpoint: refuses a remote host", () => {
+  endpointRefuses("https://evil.example.com:4444/sql", /host "localhost" or "127\.0\.0\.1"/);
+});
+
+test("fetch endpoint: refuses the local host on the wrong port", () => {
+  endpointRefuses("http://localhost:9999/sql", /expected port "4444"/);
+});
+
+test("fetch endpoint: refuses the local host and port with no port at all", () => {
+  // http:// with no explicit port means 80, the driver's and this suite's
+  // own default, never port 4444 - so a portless local URL must be refused
+  // the same way a wrong explicit port is.
+  endpointRefuses("http://localhost/sql", /expected port "4444"/);
+});
+
+test("fetch endpoint: refuses the local host and port with the wrong path", () => {
+  endpointRefuses("http://localhost:4444/not-sql", /expected path "\/sql"/);
+  endpointRefuses("http://localhost:4444/", /expected path "\/sql"/);
+});
+
+test("fetch endpoint: accepts the local proxy on localhost or 127.0.0.1, on the expected port and path", () => {
+  endpointAllows("http://localhost:4444/sql");
+  endpointAllows("http://127.0.0.1:4444/sql");
+});
+
+test("fetch endpoint: accepts the documented default", () => {
+  // scripts/test-int-neon-setup.mjs's fallback when NEON_PROXY_URL is unset -
+  // must stay accepted, since the whole point is validating the *effective*
+  // value, default included, not rejecting an unset override.
+  endpointAllows("http://localhost:4444/sql");
+});
+
+test("fetch endpoint: never puts the value itself in a refusal message beyond host/port/path", () => {
+  const value = "https://evil.example.com:4444/sql";
+  try {
+    assertLocalFetchEndpoint(value);
+    assert.fail("expected assertLocalFetchEndpoint to throw");
+  } catch (err) {
+    // The parsed pieces are expected to appear (that's the point of
+    // describeEndpoint); the raw value as a single string must not.
+    assert.ok(!err.message.includes(value), "whole fetch endpoint value leaked into the error message");
+  }
+});
+
+test("fetch endpoint: names which source a bad value came from, when given one", () => {
+  try {
+    assertLocalFetchEndpoint(undefined, {
+      source: "NEON_PROXY_URL (or its default), checked by scripts/test-int-neon-setup.mjs",
+    });
+    assert.fail("expected assertLocalFetchEndpoint to throw");
+  } catch (err) {
+    assert.match(err.message, /scripts\/test-int-neon-setup\.mjs/);
   }
 });
