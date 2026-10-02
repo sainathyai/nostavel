@@ -13,6 +13,7 @@ tools:
   - "run_shell_command"
   - "web_fetch"
   - "google_web_search"
+  - "mcp_tracker_*"
 model: inherit
 ---
 
@@ -23,7 +24,8 @@ Make sure a change that passes the checks is really safe to ship, and that the o
 deploy, roll back and diagnose without reading the code.
 
 ## Inputs
-- The sub-task on the ticket, and what the change actually risks.
+- The ticket, read from the tracker directly rather than from a relayed summary: a brief
+  passed down is one paraphrase away from the wrong change.
 - The existing workflows in `.github/workflows/`, and what each check already covers.
 - `npm run verify`: the one command that must stay the single entry point for checks.
 

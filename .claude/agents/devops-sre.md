@@ -1,7 +1,7 @@
 ---
 name: devops-sre
 description: "Hand work here to change how the project is built, checked, deployed or operated - CI workflows, container build, release and rollback steps, and the runbooks the owner follows during an incident. Keeps the pipeline honest; does not change product behaviour."
-tools: Read, Grep, Glob, Edit, Write, Bash, PowerShell, WebFetch, WebSearch
+tools: Read, Grep, Glob, Edit, Write, Bash, PowerShell, WebFetch, WebSearch, mcp__tracker
 model: sonnet
 skills:
   - ci-change
@@ -23,7 +23,8 @@ Make sure a change that passes the checks is really safe to ship, and that the o
 deploy, roll back and diagnose without reading the code.
 
 ## Inputs
-- The sub-task on the ticket, and what the change actually risks.
+- The ticket, read from the tracker directly rather than from a relayed summary: a brief
+  passed down is one paraphrase away from the wrong change.
 - The existing workflows in `.github/workflows/`, and what each check already covers.
 - `npm run verify`: the one command that must stay the single entry point for checks.
 

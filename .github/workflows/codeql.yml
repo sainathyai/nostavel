@@ -1,0 +1,64 @@
+name: CodeQL
+
+# NOS-35 (Segment 3.3): static analysis for JavaScript/TypeScript. Catches an
+# injection, auth-bypass or unsafe-deserialization shaped bug landing in our own
+# source that unit tests don't happen to exercise - the class of bug a reviewer
+# skims past because it looks like ordinary code.
+#
+# Deliberately NOT a job in ci.yml: scripts/ci-checks-result.test.mjs asserts the
+# `checks` aggregator's needs: list names every job defined in ci.yml, so any job
+# added there becomes required whether intended or not (NOS-35 AC 1). This job's
+# required/advisory status is a decision (below), not an accident of file layout,
+# so it lives in its own workflow file.
+#
+# Required vs advisory (NOS-35 AC 11): ADVISORY, not wired into any required
+# status check.
+#   - The `analyze` step's own exit code reflects whether the scan *ran*, not
+#     whether it *found* anything: by default it uploads alerts to the Security
+#     tab and annotates the pull request, but does not fail this job for a
+#     finding. Making CodeQL actually block a merge needs an additional,
+#     repository-level setting (Settings > Code security > Code scanning >
+#     "pull request check failure" severity threshold) - a repo setting, the
+#     owner's call, same as the branch-protection decision in AC 13.
+#   - Findings are in our own first-party source, so in principle they are
+#     self-fixable the same way a committed secret is (unlike a transitive
+#     dependency's CVE with no patched version yet) - but static analysis also
+#     has a real false-positive rate that needs human triage before a finding is
+#     actionable, so an automatic hard block on every alert would block merges
+#     on noise as often as on real bugs. The scan reports; the owner (or whoever
+#     reviews the Security tab) decides case by case.
+#
+# Needs no secrets: GITHUB_TOKEN is supplied automatically, and on a
+# fork-triggered pull_request GitHub downgrades it to read-only regardless of
+# `permissions:` here, consistent with ci.yml's no-secrets design. That also
+# means SARIF upload (security-events: write) may be restricted on a fork PR;
+# the analysis still runs either way.
+on:
+  pull_request:
+  schedule:
+    # Weekly, so a week with no open pull request still gets main scanned
+    # (NOS-35 AC 3). Tuesday 09:17 UTC - off the hour, away from the Monday
+    # 00:00 pile-up other repos schedule against.
+    - cron: "17 9 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # to upload SARIF results to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4 # pinned to the v4 major tag, as ci.yml pins actions/* today
+        with:
+          languages: javascript-typescript
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"

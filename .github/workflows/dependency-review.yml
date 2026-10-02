@@ -1,0 +1,43 @@
+name: Dependency review
+
+# NOS-35 (Segment 3.3): catches a pull request that adds or bumps a dependency
+# to a version with a known, high-or-above severity advisory - the npm
+# equivalent of "we just shipped a CVE" - before a human approves the diff.
+#
+# Deliberately NOT a job in ci.yml: scripts/ci-checks-result.test.mjs asserts
+# the `checks` aggregator's needs: list names every job defined in ci.yml, so
+# any job added there becomes required whether intended or not (NOS-35 AC 1).
+#
+# Required vs advisory (NOS-35 AC 11): configured to fail (`fail-on-severity:
+# high`, per the ticket) but deliberately NOT recommended as a required,
+# merge-blocking status check. Named trade-off: a secret we committed is
+# always self-fixable (revert, rotate); a high-severity advisory in a
+# *transitive* dependency may have no patched version available at all. If
+# this job were a required branch-protection check, a single unfixable
+# transitive CVE could block every pull request that happens to touch
+# package-lock.json - including ones with no relation to the vulnerable
+# package - through no fault of the change under review. So this job's
+# failure is a signal the owner acts on deliberately (revert the bump, pin a
+# patched version, or explicitly allow the advisory via `allow-ghsas:` with a
+# recorded reason) rather than an automatic block (NOS-35 AC 13, second path:
+# documented owner sign-off, not a second required status check).
+#
+# Runs on pull_request only (it compares the PR's base and head dependency
+# manifests via the GitHub API) and needs no secret beyond the default,
+# automatically-scoped GITHUB_TOKEN, so it still runs on a forked pull request
+# consistent with ci.yml's no-secrets design.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency review
+        uses: actions/dependency-review-action@v5.0.0 # pinned to the exact release tag; no floating major tag exists yet for this action
+        with:
+          fail-on-severity: high
