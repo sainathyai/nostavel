@@ -1,0 +1,80 @@
+name: Secret scanning (gitleaks)
+
+# NOS-35 (Segment 3.3): catches a real credential - an API key, a database URL
+# with a password, a private key - committed to a pull request before a human
+# approves it. scripts/agent-guards/patterns.mjs already blocks several specific
+# secret shapes at commit time (LiteAPI, Anthropic, Resend, Google OAuth, Neon,
+# postgres URLs with a password, Stripe live, whsec_, GitHub tokens, AWS AKIA,
+# PEM blocks); gitleaks is a second, broader layer using its own default
+# ruleset (hundreds of provider-specific rules, e.g. SendGrid, Slack, generic
+# high-entropy strings) plus this repo's `.gitleaks.toml` allowlist, run in CI
+# so a secret that slips past --no-verify or a shape the guard doesn't know
+# about is still caught before merge.
+#
+# Deliberately NOT a job in ci.yml: scripts/ci-checks-result.test.mjs asserts
+# the `checks` aggregator's needs: list names every job defined in ci.yml, so
+# any job added there becomes required whether intended or not (NOS-35 AC 1).
+#
+# Required vs advisory (NOS-35 AC 11): REQUIRED. A secret committed to our own
+# repository is always something we can fix ourselves (revert the commit,
+# rotate the credential) - unlike a transitive dependency's CVE with no patched
+# version, there is no legitimate reason to merge past a real finding here.
+# This workflow cannot join ci.yml's `checks` aggregator (AC 1), so "required"
+# means: the owner should add the job name below ("gitleaks / scan") as a
+# second required status check in the main branch's protection rule (NOS-35
+# AC 13, first path) - a repository-settings change reserved for the owner.
+#
+# Needs no secrets and runs the same way on a forked pull request: the gitleaks
+# binary is downloaded from a public release and verified by checksum, not by
+# an action requiring a GITLEAKS_LICENSE secret (gitleaks-action does, for
+# organization repos) - consistent with ci.yml's no-secrets design (AC 7).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to a specific release (not `latest`) and verified by checksum
+      # before it is ever executed (NOS-35 AC 8). GITLEAKS_SHA256 is the
+      # published sha256 for gitleaks_8.30.1_linux_x64.tar.gz, copied from
+      # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+      # at the time this workflow was written - bump both the version and the
+      # checksum together when upgrading, never the version alone.
+      - name: Install gitleaks (pinned, checksum-verified)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o gitleaks.tar.gz "$url"
+          actual="$(sha256sum gitleaks.tar.gz | awk '{print $1}')"
+          if [ "$actual" != "$GITLEAKS_SHA256" ]; then
+            echo "gitleaks checksum mismatch: expected $GITLEAKS_SHA256, got $actual" >&2
+            exit 1
+          fi
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # --config is explicit so this loads the repo's own .gitleaks.toml
+      # (default ruleset extended, plus the allowlist for the fake payment
+      # secret seeded by analysis/2026-08-27/sweep_seed.mts) rather than
+      # gitleaks' built-in default path (NOS-35 AC 4) - without this flag the
+      # allowlisted fixture trips a false positive (AC 5). `dir` mode scans the
+      # checked-out working tree as of this pull request's head commit; it
+      # does not need git history (no scratch commits, no fetch-depth tuning),
+      # and it does not re-walk .git's packed objects as plaintext.
+      # --redact: this repository is public, so its Actions logs are public. Without
+      # it, a finding prints the secret it found into a world-readable log - turning
+      # the scanner that caught a leak into the thing that published it. The finding's
+      # file, line and rule are still reported, which is what a fix needs.
+      - name: Scan for secrets
+        run: gitleaks dir --config .gitleaks.toml --no-banner --redact .
