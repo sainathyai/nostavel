@@ -1,0 +1,125 @@
+name: Browser smoke (Playwright)
+
+# NOS-38 (epic NOS-3, segment 3.4): catches a failure that only shows up in a
+# real browser, on a production build, which nothing else in this repo's CI
+# can see - npm run build's type-check and the unit suite never open a page.
+# Concretely, for /about, /how-it-works, /terms and /support, across two
+# viewports (375px / 1280px) and two colour schemes (light / dark):
+#   - a browser console error or a failed/4xx/5xx network request on load
+#     (e2e/console-and-network.spec.ts)
+#   - a NEW serious/critical accessibility violation (e2e/accessibility-scan.spec.ts,
+#     e2e/theme-attribute.spec.ts - axe-core, against the documented baseline
+#     in e2e/support/axe-baseline.ts)
+#   - a heading structure or keyboard-focus regression
+#     (e2e/heading-structure.spec.ts, e2e/keyboard-focus.spec.ts)
+#   - prefers-color-scheme / data-theme not actually taking effect
+#     (e2e/theme-attribute.spec.ts, e2e/responsive-layout.spec.ts)
+#   - a page reaching the map or the supplier API, which it must not while the
+#     public basemap is down (e2e/no-map-or-supplier-dependency.spec.ts)
+#
+# Deliberately NOT a job in ci.yml: scripts/ci-checks-result.test.mjs asserts
+# the `checks` aggregator's needs: list names every job defined in ci.yml, so
+# any job added there becomes required whether intended or not (same
+# mechanical reason NOS-35's three scanners each live in their own file).
+#
+# Required vs advisory: ADVISORY, and not for "it's new" - two concrete reasons:
+#   1. This suite's failure mode includes environment flakiness a secret
+#      scanner's does not. We have direct evidence of this on this very
+#      branch: two independent runs (one here, one on qa's machine) failed
+#      with a wall of ERR_CONNECTION_REFUSED, and both were root-caused and
+#      reproduced on purpose - see the long comment on `reuseExistingServer`
+#      in playwright.config.ts. That was a local dev-loop artifact (an
+#      orphaned server from an earlier interrupted run), now fixed at the
+#      source, and CI's own setup (a fresh runner, `reuseExistingServer`
+#      forced false by CI=true) was never exposed to it in the first place -
+#      but a suite that drives a real browser against a real Node server
+#      still has more moving parts, and a different failure signature (a
+#      crashed or hung process, a slow CDN download of the browser binary),
+#      than a static scanner reading source text. A merge should not be
+#      blocked by that class of failure the way it should be blocked by a
+#      finding that is unambiguously the pull request's own fault.
+#   2. The suite's own accessibility assertion currently tolerates nine
+#      documented, accepted axe findings (e2e/support/axe-baseline.ts - the
+#      --brass-on---parchment colour pairing, below WCAG AA contrast in the
+#      light theme, present on all four pages), tracked as NOS-40. NOS-40 is
+#      an open `needs-design` ticket: its fix is a design-token decision - a
+#      colour pairing someone has to choose - that nobody on this branch is
+#      authorised to make. A required check would block every unrelated pull
+#      request on a known, already-triaged issue this check did not discover
+#      and that engineering cannot close on its own. That stays true for as
+#      long as NOS-40 stays open; it is not an artifact of the ticket not
+#      existing yet, so filing it does not retire this reason the way a
+#      missing ticket number would have.
+#
+# Chromium only: `npx playwright install --with-deps chromium`, never a bare
+# `playwright install` (which would also fetch webkit and firefox - browsers
+# this suite's config never configures a project for). `--with-deps` additionally
+# installs the Linux system libraries Chromium needs on a bare ubuntu-latest
+# runner (a no-op on a machine that already has them).
+#
+# Caching: the Chromium binary (~300MB) is cached by actions/cache, keyed on
+# the *resolved* @playwright/test version read from node_modules after `npm
+# ci`, not on package-lock.json's hash or a floating tag - the thing that
+# actually determines browser/binary compatibility is the installed
+# @playwright/test version, and keying on anything coarser risks exactly the
+# failure the owner called out: a stale Chromium cached against a bumped
+# @playwright/test. No restore-keys fallback is set, on purpose - reusing a
+# cache for a *different* Playwright version (the only thing a fallback could
+# match) is the stale-cache bug this key format exists to prevent, not a
+# feature to keep as a fallback.
+#
+# CI=true is relied on by playwright.config.ts to pick its CI-only settings
+# (workers: 2, retries: 1, reuseExistingServer forced false regardless).
+# GitHub Actions does set CI=true by default for every job, but it is set
+# explicitly below anyway: this workflow's correctness should not depend on
+# silently trusting a platform default never re-verified in this file - if a
+# future self-hosted runner or reusable-workflow change ever stopped setting
+# it, the job would otherwise still pass while quietly losing CI's settings.
+#
+# Needs no secrets beyond the default GITHUB_TOKEN (unused here) - runs the
+# same way on a forked pull request, consistent with ci.yml's no-secrets design.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Resolve installed Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-${{ steps.playwright-version.outputs.version }}
+
+      # No-op on a cache hit for this exact version: Playwright checks what's
+      # already under ~/.cache/ms-playwright and skips the download.
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm run test:e2e
+
+      # playwright-report/ is where a failure gets diagnosed (trace, screenshot,
+      # the html reporter configured in playwright.config.ts) - only worth
+      # uploading when there is something to diagnose.
+      - name: Upload HTML report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
