@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:int": "node scripts/test-int.mjs",
+    "test:e2e": "playwright test",
     "prepare": "node scripts/git-guard.mjs --install",
     "guard": "node scripts/git-guard.mjs --all",
     "test:agents": "node --test \"scripts/**/*.test.mjs\"",
@@ -41,7 +42,9 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
