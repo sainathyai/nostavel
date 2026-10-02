@@ -96,6 +96,15 @@ Blocked: <none | what, and the decision brief ID>
 ## Pull requests
 
 - **Title:** `NOS-<n> <what changed>`. The key is what links the change back to the ticket.
+  Enforced by the `pr-title` job in CI (`scripts/pr-title.mjs`), so a title without a key
+  fails the required `checks` gate.
+  - **One exemption, for bots:** a pull request opened by `dependabot[bot]` has no ticket,
+    because no human filed one, so it may instead be titled as a dependency update —
+    `build(deps): <what changed>` (also `chore(deps):`, `(deps-dev)`). Both halves are
+    required: a person cannot skip the ticket key by borrowing that format, and the bot
+    cannot use a title that says nothing. The allow-list of bot logins is in
+    `scripts/pr-title.mjs`; adding a bot is a deliberate change there, with a test.
+    (NOS-43 — before this, every Dependabot pull request was unmergeable.)
 - **Body:** the template in `.github/pull_request_template.md` — what and why, risk and
   labels, how it was verified (with the actual output), migration, rollback, handoff block.
 - **Reviews:** `.github/CODEOWNERS` decides who GitHub asks (the owner, today). The

@@ -8,10 +8,10 @@ name: CI
 #
 # Needs NO secrets. The database client connects on first query, not on import
 # (src/db/index.ts), so every job here runs without credentials. That matters on a
-# public repository: pull requests from forks never receive secrets. The one
-# fork-controlled input, the pull request title, is passed through `env:` and read
-# from process.env in pr-title.mjs - never interpolated into a `run:` block, which
-# would let a fork's title inject shell commands.
+# public repository: pull requests from forks never receive secrets. The
+# fork-controlled inputs - the pull request title and its author's login - are passed
+# through `env:` and read from process.env in pr-title.mjs, never interpolated into a
+# `run:` block, which would let a fork's title inject shell commands.
 on:
   push:
     branches: [main]
@@ -150,6 +150,15 @@ jobs:
 
   # A pull request title must start with its ticket key (docs/team/workflow.md).
   # Scoped to pull_request only: there is no PR title to check on a push to main.
+  #
+  # The author is passed alongside the title because a known bot (Dependabot) has no
+  # ticket to name, and its dependency-update titles are exempt - NOS-43, which blocked
+  # a security bump. The decision lives in scripts/pr-title.mjs, where it is tested,
+  # rather than in an `if:` here that would skip the job: a skipped pr-title on a
+  # pull_request event is a failure by design (NOS-28, scripts/ci-checks-result.mjs),
+  # and teaching that aggregator to forgive it would throw away the guarantee that the
+  # title was checked at all. This job runs on every pull request and reports a real
+  # result.
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -159,8 +168,12 @@ jobs:
         with:
           node-version: 24
       - name: Check pull request title
+        # Both values are fork-controlled text and are read from process.env, never
+        # interpolated into this `run:` - see the header comment on script injection.
+        # PR_AUTHOR is a login, which GitHub assigns; a fork cannot set it to a bot's.
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: node scripts/pr-title.mjs
 
   # The required status check (branch protection on main names this job exactly
