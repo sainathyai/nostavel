@@ -62,7 +62,12 @@ const line = (s: string) => console.log(s);
 const checkin = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
 const checkout = new Date(Date.now() + 32 * 86400000).toISOString().slice(0, 10);
 
-line(`base: ${BASE}  key: sandbox (${KEY.length} chars)`);
+// Nothing derived from the key is printed, not even its length: CodeQL's
+// clear-text-logging rule flags any value that flows from the credential into
+// a log sink, and it is right to - a length is weak information, but there is
+// no reason to emit it. The prefix check above already proved the key is the
+// sandbox one.
+line("base: " + BASE + "  key: sandbox prefix verified");
 line(`dates: ${checkin} -> ${checkout}\n`);
 
 const hotels = await call("GET", `/data/hotels?countryCode=US&cityName=New%20York&limit=5`);
