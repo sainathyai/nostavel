@@ -71,7 +71,16 @@ export function readBookingAccess(
 
 /**
  * Add a booking to whatever claim this browser already holds, and return the
- * new claim. Re-sealing resets the expiry on the whole list, which is the
+ * new claim.
+ *
+ * READ-MODIFY-WRITE, with no lock. Two prepares racing in one browser both read
+ * the same cookie and the later `Set-Cookie` wins, so one booking's proof can be
+ * lost - that guest is then told "Booking not found" on a live booking of
+ * theirs, and has to start again. Accepted rather than fixed: the alternative is
+ * server-side state, which is the thing this design exists to avoid (decision
+ * D-4.4), and the race needs two Book clicks genuinely in flight at once. Raised
+ * by the NOS-9 code review.
+ * Re-sealing resets the expiry on the whole list, which is the
  * behaviour we want: a guest mid-checkout on their second booking should not
  * lose the first one's proof to a clock that started earlier.
  */

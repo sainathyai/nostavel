@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   mayActOnBooking,
+  mintedInThisBrowser,
   type BookingIdentity,
   type Caller,
 } from "./booking-authz";
@@ -145,5 +146,27 @@ describe("cancelling without an account, later", () => {
         "manage",
       ).ok,
     ).toBe(false);
+  });
+});
+
+describe("telling the browser that started a booking from a stranger", () => {
+  it("recognizes a member's own booking in the browser that created it, even signed out", () => {
+    // The checkout page needs this to send a member whose session ended back to
+    // re-price, rather than telling them their own booking does not exist.
+    // Found by the code review of PR #33.
+    const caller = { ...nobody, accessIds: [BOOKING] };
+    expect(mintedInThisBrowser(caller, memberBooking)).toBe(true);
+    // And it is emphatically not an authorization answer.
+    expect(mayActOnBooking(caller, memberBooking, "checkout").ok).toBe(false);
+  });
+
+  it("does not recognize a stranger holding only the id", () => {
+    expect(mintedInThisBrowser(nobody, memberBooking)).toBe(false);
+    expect(mintedInThisBrowser({ ...nobody, userId: MEMBER_B }, memberBooking)).toBe(false);
+    expect(mintedInThisBrowser({ ...nobody, verifiedEmail: "a@example.com" }, memberBooking)).toBe(false);
+  });
+
+  it("does not recognize a claim for a different booking", () => {
+    expect(mintedInThisBrowser({ ...nobody, accessIds: [OTHER_BOOKING] }, memberBooking)).toBe(false);
   });
 });

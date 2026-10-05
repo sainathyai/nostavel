@@ -70,6 +70,25 @@ function sameEmail(a: string | null, b: string | null): boolean {
 }
 
 /**
+ * Did this browser create this booking, whatever the session says now?
+ *
+ * Not an authorization answer, and never a substitute for one - a claim
+ * deliberately does not reach a member's booking, because signing out and
+ * reusing the cookie would walk around the checkout page's tier guard.
+ *
+ * What it answers is narrower: "is this the browser that started this, or a
+ * stranger holding an id?" The checkout page needs that distinction because the
+ * two deserve different outcomes. A member whose session ended mid-checkout
+ * should be sent back to re-price the stay, which is what happened before the
+ * ownership check existed; a stranger should be told the booking does not
+ * exist. Collapsing both into "Booking not found" is correct about access and
+ * wrong about the guest.
+ */
+export function mintedInThisBrowser(caller: Caller, booking: BookingIdentity): boolean {
+  return caller.accessIds.includes(booking.id);
+}
+
+/**
  * May this caller act on this booking?
  *
  * Deny is the default: every path below is an explicit grant, so a field we

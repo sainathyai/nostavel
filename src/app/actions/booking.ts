@@ -40,14 +40,26 @@ const NOT_FOUND = "Booking not found.";
  * May the caller act on this booking? (NOS-9.)
  *
  * Resolves the caller server-side, loads the row, and defers the decision to
- * the pure rule in src/lib/booking-authz.ts. Returns the booking on success so
- * a caller does not fetch it twice.
+ * the pure rule in src/lib/booking-authz.ts.
+ *
+ * Returns only the verdict. An earlier version handed back the row "so a caller
+ * does not fetch it twice", which was not true of any call site: each service
+ * function does its own fresh `select`, and should, because it needs the row as
+ * it is at the moment it writes. Keeping the duplicate query and dropping the
+ * claim is the honest version.
+ *
+ * Both halves run unconditionally, in parallel, so a booking id that does not
+ * exist and one that is not yours cost the same work. Sequencing this - bailing
+ * out before resolving the caller - would make the two measurably different.
  */
-async function authorize(bookingId: string, purpose: Purpose) {
+async function authorize(
+  bookingId: string,
+  purpose: Purpose,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const [caller, booking] = await Promise.all([resolveCaller(), getBookingById(bookingId)]);
-  if (!booking) return { ok: false as const, error: NOT_FOUND };
-  if (!mayActOnBooking(caller, booking, purpose).ok) return { ok: false as const, error: NOT_FOUND };
-  return { ok: true as const, booking };
+  if (!booking) return { ok: false, error: NOT_FOUND };
+  if (!mayActOnBooking(caller, booking, purpose).ok) return { ok: false, error: NOT_FOUND };
+  return { ok: true };
 }
 
 // The client supplies the selection snapshot + an idempotency key; the server

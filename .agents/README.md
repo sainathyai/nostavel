@@ -100,6 +100,12 @@ expands to one, into `.agents/mcp.json`: that file is generated into every tool'
 - **Gemini CLI subagents** have no per-agent hooks, so `owns` is advisory there (see above).
 - **The read-only shell rule is a deny-list:** defence in depth, not a sandbox. Git hooks,
   CI and review remain the backstop.
+- **An untrusted workspace also blocks the role's shell.** Observed running the
+  NOS-9 review gates: the reviewer could not execute `npm test` or `npx vitest`
+  at all - every attempt came back "this command requires approval", with no
+  prompt a headless session can answer - so it reviewed by reading and said so.
+  A role's findings are worth less when it cannot run the suite, which is the
+  practical argument for trusting the workspace rather than a theoretical one.
 - **An untrusted workspace has no role guard.** Claude Code ignores
   `.claude/settings.json` until the workspace is trusted, and the generated role files put
   their `PreToolUse` hook there - so a headless run in a fresh checkout gets a role's
