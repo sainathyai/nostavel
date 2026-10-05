@@ -82,6 +82,25 @@ describe("the access claim", () => {
     ).toEqual([A, B]);
   });
 
+  it("refuses to sign at all when no secret is configured", () => {
+    // Failing loudly beats signing with a constant: a predictable key would
+    // make the claim decorative, and a silently unsigned claim would let
+    // anyone mint proof of owning any booking.
+    const real = process.env.AUTH_SECRET;
+    const realNext = process.env.NEXTAUTH_SECRET;
+    delete process.env.AUTH_SECRET;
+    delete process.env.NEXTAUTH_SECRET;
+    try {
+      expect(() => signBookingAccess([A], T0)).toThrow(/AUTH_SECRET/);
+      // Reading, by contrast, is an ordinary "no" - a call site must not have
+      // to wrap an authorization check in a try/catch.
+      expect(readBookingAccess("anything.atall", T0)).toEqual([]);
+    } finally {
+      if (real !== undefined) process.env.AUTH_SECRET = real;
+      if (realNext !== undefined) process.env.NEXTAUTH_SECRET = realNext;
+    }
+  });
+
   it("stays small enough to send on every request", () => {
     expect(signBookingAccess([A, B], T0).length).toBeLessThan(300);
   });
