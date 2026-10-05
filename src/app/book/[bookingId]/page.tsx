@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { mayActOnBooking, mintedInThisBrowser } from "@/lib/booking-authz";
+import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { abandonForIdentityChange } from "@/lib/booking-service";
 import { getStripePublishableKey } from "@/lib/liteapi";
@@ -79,6 +81,37 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
   const booking = await getBookingById(bookingId);
 
   if (!booking) return <Shell><Notice title="Booking not found" body="We couldn't find this reservation. It may have expired." /></Shell>;
+
+  // OWNERSHIP, BEFORE ANYTHING ELSE READS OR WRITES THE ROW (NOS-9).
+  //
+  // Two reasons it has to be first. This page hands `booking.contactEmail` to
+  // the browser below, so without a check a booking id is a lookup for someone
+  // else's email address. And the identity guard further down calls
+  // `abandonForIdentityChange`, which sets the row to `expired` - so before
+  // this check, any SIGNED-IN visitor could destroy a stranger's anonymous
+  // booking just by opening its URL, because `pricedFor` (null) would not match
+  // their user id.
+  //
+  // The same wording as the not-found notice above, deliberately: a different
+  // message here would confirm that a guessed id is real.
+  // One exception, and it is a guest-facing one rather than a loosening. A
+  // member whose session ends mid-checkout fails the ownership check - their
+  // booking has an owner and they are no longer it - but they are still the
+  // browser that started it. Before this check existed they fell through to the
+  // identity guard below, which sends them back to the stay page to re-price
+  // with context. Denying them here instead would replace that with a dead end
+  // reading "Booking not found" about a booking they are looking at.
+  //
+  // It grants nothing: every caller reaching this branch has a session that
+  // disagrees with the row, so the identity guard below always fires and
+  // redirects. A stranger holding only the id still gets the notice, which is
+  // what keeps `abandonForIdentityChange` out of their reach.
+  const caller = await resolveCaller();
+  const mayAct = mayActOnBooking(caller, booking, "checkout").ok;
+  if (!mayAct && !mintedInThisBrowser(caller, booking)) {
+    return <Shell><Notice title="Booking not found" body="We couldn't find this reservation. It may have expired." /></Shell>;
+  }
+
   if (booking.status === "confirmed") redirect(`/book/${bookingId}/confirmation`);
   if (booking.status !== "prebooked") {
     return (
@@ -95,6 +128,10 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
     );
   }
 
+  // Display fields only. The identity comparison below uses `caller.userId`,
+  // the same value the ownership check above was decided from - two independent
+  // reads of "who is signed in" on one page is how this guard and that one
+  // drift apart when only one of them is later edited.
   const user = await getCurrentUser();
 
   // IDENTITY GUARD. The held offerId was priced for whoever was signed in (or
@@ -105,7 +142,7 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
   // since would charge a member the public rate, which is ours to fix, not
   // theirs to absorb.
   const pricedFor = booking.userId ?? null;
-  const nowUser = user?.id ?? null;
+  const nowUser = caller.userId;
   if (pricedFor !== nowUser) {
     await abandonForIdentityChange(bookingId, pricedFor, nowUser);
     const back = new URLSearchParams({

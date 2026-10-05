@@ -72,6 +72,19 @@ A role is a neutral definition (`roles/<role>.md`) that the generator turns into
 
 Capability → tool mapping lives in `TOOL_MAP` in `scripts/agents-sync.mjs`. A role never names tools itself.
 
+### Running one from anywhere
+
+`npm run agent -- --role <name> --prompt "..."` (`scripts/agent-run.mjs`, `--list` for the
+roster). It resolves the repository from its own location rather than from the caller's
+working directory, because agent discovery is per-session-cwd and a session started
+outside this repository cannot see these roles at all.
+
+Per-tool invocation is the only tool-specific part: `RUNNERS` maps a tool to its command
+line, the way `buildAdapters` maps one to its files. A role is named the same way for
+every tool. **Adding a tool is an entry in `RUNNERS`, never a change to a role.** There is
+no Gemini runner yet - the flag that selects a subagent headlessly has not been run on a
+real install, and a guessed command line fails exactly when someone needs a review.
+
 ## Tool servers
 
 | Server | Used by | Notes |
@@ -87,6 +100,18 @@ expands to one, into `.agents/mcp.json`: that file is generated into every tool'
 - **Gemini CLI subagents** have no per-agent hooks, so `owns` is advisory there (see above).
 - **The read-only shell rule is a deny-list:** defence in depth, not a sandbox. Git hooks,
   CI and review remain the backstop.
+- **An untrusted workspace also blocks the role's shell.** Observed running the
+  NOS-9 review gates: the reviewer could not execute `npm test` or `npx vitest`
+  at all - every attempt came back "this command requires approval", with no
+  prompt a headless session can answer - so it reviewed by reading and said so.
+  A role's findings are worth less when it cannot run the suite, which is the
+  practical argument for trusting the workspace rather than a theoretical one.
+- **An untrusted workspace has no role guard.** Claude Code ignores
+  `.claude/settings.json` until the workspace is trusted, and the generated role files put
+  their `PreToolUse` hook there - so a headless run in a fresh checkout gets a role's
+  prompt without its fence. `npm run agent` refuses to start an editing role in that state
+  and warns for a read-only one (NOS-52). Trusting a workspace is the owner's call, since
+  it is what lets its hooks execute; a script must not do it.
 
 **Fixed since:** headless Claude Code exposed no tool servers in CLI 2.1.96; 2.1.276 does.
 

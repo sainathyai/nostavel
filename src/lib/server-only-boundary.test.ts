@@ -127,7 +127,17 @@ describe("server-only boundary (docs/conventions.md §2, T15/G4)", () => {
 
   it("finds the secret-handling modules the boundary applies to", () => {
     const names = modules.map((f) => relative(LIB_DIR, f).replace(/\\/g, "/"));
-    expect(names).toEqual(["dal.ts", "guest-verify.ts", "quote-token.ts", "webhook-auth.ts"]);
+    // signed-claim.ts: the extracted HMAC primitive the booking access claim
+    // is built on (NOS-9). This list caught it on the first run, which is the
+    // point of pinning it - a new module that handles a secret has to be
+    // noticed, not just happen to be correct.
+    expect(names).toEqual([
+      "dal.ts",
+      "guest-verify.ts",
+      "quote-token.ts",
+      "signed-claim.ts",
+      "webhook-auth.ts",
+    ]);
   });
 
   for (const file of modules) {

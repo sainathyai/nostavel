@@ -14,6 +14,20 @@ Keep the sections that apply; delete the ones that don't, rather than writing "n
 
 <What could go wrong if this is wrong: money, a guest claim, access, data.>
 
+## Reviewed by
+<!--
+Name the roles that reviewed this, or say plainly that none did and why. An
+unanswered review is a decision; leaving this blank hides it. The label gates in
+docs/team/roles.md#review-gates say which roles are required.
+
+  npm run agent -- --role code-reviewer --prompt "review PR #<n>"
+
+That command works from any directory - it finds the repository itself. "The
+roles were not available" is almost never the real reason (NOS-52).
+-->
+- **Roles:** <code-reviewer, security-architect, ...>
+- **None, because:** <delete this line if roles did review>
+
 ## How this was verified
 
 - [ ] `npm run verify` passed locally
