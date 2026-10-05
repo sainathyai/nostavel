@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { mayActOnBooking } from "@/lib/booking-authz";
+import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { confirmBooking } from "@/lib/booking-service";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -36,25 +38,46 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
   const { bookingId } = await props.params;
 
   const booking = await getBookingById(bookingId);
-  if (!booking) {
-    return (
-      <Shell>
-        <div className="rounded-xl border border-line bg-surface p-6 text-center">
-          <h1 className="font-display text-[22px]">Booking not found</h1>
-          <p className="mt-2 text-[14px] text-soft">We couldn&apos;t locate this reservation.</p>
-        </div>
-      </Shell>
-    );
-  }
+  const notFound = (
+    <Shell>
+      <div className="rounded-xl border border-line bg-surface p-6 text-center">
+        <h1 className="font-display text-[22px]">Booking not found</h1>
+        <p className="mt-2 text-[14px] text-soft">We couldn&apos;t locate this reservation.</p>
+      </div>
+    </Shell>
+  );
+  if (!booking) return notFound;
+
+  // OWNERSHIP (NOS-9). This page had no check of any kind, and it does two
+  // things that needed one.
+  //
+  // It PRINTS `contactEmail` below, so a booking id was a lookup for a guest's
+  // email address - and this is the URL that ends up in browser history.
+  //
+  // It also calls `confirmBooking` directly rather than through
+  // `confirmBookingAction`, so the supplier's `book()` - the call that spends
+  // the guest's money - was reachable by anyone who opened this URL. A check on
+  // the action alone would have been decorative while this page existed.
+  //
+  // `manage` to look, `checkout` to finalize. Looking is what a guest does when
+  // they come back through /find a week later, having proved control of the
+  // address on the booking; finalizing is part of the original sitting and asks
+  // for the stronger proof.
+  const caller = await resolveCaller();
+  if (!mayActOnBooking(caller, booking, "manage").ok) return notFound;
 
   // Finalize on arrival. Idempotent: an already-confirmed booking just returns its
   // stored result, so a refresh or double-hit here is safe.
   let errorMsg: string | null = null;
   if (booking.status === "prebooked") {
-    try {
-      await confirmBooking({ bookingId });
-    } catch (e) {
-      errorMsg = (e as Error).message;
+    if (mayActOnBooking(caller, booking, "checkout").ok) {
+      try {
+        await confirmBooking({ bookingId });
+      } catch (e) {
+        errorMsg = (e as Error).message;
+      }
+    } else {
+      errorMsg = "This booking was never completed. Start a fresh search to book this stay.";
     }
   } else if (booking.status !== "confirmed") {
     errorMsg = "This booking could not be completed. If you were charged, it will be reversed.";

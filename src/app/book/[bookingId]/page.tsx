@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { mayActOnBooking } from "@/lib/booking-authz";
+import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { abandonForIdentityChange } from "@/lib/booking-service";
 import { getStripePublishableKey } from "@/lib/liteapi";
@@ -79,6 +81,24 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
   const booking = await getBookingById(bookingId);
 
   if (!booking) return <Shell><Notice title="Booking not found" body="We couldn't find this reservation. It may have expired." /></Shell>;
+
+  // OWNERSHIP, BEFORE ANYTHING ELSE READS OR WRITES THE ROW (NOS-9).
+  //
+  // Two reasons it has to be first. This page hands `booking.contactEmail` to
+  // the browser below, so without a check a booking id is a lookup for someone
+  // else's email address. And the identity guard further down calls
+  // `abandonForIdentityChange`, which sets the row to `expired` - so before
+  // this check, any SIGNED-IN visitor could destroy a stranger's anonymous
+  // booking just by opening its URL, because `pricedFor` (null) would not match
+  // their user id.
+  //
+  // The same wording as the not-found notice above, deliberately: a different
+  // message here would confirm that a guessed id is real.
+  const caller = await resolveCaller();
+  if (!mayActOnBooking(caller, booking, "checkout").ok) {
+    return <Shell><Notice title="Booking not found" body="We couldn't find this reservation. It may have expired." /></Shell>;
+  }
+
   if (booking.status === "confirmed") redirect(`/book/${bookingId}/confirmation`);
   if (booking.status !== "prebooked") {
     return (
