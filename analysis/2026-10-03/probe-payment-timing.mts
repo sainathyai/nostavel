@@ -1,5 +1,5 @@
 /**
- * NOS-10 spike: when does the guest's money actually move, and what can we
+ * NOS-45 spike: when does the guest's money actually move, and what can we
  * learn about a charge after the fact?
  *
  * Why this exists: src/lib/booking-service.ts treats a non-null
