@@ -59,7 +59,13 @@ export type Decision = { ok: true; via: Grant } | { ok: false };
 const DENY: Decision = { ok: false };
 
 function sameEmail(a: string | null, b: string | null): boolean {
-  if (!a || !b) return false;
+  // `typeof`, not just `!a`. This is reached with whatever a cookie produced,
+  // and a signed token whose shape nobody checked can hand back a truthy
+  // NUMBER - at which point `.trim()` throws, and this rule neither allows nor
+  // denies, across a server-action boundary that must not throw
+  // (docs/conventions.md section 1). Deny-by-default has to include "I was
+  // handed something that is not an email". Found by the NOS-9 security review.
+  if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 

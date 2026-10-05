@@ -22,6 +22,9 @@ import { sealClaim, unsealClaim } from "@/lib/signed-claim";
 
 export const ACCESS_COOKIE = "nv_booking_access";
 
+/** What this claim is for. Signed into the payload; see signed-claim.ts. */
+const PURPOSE = "booking-access";
+
 // Long enough for a slow card step -- bank 3-D Secure interstitials are the
 // reason this is hours and not minutes -- and short enough that it is not a
 // standing key to the booking. Cancelling later does not depend on it: that
@@ -29,10 +32,15 @@ export const ACCESS_COOKIE = "nv_booking_access";
 // (src/lib/guest-verify.ts, and the `manage` purpose in booking-authz.ts).
 export const ACCESS_TTL_SEC = 2 * 60 * 60;
 
-// A browser that has booked ten times keeps proof of the ten most recent. The
-// cap exists because a cookie is sent on every request to this origin and an
-// uncapped list is a slow leak into every one of them.
-const MAX_IDS = 10;
+// A cap, because this cookie is sent on every request to the origin and an
+// uncapped list is a slow leak into all of them. Eviction is oldest-first, so
+// the cap is also an over-rejection risk: a comparison shopper who clicks Book
+// on more rooms than this inside the claim window loses proof of the earliest,
+// and is told "Booking not found" on their own live booking. Raised from ten to
+// twenty after the NOS-9 security review pointed that out: each id is a
+// 36-character uuid, so twenty keeps the cookie near a kilobyte, well inside
+// the 4KB limit, while putting the eviction out of reach of real browsing.
+const MAX_IDS = 20;
 
 /** Seal a claim naming exactly these booking ids. */
 export function signBookingAccess(
@@ -42,7 +50,7 @@ export function signBookingAccess(
   const ids = bookingIds
     .filter((id) => typeof id === "string" && id.length > 0)
     .slice(-MAX_IDS);
-  return sealClaim(ids, ACCESS_TTL_SEC, now);
+  return sealClaim(PURPOSE, ids, ACCESS_TTL_SEC, now);
 }
 
 /**
@@ -54,7 +62,7 @@ export function readBookingAccess(
   token: string | null | undefined,
   now = Date.now(),
 ): string[] {
-  const data = unsealClaim(token, now);
+  const data = unsealClaim(PURPOSE, token, now);
   if (!Array.isArray(data)) return [];
   return data
     .filter((id): id is string => typeof id === "string" && id.length > 0)

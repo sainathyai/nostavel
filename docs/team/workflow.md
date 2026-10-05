@@ -72,6 +72,35 @@ The ticket key drives the rest: branch `NOS-<n>-short-slug`, pull request title 
 - Nothing depends on one tool's conversation state. The state of the work is in the
   artifacts, so another tool, another model or the owner can pick it up at any handoff.
 
+### Running a role
+
+```
+npm run agent -- --list
+npm run agent -- --role code-reviewer      --prompt "review PR #33"
+npm run agent -- --role security-architect --prompt-file notes.md
+```
+
+`scripts/agent-run.mjs` finds the repository from its own location, so this works from
+any directory. That matters more than it sounds: a coding tool discovers its agents from
+the directory the session started in, so a session started elsewhere - while editing this
+repository by absolute path, which is ordinary - cannot see the roles at all. On NOS-9 a
+`security` change shipped with one reviewer for exactly that reason, and the pull request
+said the roles were "not available" when only one route to them was closed (NOS-52).
+
+Two things the command does on purpose:
+
+- **A role gets only what its charter allows.** The tool allow-list is derived from the
+  role's `capabilities`, so a reviewer never holds `Write`, and its shell is narrowed to
+  reading commands.
+- **It refuses an editing role in an untrusted workspace.** An untrusted workspace has
+  `.claude/settings.json` ignored, and that is where the role guard hooks live - so the
+  role would arrive without `owns` enforcement. Read-only roles still run, with a warning.
+  The fix is the owner's: open the tool interactively in the repository once and accept the
+  trust dialog.
+
+If a review did not happen, the pull request says so under **Reviewed by**. An unanswered
+review is a decision, and a blank is how it hides.
+
 ### Handoff block
 
 Every role ends its turn by appending this to the pull request or ticket:

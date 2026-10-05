@@ -72,13 +72,13 @@ describe("the access claim", () => {
     // A signature proves we wrote the token, not that this version of the code
     // wrote the fields it expects.
     for (const shape of [{ id: A }, "just-a-string", 42, [1, 2, 3], null]) {
-      expect(readBookingAccess(sealClaim(shape, 600, T0), T0)).toEqual([]);
+      expect(readBookingAccess(sealClaim("booking-access", shape, 600, T0), T0)).toEqual([]);
     }
   });
 
   it("drops empty and non-string ids rather than carrying them", () => {
     expect(
-      readBookingAccess(sealClaim([A, "", 7, null, B], 600, T0), T0),
+      readBookingAccess(sealClaim("booking-access", [A, "", 7, null, B], 600, T0), T0),
     ).toEqual([A, B]);
   });
 
@@ -99,6 +99,14 @@ describe("the access claim", () => {
       if (real !== undefined) process.env.AUTH_SECRET = real;
       if (realNext !== undefined) process.env.NEXTAUTH_SECRET = realNext;
     }
+  });
+
+  it("refuses a claim that was signed for a different purpose", () => {
+    // Four signed formats share AUTH_SECRET and the same envelope, so the
+    // purpose is what tells them apart - and it is inside the signed bytes, not
+    // inferred from field names. See signed-claim.ts.
+    expect(readBookingAccess(sealClaim("find-verified", [A], 600, T0), T0)).toEqual([]);
+    expect(readBookingAccess(sealClaim("", [A], 600, T0), T0)).toEqual([]);
   });
 
   it("stays small enough to send on every request", () => {
@@ -139,13 +147,16 @@ describe("adding a booking to an existing claim", () => {
     );
   });
 
-  it("keeps the ten most recent bookings and forgets the oldest", () => {
+  it("keeps the twenty most recent bookings and forgets the oldest", () => {
+    // The cap is an over-rejection risk, not just a size limit: the evicted
+    // guest is told "Booking not found" on their own live booking. Twenty puts
+    // that out of reach of real browsing; the NOS-9 security review caught it
+    // at ten, which a determined comparison shopper could hit.
     let token = signBookingAccess([], T0);
-    for (let i = 0; i < 12; i++)
-      token = addBookingAccess(token, `bkg_${i}`, T0);
+    for (let i = 0; i < 22; i++) token = addBookingAccess(token, `bkg_${i}`, T0);
     const ids = readBookingAccess(token, T0);
-    expect(ids).toHaveLength(10);
+    expect(ids).toHaveLength(20);
     expect(ids[0]).toBe("bkg_2");
-    expect(ids.at(-1)).toBe("bkg_11");
+    expect(ids.at(-1)).toBe("bkg_21");
   });
 });

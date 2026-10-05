@@ -22,7 +22,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // acceptance criterion. It can adopt this later, on its own ticket.
 
 function secret(): string {
-  const s = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+  // AUTH_SECRET only, matching quote-token.ts. Accepting NEXTAUTH_SECRET as
+  // well would mean a deployment that sets just that one gets working booking
+  // claims and throwing quote tokens - two halves of the same page disagreeing
+  // about whether the app is configured.
+  const s = process.env.AUTH_SECRET;
   // Failing loudly beats signing with a constant: a predictable key makes the
   // whole claim decorative.
   if (!s) throw new Error("AUTH_SECRET is required to sign claims");
@@ -33,14 +37,28 @@ function sign(payload: string): string {
   return createHmac("sha256", secret()).update(payload).digest("base64url");
 }
 
-/** Seal a value with an expiry. Throws only if no secret is configured. */
+/**
+ * Seal a value with an expiry, for one named purpose.
+ *
+ * WHY THE PURPOSE IS SIGNED, NOT JUST DOCUMENTED. Every signed artifact in this
+ * codebase is `base64url(JSON) "." HMAC-SHA256(AUTH_SECRET, body)`, so a token
+ * minted for one job verifies perfectly as a token for another, and only the
+ * payload's field names tell them apart. That is not a type system. The
+ * security review of NOS-9 found the consequence: the /find CHALLENGE cookie
+ * is a superset of the /find VERIFIED cookie, sharing the names and meanings of
+ * both its fields, so the challenge - which is handed to whoever asks for a
+ * code, not to whoever receives it - read as proof of owning the address.
+ * Binding the purpose into the signed bytes makes that structurally impossible
+ * rather than a thing each reader has to remember to check.
+ */
 export function sealClaim(
+  purpose: string,
   data: unknown,
   ttlSeconds: number,
   now = Date.now(),
 ): string {
   const payload = Buffer.from(
-    JSON.stringify({ d: data, e: Math.floor(now / 1000) + ttlSeconds }),
+    JSON.stringify({ p: purpose, d: data, e: Math.floor(now / 1000) + ttlSeconds }),
   ).toString("base64url");
   return `${payload}.${sign(payload)}`;
 }
@@ -54,6 +72,7 @@ export function sealClaim(
  * not that an older version of this code wrote the fields this one expects.
  */
 export function unsealClaim(
+  purpose: string,
   token: string | null | undefined,
   now = Date.now(),
 ): unknown {
@@ -77,13 +96,20 @@ export function unsealClaim(
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
 
   try {
-    const { d, e } = JSON.parse(
+    const { p, d, e } = JSON.parse(
       Buffer.from(payload, "base64url").toString(),
     ) as {
+      p?: unknown;
       d?: unknown;
       e?: unknown;
     };
-    if (typeof e !== "number" || e * 1000 <= now) return null;
+    // A token for another purpose is not this purpose's token, however validly
+    // we signed it.
+    if (p !== purpose) return null;
+    // `typeof e !== "number"` before the comparison, because `now > undefined`
+    // and every comparison against NaN are false - a missing expiry would read
+    // as "not yet expired". Fail closed.
+    if (typeof e !== "number" || !Number.isFinite(e) || e * 1000 <= now) return null;
     return d ?? null;
   } catch {
     return null;

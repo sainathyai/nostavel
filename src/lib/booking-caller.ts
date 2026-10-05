@@ -24,6 +24,10 @@ export async function resolveCaller(): Promise<Caller> {
   return {
     userId: user?.id ?? null,
     accessIds: readBookingAccess(jar.get(ACCESS_COOKIE)?.value),
-    verifiedEmail,
+    // Belt and braces: `readVerifiedEmail` validates its own shape now, but
+    // this is the boundary where an outside value becomes a typed one, and what
+    // reads it is a security decision. One coercion here is cheaper than
+    // trusting every future edit to that function.
+    verifiedEmail: typeof verifiedEmail === "string" ? verifiedEmail : null,
   };
 }
