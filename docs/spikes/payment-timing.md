@@ -1,5 +1,6 @@
-# NOS-10 spike: when does the guest's money move, and what can we learn afterwards?
+# Spike NOS-45: when does the guest's money move, and what can we learn afterwards?
 
+- **Ticket:** [NOS-45](https://syrav.atlassian.net/browse/NOS-45)
 - **Date:** 2026-10-03
 - **Why:** the NOS-5 fix (sweeper expiring a hold mid-payment) and the NOS-6 fix
   (two concurrent `book()` calls) both need to know what the supplier actually does with
@@ -44,11 +45,20 @@ through these shapes.
 LiteAPI documents a 15-minute TTL on the prebook state. `PREBOOK_TTL_MINUTES = 30` in
 `src/app/api/cron/sweep/route.ts`.
 
-**This is a second defect, in the opposite direction from NOS-5.** Between minute 15 and
+**This is a second defect, in the opposite direction from NOS-5, filed as NOS-46.** Between minute 15 and
 minute 30 our row still says `prebooked` and the checkout page still works, while the
 supplier's hold is already gone. A guest who pays in that window is charged against a
 dead prebook and `book()` then fails. NOS-5 is "we expire too eagerly"; this is "we keep
 the door open after the room is gone".
+
+Writing the ticket turned up something worse than the wrong number. The sweeper's cutoff is
+measured against `bookings.updatedAt`, and `saveBookingGuest` writes `updatedAt` on a row
+that is still `prebooked` - so a guest who fills in their details at minute 14 pushes our
+cutoff to minute 44 while the supplier's hold died at minute 15. The window we enforce is
+"30 minutes since the last write", not 30 minutes since the prebook. Changing 30 to 15 alone
+would not fix it. There is also no expiry field anywhere in the prebook response
+(all 24 keys are in this folder's raw capture), so the value has to live in our code with
+its source attached. NOS-46 carries all three.
 
 ### 4. An unfinalized charge is a hold, and it releases itself
 
