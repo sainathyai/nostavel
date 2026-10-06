@@ -59,6 +59,29 @@ describe("isExemptPath", () => {
     expect(isExemptPath("/api/cron/../book/abc")).toBe(false);
   });
 
+  it("does not exempt a path carrying a percent escape or a backslash", () => {
+    // The bypass this closes: a path that reads as exempt here but resolves
+    // somewhere else once decoded. The framework decodes before this sees it,
+    // so none of these is reachable today - which is exactly why the fence
+    // belongs in the rule, where a test holds it, rather than in a comment
+    // about what the framework currently happens to do.
+    expect(isExemptPath("/api/cron/%2e%2e/book/abc")).toBe(false);
+    expect(isExemptPath("/api/cron/%2E%2E/book/abc")).toBe(false);
+    expect(isExemptPath("/api/%63ron/sweep")).toBe(false);
+    // A literal backslash, with no percent escape and no ".." in it, so this
+    // case exercises the backslash branch on its own.
+    expect(isExemptPath("/api/cron\\sweep")).toBe(false);
+  });
+
+  it("still exempts the three real paths, which contain none of that", () => {
+    // The permissive direction of the rule above: hardening it must not have
+    // switched off guest-money recovery, which is what exempting the sweeper is
+    // for.
+    expect(isExemptPath("/api/health")).toBe(true);
+    expect(isExemptPath("/api/cron/sweep")).toBe(true);
+    expect(isExemptPath("/api/webhooks/liteapi")).toBe(true);
+  });
+
   it("does not exempt an ordinary page", () => {
     expect(isExemptPath("/")).toBe(false);
     expect(isExemptPath("/book/abc")).toBe(false);

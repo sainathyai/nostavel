@@ -77,13 +77,21 @@ export type VerdictInput = {
 /**
  * Does this path authenticate itself, and so never see the password gate?
  *
- * A path containing `..` is never exempt. The framework normalizes the pathname
- * before this sees it, so this is defence against a future config change
- * (skipProxyUrlNormalize) rather than today's behaviour — and the safe answer
- * for a path we cannot read plainly is "not exempt".
+ * ANYTHING NOT PLAINLY READABLE IS NOT EXEMPT. The three exempt paths are fixed
+ * literals that never legitimately contain a parent-directory segment, a
+ * percent escape or a backslash, so the presence of any of those means this is
+ * not one of them — whatever it may decode to later. That matters because the
+ * danger is one-directional: a path this function reads as exempt but the
+ * router resolves somewhere else would be a bypass, while a path refused here
+ * that was in fact harmless only costs its caller a password.
+ *
+ * The framework normalizes and decodes the pathname before this sees it, so
+ * none of these cases is reachable today. This is the fence for a later change
+ * (`skipProxyUrlNormalize`, a different host in front, a framework upgrade)
+ * that would otherwise move a decision made here into somewhere nobody looks.
  */
 export function isExemptPath(path: string): boolean {
-  if (path.includes("..")) return false;
+  if (path.includes("..") || path.includes("%") || path.includes("\\")) return false;
   if (EXEMPT_EXACT.includes(path)) return true;
   return EXEMPT_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
