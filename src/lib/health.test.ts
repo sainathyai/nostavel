@@ -22,12 +22,11 @@ function shared(overrides: Env = {}): Env {
 }
 
 describe("the answer anyone may have", () => {
-  it("says it is healthy, which build it is, and that it is on the sandbox", () => {
+  it("says it is healthy, which build it is, and which environment", () => {
     expect(buildHealth({ env: shared(), detail: false, database: "not-checked" })).toEqual({
       ok: true,
       env: "uat",
       sha: "abc1234",
-      supplier: "sandbox",
     });
   });
 
@@ -37,7 +36,17 @@ describe("the answer anyone may have", () => {
     // only the operations secret buys the reason.
     const health = buildHealth({ env: shared({ DATABASE_URL: undefined }), detail: false, database: "not-checked" });
     expect(health.ok).toBe(false);
-    expect(Object.keys(health).sort()).toEqual(["env", "ok", "sha", "supplier"]);
+    expect(Object.keys(health).sort()).toEqual(["env", "ok", "sha"]);
+  });
+
+  it("does not tell a stranger which copy has a live supplier key engaged", () => {
+    // Raised by the NOS-60 code review: `supplier` is not a secret value, but it
+    // tells an anonymous caller which deployed copy is worth spending effort on,
+    // which is the same kind of signal as the problem list and belongs on the
+    // same side of the line. The copy still answers that it is unhealthy.
+    const health = buildHealth({ env: shared({ LITEAPI_KEY: LIVE_KEY }), detail: false, database: "not-checked" });
+    expect(health.ok).toBe(false);
+    expect(health).not.toHaveProperty("supplier");
   });
 
   it("says the build is unknown rather than inventing one, when it was not baked in", () => {
@@ -46,18 +55,10 @@ describe("the answer anyone may have", () => {
     );
     expect(buildHealth({ env: shared({ APP_SHA: "  " }), detail: false, database: "not-checked" }).sha).toBe("unknown");
   });
-
-  it("reports a live supplier key as unhealthy, which is what stops the pipeline promoting it", () => {
-    // The second of the two layers: the environment refuses to serve, and the
-    // delivery pipeline refuses to move traffic to it. This is the signal the
-    // pipeline reads.
-    const health = buildHealth({ env: shared({ LITEAPI_KEY: LIVE_KEY }), detail: false, database: "not-checked" });
-    expect(health).toMatchObject({ ok: false, supplier: "live" });
-  });
 });
 
 describe("the answer behind the operations secret", () => {
-  it("adds the problem list and the database result", () => {
+  it("adds the supplier mode, the problem list and the database result", () => {
     expect(buildHealth({ env: shared(), detail: true, database: "ok" })).toEqual({
       ok: true,
       env: "uat",
@@ -66,6 +67,16 @@ describe("the answer behind the operations secret", () => {
       problems: [],
       database: "ok",
     });
+  });
+
+  it("reports a live supplier key, which is what stops the pipeline promoting it", () => {
+    // The second of the two layers: the environment refuses to serve every
+    // request (src/proxy.ts), and the delivery pipeline refuses to move traffic
+    // to it. This is the signal the pipeline reads, and it holds the operations
+    // secret, so it is on the detailed side.
+    const health = buildHealth({ env: shared({ LITEAPI_KEY: LIVE_KEY }), detail: true, database: "ok" });
+    expect(health).toMatchObject({ ok: false, supplier: "live" });
+    expect(health.problems.map((p) => p.code)).toContain("supplier-key-live");
   });
 
   it("names each problem by a code the pipeline can assert on", () => {
@@ -104,5 +115,17 @@ describe("a developer's own machine", () => {
       problems: [],
       database: "not-checked",
     });
+  });
+});
+
+describe("a built image that has not said what it is", () => {
+  it("is reported unhealthy rather than passing as a laptop", () => {
+    // The failure the NOS-60 code review found: with APP_ENV dropped from a
+    // deployed copy, this route used to answer `ok: true, env: "local"` -
+    // indistinguishable from a developer's machine, on a URL with no password
+    // gate. The route built to catch a misconfiguration reported healthy.
+    const health = buildHealth({ env: { APP_SHA: "abc1234", LITEAPI_KEY: SANDBOX_KEY }, detail: true, database: "ok" });
+    expect(health.ok).toBe(false);
+    expect(health.problems.map((p) => p.code)).toEqual(["environment-not-declared"]);
   });
 });

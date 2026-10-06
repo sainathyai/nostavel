@@ -39,11 +39,39 @@
 // configuration beats a valid password" somewhere a test can see it.
 import type { ConfigProblem } from "./deploy-config";
 
-/** Matched exactly: /api/healthcheck or /api/health-internal are NOT this route. */
-const EXEMPT_EXACT = ["/api/health"];
+/**
+ * The health route. Separate from the list below because it is exempt from the
+ * CONFIGURATION refusal as well as from the password - it is the one thing a
+ * fatally misconfigured copy still answers.
+ */
+const HEALTH_PATH = "/api/health";
 
-/** Matched as a prefix, trailing slash included so /api/cronjobs is not /api/cron/. */
-const EXEMPT_PREFIXES = ["/api/webhooks/", "/api/cron/"];
+/**
+ * Exempt from the PASSWORD only, and named one at a time.
+ *
+ * AN EXACT LIST, NOT A PREFIX. The first draft exempted `/api/webhooks/` and
+ * `/api/cron/` wholesale, which exempts every path that will ever be added
+ * beneath them. The NOS-60 security review put the scenario plainly: a later
+ * `/api/cron/warm-search`, added to keep the environment responsive and written
+ * without a bearer check because "it isn't money", would have become an
+ * unauthenticated supplier-and-AI-spending endpoint on a gated environment, and
+ * no test would have failed.
+ *
+ * Naming them individually makes adding the fourth a decision someone has to
+ * make. Getting it wrong now fails closed and loudly: the scheduler gets a 401
+ * it did not expect, rather than the world getting a route it should not have.
+ *
+ * Each of these authenticates itself, in constant time, and accepts POST only:
+ * the two cron routes against CRON_SECRET, the webhook against the supplier's
+ * shared secret. So exempting them moves no trust - and locking them out would
+ * have switched off the abandoned-hold sweeper, which is the only thing that
+ * rescues a guest who was charged and whose browser never came back.
+ */
+const EXEMPT_FROM_PASSWORD = [
+  "/api/cron/sweep",
+  "/api/cron/reconcile",
+  "/api/webhooks/liteapi",
+];
 
 export type Verdict =
   /** Serve it. */
@@ -77,23 +105,21 @@ export type VerdictInput = {
 /**
  * Does this path authenticate itself, and so never see the password gate?
  *
- * ANYTHING NOT PLAINLY READABLE IS NOT EXEMPT. The three exempt paths are fixed
- * literals that never legitimately contain a parent-directory segment, a
- * percent escape or a backslash, so the presence of any of those means this is
- * not one of them — whatever it may decode to later. That matters because the
- * danger is one-directional: a path this function reads as exempt but the
- * router resolves somewhere else would be a bypass, while a path refused here
- * that was in fact harmless only costs its caller a password.
+ * EXACT EQUALITY, WHICH IS WHY THERE IS NO LONGER AN ENCODING FENCE HERE. An
+ * earlier commit on this branch refused any path containing `..`, `%` or a
+ * backslash, because a prefix test can be fooled by a path that reads as exempt
+ * here and resolves somewhere else in the router. Moving to an exact list
+ * (above) makes that fence unnecessary rather than merely redundant: there is no
+ * string that equals `/api/cron/sweep` and routes anywhere other than
+ * `/api/cron/sweep`. A weaker protection was replaced by a stronger one, not
+ * dropped.
  *
- * The framework normalizes and decodes the pathname before this sees it, so
- * none of these cases is reachable today. This is the fence for a later change
- * (`skipProxyUrlNormalize`, a different host in front, a framework upgrade)
- * that would otherwise move a decision made here into somewhere nobody looks.
+ * The one-directional danger is unchanged and is what justifies the strictness:
+ * a path wrongly read as exempt is a bypass, while a path wrongly refused costs
+ * its caller a password.
  */
 export function isExemptPath(path: string): boolean {
-  if (path.includes("..") || path.includes("%") || path.includes("\\")) return false;
-  if (EXEMPT_EXACT.includes(path)) return true;
-  return EXEMPT_PREFIXES.some((prefix) => path.startsWith(prefix));
+  return EXEMPT_FROM_PASSWORD.includes(path);
 }
 
 /**
@@ -129,7 +155,7 @@ export function parseBasicPassword(authorization: string | null): string | null 
  * booking with real money. Only then the gate.
  */
 export function requestVerdict(input: VerdictInput): Verdict {
-  if (EXEMPT_EXACT.includes(input.path)) return { action: "allow" };
+  if (input.path === HEALTH_PATH) return { action: "allow" };
 
   if (input.fatal.length > 0) return { action: "unavailable", problems: input.fatal };
 
@@ -139,3 +165,6 @@ export function requestVerdict(input: VerdictInput): Verdict {
   const received = parseBasicPassword(input.authorization);
   return input.matches(received, input.password) ? { action: "allow" } : { action: "challenge" };
 }
+
+/** Exported for the test that pins the list, and for the runbook to quote. */
+export const EXEMPT_PATHS_FOR_TEST = { HEALTH_PATH, EXEMPT_FROM_PASSWORD } as const;

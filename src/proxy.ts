@@ -22,7 +22,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requestVerdict } from "@/lib/access-gate";
-import { accessGateEnabled, fatalProblems } from "@/lib/deploy-config";
+import { accessGateEnabled, accessPassword, fatalProblems } from "@/lib/deploy-config";
 import { verifySharedSecret } from "@/lib/webhook-auth";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -30,13 +30,20 @@ const NO_STORE = { "cache-control": "no-store" };
 export function proxy(request: NextRequest) {
   const verdict = requestVerdict({
     path: request.nextUrl.pathname,
-    // Recomputed per request rather than captured at module load: cheap (string
-    // comparisons on a handful of variables), and it means a copy whose
-    // configuration is corrected does not need a restart to start serving.
+    // Recomputed per request rather than captured at module load, because it is
+    // cheap: a handful of string comparisons.
+    //
+    // NOT because it makes a correction take effect without a restart. The first
+    // draft of this comment claimed that, and the NOS-60 security review pointed
+    // out it is false in the direction that matters: src/lib/liteapi.ts captures
+    // the supplier key at module load and memoises the payment account it
+    // derives from it, so a process whose key is corrected in place would have a
+    // gate saying "sandbox, serve" over a client still holding the live one.
+    // CORRECTING THE SUPPLIER KEY NEEDS A RESTART.
     fatal: fatalProblems(process.env),
     gateEnabled: accessGateEnabled(process.env),
     authorization: request.headers.get("authorization"),
-    password: process.env.ACCESS_PASSWORD,
+    password: accessPassword(process.env),
     matches: verifySharedSecret,
   });
 
@@ -52,6 +59,21 @@ export function proxy(request: NextRequest) {
       headers: { ...NO_STORE, "content-type": "text/plain; charset=utf-8" },
     });
   }
+
+  // LOGGED, BECAUSE OTHERWISE NOBODY EVER LEARNS IT WAS TRIED. There is no rate
+  // limit on this gate yet (NOS-62): the in-memory limiter this repository has
+  // is per instance, and on a platform that scales to zero that is close to no
+  // limit at all. So the minimum the NOS-60 security review asked for is that a
+  // refusal leaves a trace — an unthrottled dictionary attack against a public
+  // URL should at least be visible afterwards, and on a per-request billing
+  // model it is also a cost worth seeing.
+  //
+  // The path and a coarse source only. Never the password that was tried, and
+  // never the header: both are attacker-controlled text heading for a log, and
+  // one of them is a credential guess that may be someone's real password
+  // somewhere else.
+  const source = (request.headers.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "unknown";
+  console.warn(`[gate] refused ${request.nextUrl.pathname} from ${source}`);
 
   return new NextResponse("Authentication required.", {
     status: 401,
@@ -73,5 +95,16 @@ export const config = {
   // of every asset buys nothing and costs latency on each one. The HTML that
   // loads them is not excluded, so a stranger gets assets for a page they
   // cannot see.
-  matcher: ["/((?!_next/static|favicon\\.ico).*)"],
+  //
+  // THE TRAILING SLASH IS LOAD-BEARING. Next's own documented example writes
+  // this as `_next/static`, which is an unanchored prefix test: measured
+  // against the real image, `/_next/staticXYZ` reached the router with NO gate
+  // and no fatal-configuration check (404, not 401). Nothing lives at such a
+  // path today, so it was never a live bypass - but what is excluded here is
+  // excluded from the live-key refusal as well as from the password, so the
+  // list has to mean exactly what it says. `favicon.ico` came out of the
+  // exclusion altogether: it is one small request, and an exact-match
+  // exclusion is a second thing to keep correct for no benefit. Raised as a
+  // judgment call by the NOS-60 code review, then confirmed by probe.
+  matcher: ["/((?!_next/static/).*)"],
 };

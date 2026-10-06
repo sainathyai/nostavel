@@ -15,9 +15,49 @@ import {
   type RateEvidence,
 } from "./pricing";
 import { summarizeFees, type TaxSchemaEntry } from "./fees";
+import { supplierMode } from "./deploy-config";
 
 const BASE = process.env.LITEAPI_BASE_URL || "https://api.liteapi.travel/v3.0";
-const KEY = process.env.LITEAPI_KEY || "";
+// Trimmed. The NOS-60 security review (M2) found this read the key untrimmed
+// while deploy-config trimmed it, so a key pasted into a secret store with a
+// leading space would have passed the gate as `sandbox` while THIS module
+// decided `live` and fetched the supplier's LIVE payment account for the
+// browser. Trimming here makes the outgoing header agree with the mode as well.
+const KEY = (process.env.LITEAPI_KEY || "").trim();
+
+/**
+ * Refuse to speak to the supplier with a key that is not a sandbox key.
+ *
+ * THE SECOND LINE, AND THE ONE AT THE POINT WHERE MONEY MOVES. src/proxy.ts
+ * already answers 503 to every request when the key is live, which is what stops
+ * a guest reaching a page at all. The NOS-60 code review pointed out that this
+ * was the ONLY enforcement point, and that every other credential in the app is
+ * checked twice: the webhook secret is verified by the proxy's exemption AND
+ * again inside the webhook route, and CRON_SECRET likewise inside the sweeper
+ * and the reconciler. The rule described as having zero tolerance was the one
+ * with no second check.
+ *
+ * The failure class it named is real and has a CVE to its name: a request that
+ * skips the proxy (a matcher that drifts, a host in front, a framework
+ * regression of the CVE-2025-29927 kind) would reach this module with nothing
+ * left to stop it. A request that never reaches `fetch` cannot move money,
+ * whatever got it this far.
+ *
+ * `supplierMode` rather than a second copy of the prefix test, so "what counts
+ * as a sandbox key" has one definition (src/lib/deploy-config.ts).
+ *
+ * When the live-money gate is eventually built (release-gate, a later segment),
+ * THIS is the function it has to open deliberately - which is the point. It
+ * cannot be opened by forgetting something.
+ */
+function requireSandboxKey(): void {
+  if (supplierMode({ LITEAPI_KEY: KEY }) !== "sandbox") {
+    throw new Error(
+      "Refusing to call the supplier: LITEAPI_KEY is not a sandbox key. Every deployed " +
+        "copy of this app stays on the supplier sandbox and the live-money gate stays shut.",
+    );
+  }
+}
 
 type Json = Record<string, unknown> | unknown[];
 
@@ -32,6 +72,7 @@ async function api(
   attempt = 1,
 ): Promise<any> {
   if (!KEY) throw new Error("LITEAPI_KEY missing. Add it to .env.local");
+  requireSandboxKey();
   let url = BASE + path;
   if (opts.params) {
     const q = new URLSearchParams(
@@ -436,7 +477,13 @@ export async function getSupplierBooking(liteapiBookingId: string): Promise<any>
 let _stripePk: string | null = null;
 export async function getStripePublishableKey(): Promise<string> {
   if (_stripePk) return _stripePk;
-  const env = KEY.startsWith("sand_") ? "sandbox" : "live";
+  // Guarded first, and deliberately before the cache check's sibling below:
+  // this function chooses which of the supplier's PAYMENT ACCOUNTS the guest's
+  // browser will be pointed at, so a live key here is a real card being charged
+  // for real money. Of the two call sites of requireSandboxKey, this is the one
+  // that reaches a guest's wallet most directly.
+  requireSandboxKey();
+  const env = supplierMode({ LITEAPI_KEY: KEY });
   const res = await fetch("https://payment-wrapper.liteapi.travel/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

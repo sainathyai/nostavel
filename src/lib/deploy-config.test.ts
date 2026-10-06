@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   accessGateEnabled,
+  accessPassword,
   appEnv,
   configProblems,
   fatalProblems,
@@ -85,6 +86,18 @@ describe("supplierMode", () => {
     expect(supplierMode({})).toBe("missing");
     expect(supplierMode({ LITEAPI_KEY: "  " })).toBe("missing");
   });
+
+  it("reads a padded key the same way the supplier client does", () => {
+    // M2 of the NOS-60 security review. This rule used to exist twice: here,
+    // trimmed, and in src/lib/liteapi.ts, untrimmed. A key pasted into a secret
+    // store with a leading space would have passed the gate as `sandbox` while
+    // the supplier client decided `live` and fetched the supplier's LIVE payment
+    // account for the guest's browser. There is now one definition, which
+    // liteapi.ts imports, and it trims.
+    expect(supplierMode({ LITEAPI_KEY: " " + SANDBOX_KEY })).toBe("sandbox");
+    expect(supplierMode({ LITEAPI_KEY: SANDBOX_KEY + "\n" })).toBe("sandbox");
+    expect(supplierMode({ LITEAPI_KEY: "  " + LIVE_KEY + "  " })).toBe("live");
+  });
 });
 
 describe("accessGateEnabled", () => {
@@ -109,6 +122,45 @@ describe("configProblems on a developer's own machine", () => {
 
   it("accepts a sandbox key with nothing else configured", () => {
     expect(configProblems({ LITEAPI_KEY: SANDBOX_KEY })).toEqual([]);
+  });
+});
+
+describe("configProblems for a built image", () => {
+  // The silent failure found by the NOS-60 code review: APP_ENV is the one value
+  // whose absence switches off nearly every check here, and nothing in the image
+  // sets it - it comes from the deployment's service configuration, on every
+  // redeploy, forever. Dropped once, a shared copy would have inherited a
+  // laptop's exemptions: no password gate on a public URL, no refusal over a
+  // missing AUTH_SECRET or APP_URL, and a health route answering `ok: true`.
+  const SHA = "abc1234";
+
+  it("refuses to serve when APP_SHA is baked in but APP_ENV was never set", () => {
+    expect(codes({ APP_SHA: SHA, LITEAPI_KEY: SANDBOX_KEY })).toEqual(["environment-not-declared"]);
+  });
+
+  it("accepts the same image when it declares itself local, which is a person running it on purpose", () => {
+    // The permissive direction. The distinction being drawn is between declaring
+    // a laptop and failing to declare anything - not between a container and a
+    // laptop, which nothing can tell apart with certainty.
+    expect(configProblems({ APP_SHA: SHA, APP_ENV: "local", LITEAPI_KEY: SANDBOX_KEY })).toEqual([]);
+  });
+
+  it("says nothing about a laptop that has no image behind it", () => {
+    // `npm run dev`, the unit suite and the browser smoke suite all run with
+    // neither variable set, and none of them may be affected by this rule.
+    expect(configProblems({ LITEAPI_KEY: SANDBOX_KEY })).toEqual([]);
+    expect(configProblems({ APP_SHA: "   ", LITEAPI_KEY: SANDBOX_KEY })).toEqual([]);
+  });
+
+  it("reports an undeclared image alongside a live key rather than instead of it", () => {
+    expect(codes({ APP_SHA: SHA, LITEAPI_KEY: LIVE_KEY })).toEqual([
+      "supplier-key-live",
+      "environment-not-declared",
+    ]);
+  });
+
+  it("says nothing about a declared shared environment, which is the normal case", () => {
+    expect(configProblems(healthyShared({ APP_SHA: SHA }))).toEqual([]);
   });
 });
 
@@ -178,13 +230,57 @@ describe("configProblems in a shared environment", () => {
     expect(severities).toEqual(["fatal", "warn"]);
   });
 
-  it("never puts a secret value in a message", () => {
+  it("never puts a secret value in a message, whichever variable it came from", () => {
     // These messages reach a process log and, behind the operations secret, the
     // health route. Naming the variable is the help; echoing its value is a leak.
-    const env = healthyShared({ ACCESS_PASSWORD: "p".repeat(4), LITEAPI_KEY: LIVE_KEY });
-    for (const problem of configProblems(env)) {
-      expect(problem.message).not.toContain(LIVE_KEY);
-      expect(problem.message).not.toContain("pppp");
+    //
+    // A UNIQUE SENTINEL IN EVERY VARIABLE. The first version of this test
+    // planted two, and left the other five set to the literal "present" - so a
+    // message that echoed DATABASE_URL or CRON_SECRET would have passed it. The
+    // NOS-60 security review named that as the same shape as the weak assertion
+    // that hid a critical on the previous branch: an assertion that is also true
+    // when the code is wrong.
+    const sentinels: Record<string, string> = {
+      LITEAPI_KEY: LIVE_KEY,
+      DATABASE_URL: "sentinel-database-value",
+      AUTH_SECRET: "sentinel-auth-value",
+      CRON_SECRET: "sentinel-cron-value",
+      APP_URL: "sentinel-appurl-value",
+      ACCESS_PASSWORD: "sentinel-pw",
+      ANTHROPIC_API_KEY: "sentinel-ai-value",
+      RESEND_API_KEY: "sentinel-email-value",
+    };
+
+    // Every variable present and every one absent, so both the "is set but
+    // wrong" and the "is missing" message paths are covered.
+    const everythingSet = { APP_ENV: "uat", ...sentinels };
+    const everythingShort = { APP_ENV: "uat", ACCESS_PASSWORD: "sentinel-pw", LITEAPI_KEY: LIVE_KEY };
+
+    for (const env of [everythingSet, everythingShort]) {
+      const problems = configProblems(env);
+      expect(problems.length).toBeGreaterThan(0); // or this test asserts nothing
+      for (const problem of problems) {
+        for (const value of Object.values(sentinels)) {
+          expect(problem.message).not.toContain(value);
+        }
+      }
     }
+  });
+
+  it("measures the password after trimming, so spaces cannot pad it to the minimum", () => {
+    // L1 of the NOS-60 security review: presence was judged on a trimmed value
+    // and strength on the raw one, so "abc" plus thirteen spaces counted as a
+    // sixteen-character password.
+    const padded = "abc" + " ".repeat(MIN_ACCESS_PASSWORD_LENGTH - 3);
+    expect(padded.length).toBe(MIN_ACCESS_PASSWORD_LENGTH);
+    expect(codes(healthyShared({ ACCESS_PASSWORD: padded }))).toEqual(["access-password-weak"]);
+  });
+
+  it("accepts a good password that arrived with surrounding whitespace", () => {
+    // The other direction, and the one that would lock the owner out: a value
+    // copied out of a secret store with a trailing newline must not validate
+    // here and then fail at the gate. Both read it through `accessPassword`.
+    expect(configProblems(healthyShared({ ACCESS_PASSWORD: "  " + PASSWORD + "\n" }))).toEqual([]);
+    expect(accessPassword({ ACCESS_PASSWORD: "  " + PASSWORD + "\n" })).toBe(PASSWORD);
   });
 });

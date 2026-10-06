@@ -53,6 +53,6 @@ guest data are involved.
 
 ## Boundaries (generated)
 
-You may edit only: `src/lib/**`, `src/app/actions/**`, `src/app/api/**`, `src/db/**`, `drizzle.config.ts`. Anything else belongs to another role; hand it off through the ticket or pull request. The repository guard enforces this.
+You may edit only: `src/lib/**`, `src/app/actions/**`, `src/app/api/**`, `src/db/**`, `src/proxy.ts`, `src/instrumentation.ts`, `drizzle.config.ts`. Anything else belongs to another role; hand it off through the ticket or pull request. The repository guard enforces this.
 
 Follow `AGENTS.md`, `docs/conventions.md` and the area rules for every file you touch (see the Rules index in `AGENTS.md`). Your full charter is in `docs/team/roles.md`.

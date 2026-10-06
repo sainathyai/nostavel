@@ -63,15 +63,40 @@ habit:
   with real money. This is the narrow version of the live-money gate, not the gate itself:
   no caps, no allowlist, no acknowledgement, no kill switch. Those remain a later segment,
   and this must not be mistaken for them.
-- **A missing secret is fatal**, so a shared copy fails at startup rather than in the middle
-  of a guest's booking. `APP_URL` is in that list because `src/lib/email.ts` falls back to
+- **A missing secret is fatal**, so a shared copy refuses every request rather than failing
+  in the middle of a guest's booking. (Not "fails at startup": see *Where the refusal lives*
+  below. An earlier draft of this ADR said startup in one place and per-request in another,
+  which the NOS-60 security review flagged as the sentence that would be quoted back at
+  someone.) `APP_URL` is in that list because `src/lib/email.ts` falls back to
   `http://localhost:3000`, which is right on a laptop and silently wrong everywhere else:
   every link mailed to a guest would be dead, with nothing erroring.
 
 `APP_ENV` unset means a laptop, and every check above is skipped there, so `npm run dev`,
-`npm test` and the browser smoke suite behave exactly as before. The one exception is the
-live key, which is fatal everywhere, because there is no environment in which this code
-should be pointed at real money.
+`npm test` and the browser smoke suite behave exactly as before. Two things are fatal
+anyway: a live supplier key, because there is no environment in which this code should be
+pointed at real money; and a built image that has not said which environment it is.
+
+**That second one is D-60.1, and both review gates found it independently.** `APP_ENV` is
+the single value whose absence switches off the password gate and every required-secret
+check. Nothing in the repository set it, and the only copy of it was going to live in a
+service definition created by a different ticket - so the image's default was "laptop".
+Dropped once, by a rolled-back revision or a runbook followed with one block pasted short,
+a copy would have come up as a public ungated booking app, mailed every guest a localhost
+link, and left the abandoned-hold sweeper answering 401 forever (no `CRON_SECRET`
+required), while the health route reported `ok: true, env: "local"`. The one
+misconfiguration that disables the gate also disables the money-safety job this deployment
+exists to switch on.
+
+Both proposed fixes are taken, because each closes a case the other misses:
+
+| | Fix | Closes |
+|---|---|---|
+| A | `ENV APP_ENV=unconfigured` in the image's runtime stage | The image defaults to refusing. The platform overrides it with the real name |
+| B | A built image (`APP_SHA` present) with no `APP_ENV` is fatal | `APP_ENV=""` set explicitly, which overrides A and would otherwise read as a laptop |
+
+The alternative - requiring the pipeline to assert `env === "uat"` before promoting - was
+rejected as the only control: it puts the check in the artifact this repository tests least,
+and "the pipeline will set it" is precisely the assumption that made the omission silent.
 
 ### The gate in front of a shared copy
 
@@ -91,6 +116,21 @@ secret compared in constant time, and locking them out would have silently switc
 guest-money recovery — the exact thing this deployment exists to enable. None of the three
 is exempt from the configuration check.
 
+**They are named one at a time, not matched by prefix.** The first draft exempted
+`/api/cron/` and `/api/webhooks/` wholesale, which exempts every path that will ever exist
+beneath them. The security review's scenario: a later `/api/cron/warm-search`, added to keep
+the environment responsive and written without a bearer check because "it isn't money",
+becomes an unauthenticated supplier-and-AI-spending endpoint on a gated environment, with no
+failing test anywhere. An exact list makes the fourth path a decision someone has to make,
+and getting it wrong fails closed and loudly: the scheduler gets a 401 it did not expect,
+rather than the world getting a route it should not have.
+
+What is excluded from the proxy's `matcher` is excluded from the live-key refusal as well as
+from the password, so that list is a money decision too. `_next/static/` keeps its trailing
+slash for that reason: Next's own documented example omits it, and without it the exclusion
+is an unanchored prefix — `/_next/staticXYZ` was measured reaching the router with no gate
+at all.
+
 ### Where the refusal lives, and where it does not
 
 The refusal is enforced **per request** (`src/proxy.ts`), not at startup. It was written at
@@ -102,6 +142,21 @@ a broken deploy explained nothing, and the container still looked started to the
 A refusal that degrades the diagnosis is not a safety feature. Per-request is also strictly
 stronger where it counts: a request that is never served cannot charge a card, whether or
 not the process managed to start.
+
+**And per-request was not enough on its own either.** The code review pointed out that this
+was the *only* place the live-key rule was enforced, while every other credential in the app
+is checked twice - the webhook secret by the proxy's exemption and again inside the webhook
+route, `CRON_SECRET` likewise inside the sweeper and the reconciler. The rule described as
+having zero tolerance was the one with no second check, and the failure class it named has a
+CVE to its name (CVE-2025-29927, where a header skipped middleware entirely on self-hosted
+Next). So the supplier client refuses too (`requireSandboxKey`), at the point where money
+actually moves. When the live-money gate is eventually built, that function is what it has
+to open deliberately, which means it cannot be opened by forgetting something.
+
+One correction that came out of the same review: a process whose supplier key is corrected
+in place **does** need a restart, because the supplier client captures the key at module
+load and memoises the payment account derived from it. The gate re-reads per request; the
+client does not.
 
 ## Consequences
 

@@ -7,14 +7,17 @@
 // "working" are the same guess.
 //
 // TWO AUDIENCES, TWO ANSWERS. Anyone may ask whether this copy is up, which
-// version it is and whether it is on the supplier's sandbox — a public
-// repository means the commit is public anyway, and "is it up" is the question a
-// monitor asks every minute without credentials. Everything more specific
-// (exactly which secret is missing, whether the database is reachable) needs the
-// operations secret, for two different reasons: the list of problems is a map of
-// what is wrong with the deploy, and the database probe lets a caller make this
+// version it is, and which environment it believes it is — a public repository
+// means the commit is public anyway, and "is it up" is the question a monitor
+// asks every minute without credentials. Everything more specific needs the
+// operations secret, for three different reasons: the list of problems is a map
+// of what is wrong with the deploy; the database probe lets a caller make this
 // app query its database on demand, which is a lever worth not handing to
-// strangers.
+// strangers; and `supplier` tells an anonymous caller WHICH deployed copy
+// currently has a live key engaged, which is target prioritization rather than
+// monitoring. That last one was public in the first draft of this file, and the
+// NOS-60 code review pointed out that it sits on the wrong side of a line this
+// same design had already drawn for the problem list.
 //
 // The shape is built here, not in the route, because the delivery pipeline
 // asserts on it: "refuse to promote a copy whose supplier key is live" is a
@@ -32,10 +35,10 @@ export type PublicHealth = {
   env: string;
   /** The commit this image was built from, or "unknown" if it was not baked in. */
   sha: string;
-  supplier: SupplierMode;
 };
 
 export type DetailedHealth = PublicHealth & {
+  supplier: SupplierMode;
   problems: ConfigProblem[];
   database: DatabaseCheck;
 };
@@ -58,11 +61,12 @@ export function buildHealth(input: HealthInput): PublicHealth | DetailedHealth {
     ok,
     env: appEnv(input.env),
     sha: (input.env.APP_SHA ?? "").trim() || "unknown",
-    supplier: supplierMode(input.env),
   };
 
   // A warning is still worth reporting to whoever can see the detail — "no email
   // key" is exactly the kind of thing that is invisible until a guest does not
   // get their confirmation.
-  return input.detail ? { ...base, problems, database: input.database } : base;
+  return input.detail
+    ? { ...base, supplier: supplierMode(input.env), problems, database: input.database }
+    : base;
 }

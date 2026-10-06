@@ -82,6 +82,28 @@ ENV HOSTNAME=0.0.0.0
 ARG APP_SHA=unknown
 ENV APP_SHA=$APP_SHA
 
+# THE IMAGE DEFAULTS TO REFUSING TO SERVE. Both NOS-60 review gates landed on the
+# same finding independently: APP_ENV is the one value whose absence switches off
+# the password gate and every required-secret check, nothing in this repository
+# set it, and the only copy of it was going to live in a service definition
+# created by a different ticket. Dropped once — a rolled-back revision, a runbook
+# followed with one env block pasted short — the copy would have come up as a
+# public, ungated booking app, mailed every guest a localhost link, and left the
+# abandoned-hold sweeper answering 401 forever, while /api/health reported
+# `ok: true, env: "local"`.
+#
+# Any value that is not "local" counts as shared, so with this line the image
+# refuses everything but /api/health until the platform tells it what it is. The
+# default has to be a refusal, because the thing that was going to supply the
+# real value is the thing that can forget.
+#
+# No effect on `npm run dev`, `npm test` or the browser smoke suite: none of them
+# runs the image. Running the image on purpose means passing APP_ENV=local, which
+# is a declaration rather than an omission — and src/lib/deploy-config.ts refuses
+# an image that declares nothing at all, which is the half of this that an empty
+# APP_ENV="" would otherwise slip past.
+ENV APP_ENV=unconfigured
+
 # `node` (uid 1000) ships with the base image. Nothing here writes to disk, so
 # the application owns none of its own files: a compromised process cannot
 # rewrite the code it is running.

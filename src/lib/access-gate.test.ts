@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { isExemptPath, parseBasicPassword, requestVerdict, type VerdictInput } from "./access-gate";
+import {
+  EXEMPT_PATHS_FOR_TEST,
+  isExemptPath,
+  parseBasicPassword,
+  requestVerdict,
+  type VerdictInput,
+} from "./access-gate";
 import type { ConfigProblem } from "./deploy-config";
 
 const PASSWORD = "p".repeat(20);
@@ -25,22 +31,23 @@ function input(overrides: Partial<VerdictInput> = {}): VerdictInput {
   };
 }
 
+describe("the exempt list itself", () => {
+  it("is exactly the three routes that carry their own secret, and nothing else", () => {
+    // Pinned rather than described. Adding a fourth path is the decision this
+    // test exists to force someone to make on purpose: the NOS-60 security
+    // review's scenario was a later /api/cron/warm-search, exempted by a prefix
+    // and written without a bearer check because "it isn't money", becoming an
+    // unauthenticated supplier-and-AI-spending endpoint with no failing test.
+    expect(EXEMPT_PATHS_FOR_TEST.EXEMPT_FROM_PASSWORD).toEqual([
+      "/api/cron/sweep",
+      "/api/cron/reconcile",
+      "/api/webhooks/liteapi",
+    ]);
+    expect(EXEMPT_PATHS_FOR_TEST.HEALTH_PATH).toBe("/api/health");
+  });
+});
+
 describe("isExemptPath", () => {
-  it("exempts the health route, which the deploy pipeline must always reach", () => {
-    expect(isExemptPath("/api/health")).toBe(true);
-  });
-
-  it("does not exempt a path that merely starts like the health route", () => {
-    // Matched exactly, so a future /api/health-internal or /api/healthz is not
-    // accidentally public the day someone adds it.
-    expect(isExemptPath("/api/healthcheck")).toBe(false);
-    expect(isExemptPath("/api/health/deep")).toBe(false);
-  });
-
-  it("exempts the supplier's webhook receiver, which cannot log in", () => {
-    expect(isExemptPath("/api/webhooks/liteapi")).toBe(true);
-  });
-
   it("exempts the scheduled jobs, which is what keeps guest-money recovery working", () => {
     // The sweeper is the only thing that rescues a guest who was charged and
     // whose browser never came back. A password gate in front of it would
@@ -50,36 +57,40 @@ describe("isExemptPath", () => {
     expect(isExemptPath("/api/cron/reconcile")).toBe(true);
   });
 
-  it("does not exempt a path that only starts like an exempt prefix", () => {
-    expect(isExemptPath("/api/cronjobs")).toBe(false);
-    expect(isExemptPath("/api/webhooks-admin")).toBe(false);
-  });
-
-  it("does not exempt anything containing a parent-directory segment", () => {
-    expect(isExemptPath("/api/cron/../book/abc")).toBe(false);
-  });
-
-  it("does not exempt a path carrying a percent escape or a backslash", () => {
-    // The bypass this closes: a path that reads as exempt here but resolves
-    // somewhere else once decoded. The framework decodes before this sees it,
-    // so none of these is reachable today - which is exactly why the fence
-    // belongs in the rule, where a test holds it, rather than in a comment
-    // about what the framework currently happens to do.
-    expect(isExemptPath("/api/cron/%2e%2e/book/abc")).toBe(false);
-    expect(isExemptPath("/api/cron/%2E%2E/book/abc")).toBe(false);
-    expect(isExemptPath("/api/%63ron/sweep")).toBe(false);
-    // A literal backslash, with no percent escape and no ".." in it, so this
-    // case exercises the backslash branch on its own.
-    expect(isExemptPath("/api/cron\\sweep")).toBe(false);
-  });
-
-  it("still exempts the three real paths, which contain none of that", () => {
-    // The permissive direction of the rule above: hardening it must not have
-    // switched off guest-money recovery, which is what exempting the sweeper is
-    // for.
-    expect(isExemptPath("/api/health")).toBe(true);
-    expect(isExemptPath("/api/cron/sweep")).toBe(true);
+  it("exempts the supplier's webhook receiver, which cannot log in", () => {
     expect(isExemptPath("/api/webhooks/liteapi")).toBe(true);
+  });
+
+  it("does not exempt a route that does not exist yet under an exempt one", () => {
+    // The M5 fix. Under the prefix list all three of these were exempt.
+    expect(isExemptPath("/api/cron/warm-search")).toBe(false);
+    expect(isExemptPath("/api/cron/")).toBe(false);
+    expect(isExemptPath("/api/webhooks/stripe")).toBe(false);
+  });
+
+  it("does not exempt a path that only starts or ends like an exempt one", () => {
+    expect(isExemptPath("/api/cron/sweeper")).toBe(false);
+    expect(isExemptPath("/api/cron/sweep/x")).toBe(false);
+    expect(isExemptPath("/api/cronjobs")).toBe(false);
+    expect(isExemptPath("/x/api/cron/sweep")).toBe(false);
+  });
+
+  it("does not exempt an encoded or traversing path, which exact equality gives for free", () => {
+    // An earlier commit on this branch added an explicit fence against these,
+    // because a prefix test can be fooled by a path that reads as exempt and
+    // routes elsewhere. Exact equality is the stronger version of the same
+    // protection: no string equals "/api/cron/sweep" and routes anywhere else.
+    expect(isExemptPath("/api/cron/%2e%2e/book/abc")).toBe(false);
+    expect(isExemptPath("/api/cron/../book/abc")).toBe(false);
+    expect(isExemptPath("/api/%63ron/sweep")).toBe(false);
+  });
+
+  it("does not exempt the health route, which is handled one rule earlier", () => {
+    // Health is exempt from the configuration refusal as well as the password,
+    // so it is decided before this function is reached. Asserted so that
+    // "isExemptPath says false" is never mistaken for "health is gated".
+    expect(isExemptPath("/api/health")).toBe(false);
+    expect(requestVerdict(input({ path: "/api/health" }))).toEqual({ action: "allow" });
   });
 
   it("does not exempt an ordinary page", () => {
@@ -131,6 +142,21 @@ describe("requestVerdict: the health route", () => {
   it("is served without the password", () => {
     expect(requestVerdict(input({ path: "/api/health", authorization: null }))).toEqual({ action: "allow" });
   });
+
+  it("does not extend that to a path that merely begins with it", () => {
+    // Health is the only exemption that also skips the configuration check, so
+    // it is the one whose matching has to be exact. Compared with `===` on the
+    // whole pathname, which this pins: the NOS-60 security review noted that
+    // nothing was watching this line, and a later change to `startsWith` would
+    // re-open the class an earlier commit on this branch had just closed.
+    expect(requestVerdict(input({ path: "/api/healthz", fatal: FATAL })).action).toBe("unavailable");
+    expect(requestVerdict(input({ path: "/api/health/deep", fatal: FATAL })).action).toBe("unavailable");
+    expect(requestVerdict(input({ path: "/api/healthz" })).action).toBe("challenge");
+    // A trailing slash is not the health route either. The framework redirects
+    // it before the proxy sees it (measured against the running image), so this
+    // is the fence for that stopping being true, not today's behaviour.
+    expect(requestVerdict(input({ path: "/api/health/" })).action).toBe("challenge");
+  });
 });
 
 describe("requestVerdict: a fatally misconfigured environment", () => {
@@ -152,6 +178,13 @@ describe("requestVerdict: a fatally misconfigured environment", () => {
     // supplier key is the exact thing being prevented.
     expect(requestVerdict(input({ path: "/api/webhooks/liteapi", fatal: FATAL })).action).toBe("unavailable");
     expect(requestVerdict(input({ path: "/api/cron/sweep", fatal: FATAL })).action).toBe("unavailable");
+  });
+
+  it("refuses before consulting the gate at all, even with the gate switched off", () => {
+    // Order matters more than either rule on its own: a laptop holding a live
+    // key must not serve a booking page just because it has no password to ask
+    // for.
+    expect(requestVerdict(input({ gateEnabled: false, fatal: FATAL })).action).toBe("unavailable");
   });
 });
 

@@ -24,15 +24,19 @@
 // falls back to its non-AI path, no email key means a send is skipped and
 // logged, and both are reported by the health route rather than hidden.
 //
-// NOTHING IS FATAL ON A LAPTOP, WITH ONE EXCEPTION. `APP_ENV` unset (or
+// NOTHING IS FATAL ON A LAPTOP, WITH TWO EXCEPTIONS. `APP_ENV` unset (or
 // "local") means a developer's own machine, and every check below is skipped so
 // that `npm run dev`, `npm test` and the browser smoke suite behave exactly as
 // they did before this file existed — the smoke suite in particular runs a
 // production build with no environment configured at all, so anything fatal by
-// default would stop it loading a page. The exception is the live supplier key:
-// that one is fatal everywhere, because there is no environment in which this
-// code should be pointed at real money, and "it's only my laptop" is how a real
-// charge happens by accident.
+// default would stop it loading a page. The two exceptions:
+//
+//   - A live supplier key is fatal everywhere, because there is no environment
+//     in which this code should be pointed at real money, and "it's only my
+//     laptop" is how a real charge happens by accident.
+//   - A built image that has not said which environment it is, is fatal: a
+//     container is never a laptop, and inheriting a laptop's exemptions by
+//     omission is the one failure this whole module would not have caught.
 //
 // This module reads nothing itself — the environment is passed in — so every
 // rule below is exercised by src/lib/deploy-config.test.ts rather than inferred
@@ -94,6 +98,21 @@ export function accessGateEnabled(env: Env): boolean {
   return isSharedEnvironment(env);
 }
 
+/**
+ * The access password, as both the strength check and the gate must read it.
+ *
+ * One function so the two cannot disagree: the NOS-60 security review found the
+ * checks judging a trimmed value for presence and an untrimmed one for length,
+ * which let thirteen spaces count towards the minimum.
+ *
+ * Length alone cannot tell a generated password from a memorable one -
+ * `nostavel-uat-pwd` is sixteen characters. That part is the runbook's job
+ * (NOS-61) and is stated as such rather than implied by this check.
+ */
+export function accessPassword(env: Env): string {
+  return (env.ACCESS_PASSWORD ?? "").trim();
+}
+
 // Read from the environment, never logged or echoed. Each one is required for a
 // shared copy to be able to do its job at all; a laptop may be missing any of
 // them and simply not use that feature.
@@ -131,6 +150,34 @@ export function configProblems(env: Env): ConfigProblem[] {
     });
   }
 
+  // A BUILT IMAGE IS NEVER A LAPTOP. Raised by the NOS-60 code review, which
+  // pointed out that the one case switching off almost every check below -
+  // APP_ENV unset - failed silently: the health route answered `ok: true,
+  // env: "local"`, indistinguishable from a developer's machine. So a container
+  // deployed without APP_ENV would have had no password gate on a public URL and
+  // no refusal over a missing AUTH_SECRET or APP_URL, and the one route built to
+  // notice would have reported it healthy. That depended entirely on a service
+  // configuration setting APP_ENV forever, on every redeploy.
+  //
+  // APP_SHA is the signal, because the Dockerfile bakes it in at build time and
+  // nothing else ever sets it. Present with no APP_ENV means a built image that
+  // has not said what it is, which is a refusal rather than a guess.
+  //
+  // `APP_ENV=local` with APP_SHA set stays legal on purpose: that is someone
+  // running the image on their own machine on purpose, and saying so. The
+  // difference this draws is between declaring a laptop and failing to declare
+  // anything.
+  if (!(env.APP_ENV ?? "").trim() && (env.APP_SHA ?? "").trim()) {
+    problems.push({
+      code: "environment-not-declared",
+      severity: "fatal",
+      message:
+        "APP_SHA is set but APP_ENV is not, so this is a built image that has not said " +
+        "which environment it is. Set APP_ENV (to \"local\" if you are running the image " +
+        "yourself), rather than letting a shared copy inherit a laptop's exemptions.",
+    });
+  }
+
   if (!isSharedEnvironment(env)) return problems;
 
   if (mode === "missing") {
@@ -151,8 +198,14 @@ export function configProblems(env: Env): ConfigProblem[] {
     }
   }
 
-  const password = env.ACCESS_PASSWORD ?? "";
-  if (!password.trim()) {
+  // JUDGED AND COMPARED THE SAME WAY. The first draft tested `trim()` for
+  // presence and raw `.length` for strength, so "abc" plus thirteen spaces
+  // passed as a sixteen-character password (NOS-60 security review, L1). The
+  // gate compares the trimmed value too (src/proxy.ts), so a value arriving
+  // from a secret store with a trailing newline cannot validate here and then
+  // lock the owner out.
+  const password = accessPassword(env);
+  if (!password) {
     problems.push({
       code: "access-password-missing",
       severity: "fatal",

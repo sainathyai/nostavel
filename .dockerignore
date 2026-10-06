@@ -20,6 +20,19 @@ analysis/
 *.p12
 *.pfx
 
+# Cloud service-account keys, which arrive as .json and so match none of the
+# above. Raised by the NOS-60 security review: NOS-61 is exactly when one of
+# these appears in the repository root. A blanket *.json cannot be used - the
+# build needs package.json, tsconfig.json and src/data/*.json - so these are the
+# names such a file actually arrives with. The commit-guard half of this, which
+# is the layer that does not depend on reading the file, is NOS-63.
+service-account*.json
+*service-account*.json
+gcp-*.json
+gcloud-*.json
+*-credentials.json
+*credentials*.json
+
 # Rebuilt inside the image; copying a host build would mix a Windows build into
 # a Linux one.
 node_modules/
