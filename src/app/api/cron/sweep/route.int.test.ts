@@ -37,7 +37,12 @@ import { confirmBooking, markPaymentStarting } from "@/lib/booking-service";
 import { PREBOOK_HOLD_MINUTES, RECOVER_AFTER_MINUTES } from "@/lib/booking-transitions";
 import { POST as sweep } from "./route";
 import { seedConfirmableBooking, fakeSharedSecret } from "@/test-support/db-fixtures";
-import { configureBookError, resetFakeSupplier } from "@/test-support/fake-liteapi";
+import {
+  configureBookError,
+  resetFakeSupplier,
+  supplierRefusal,
+  unpaidRefusal,
+} from "@/test-support/fake-liteapi";
 
 // Every supplier call in this file is stubbed, including the ones the sweeper
 // now makes itself (NOS-29 AC 6: no test reaches LiteAPI over the network).
@@ -116,21 +121,28 @@ describe("a guest who is paying when the sweeper runs (NOS-5)", () => {
     // The mistake that would reintroduce NOS-5 somewhere new: reading "we could
     // not reach the supplier" as "the guest did not pay". A rate limit is the
     // realistic version, and the sweeper itself can provoke one.
-    configureBookError(new Error("429 rate limited"));
+    configureBookError(supplierRefusal(4290, "exceeded the allowed request limit", "too many requests"));
     const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
     await markPaymentStarting(booking.id);
     await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);
 
     await runSweep();
 
-    expect(await statusOf(booking.id)).not.toBe("expired");
+    // EXACT, not `not.toBe("expired")`. The first version of this assertion was
+    // the weaker one, and it passed while the row was being written `failed` -
+    // terminal, outside the sweeper's candidate set, unrecoverable for a guest
+    // who had paid. The code review spotted it by noticing that the test two
+    // cases down asserts an exact status and this one did not. A test whose
+    // assertion is weaker than its neighbour's is where a non-fix hides.
+    expect(await statusOf(booking.id)).toBe("payment_pending");
     expect(await eventTypes(booking.id)).toContain("payment.unresolved");
   });
 
   it("is not released even when the supplier says unpaid, while the hold is still alive", async () => {
     // Provably unpaid — but they may be finishing a slow card step right now.
     // Releasing here would be the same bug with a better excuse.
-    configureBookError(new Error('book failed: 2014 "payment not completed"'));
+    // The real refusal, built through the real error class - see unpaidRefusal().
+    configureBookError(unpaidRefusal());
     const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
     await markPaymentStarting(booking.id);
     await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);

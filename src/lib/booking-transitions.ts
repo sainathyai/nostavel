@@ -158,13 +158,124 @@ export function sweepDecision(row: SweepCandidate, now: Date): SweepAction {
 /**
  * The supplier's answer to "was this paid?", read from a failed recovery.
  *
- * Code 2014 is the documented refusal for an unpaid transaction, and it is the
- * whole reason recovery works. Anything else means we did not get an answer,
- * which is not the same as "no".
+ * Code 2014 is the refusal for an unpaid transaction, and it is the whole reason
+ * recovery works at all. Anything else means we did not get an answer, which is
+ * not the same as "no".
+ *
+ * THE CODE, NOT THE PROSE. The first version of this matched the thrown message
+ * text, and could not match the one response it existed for. The supplier sends
+ * `code: 2014`, `description: "payment not completed"`, `message: "booking
+ * incomplete"` - and the client's thrown text carried only the `message`. So
+ * "booking incomplete" was all this function ever saw, it returned false, and
+ * the whole release path downstream was dead code, while a guest finishing a slow
+ * card step was marked `failed` and never looked at again. Found by the NOS-5
+ * security review, after the evidence had been sitting in this repository's own
+ * probe output (analysis/2026-10-06/raw) the entire time.
+ *
+ * Read structurally rather than by importing the error class, so this stays a
+ * pure rule with no dependency on the supplier client.
  */
 export function isUnpaidRefusal(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error ?? "");
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "number") return code === 2014;
+
+  // Secondary only, for an error that reached us as text: a stringified log
+  // line, or a rethrow that lost its type. Never the primary signal.
+  const description = (error as { description?: unknown } | null)?.description;
+  const text = [
+    error instanceof Error ? error.message : String(error ?? ""),
+    typeof description === "string" ? description : "",
+  ].join(" ");
   return /\b2014\b/.test(text) || /payment not completed/i.test(text);
+}
+
+/**
+ * What the confirmation page should do with a booking in this state.
+ *
+ * EXTRACTED BECAUSE IT WAS WRONG AS A CHAIN OF INLINE `if`s. That page is the
+ * payment provider's return URL and the only thing that finalizes a booking on
+ * the happy path. It finalized only from `prebooked` - so once the browser
+ * started marking `payment_pending` before charging, every successful payment
+ * fell through to the failure branch: no booking, no email, and a red page
+ * telling a guest who had just paid that their charge would be reversed. Both
+ * review gates found it independently, in a file this change had not touched.
+ *
+ * There is no component test tier in this repository, so a branch living in the
+ * page is a branch nothing in CI can check. Here it is a pure function with
+ * cases, and the page becomes a switch over the answer. That is the difference
+ * between fixing this bug and fixing the next one like it.
+ */
+export type FinalizeIntent =
+  /** Call the supplier. The guest is mid-checkout and may already have paid. */
+  | "finalize"
+  /** Someone else is finalizing it. Say so; do not call the supplier. */
+  | "wait"
+  /** Done. Render the confirmation. */
+  | "done"
+  /** This booking cannot be completed, and no payment was ever started for it. */
+  | "dead";
+
+export function confirmationPageIntent(status: TransitionStatus): FinalizeIntent {
+  switch (status) {
+    case "confirmed":
+      return "done";
+    // Both pre-payment states. `payment_pending` is the NORMAL arrival state on
+    // the happy path, because the browser announces the charge before making it.
+    case "prebooked":
+    case "payment_pending":
+      return "finalize";
+    case "confirming":
+      return "wait";
+    case "draft":
+    case "failed":
+    case "cancelled":
+    case "expired":
+      return "dead";
+  }
+}
+
+/** The supplier's rate limit. Silence dressed as an answer. */
+const LITEAPI_RATE_LIMITED = 4290;
+
+/**
+ * Where a booking goes when the supplier call fails.
+ *
+ * `failed` IS TERMINAL. Nothing recovers it: the sweeper's rule leaves it alone,
+ * `confirmBooking` refuses to re-enter it, and the reconciler does not look at
+ * it. So writing `failed` on a booking whose guest may have been charged means
+ * that guest is charged and nothing will ever try to book their room again -
+ * which is NOS-5's harm, reached through the error path instead of the sweeper.
+ *
+ * The first version of this fix only special-cased the unpaid refusal and sent
+ * everything else to `failed`, including a timeout and a rate limit. The code
+ * review caught it, and caught that the test which should have caught it
+ * asserted only `not.toBe("expired")` - true of `failed` as well.
+ *
+ * Two questions decide it, in this order:
+ *
+ *   1. Could this guest already have paid? If the row was `payment_pending`,
+ *      yes, and the answer is never terminal. It returns to `payment_pending`,
+ *      where the sweeper keeps working on it and eventually alerts a person
+ *      rather than giving up silently.
+ *   2. Did the supplier definitively refuse? A structured error code that is
+ *      neither "not paid yet" nor "slow down" is a real no - no availability, a
+ *      dead prebook, bad data - and for a row where no payment was ever started
+ *      that is the end of the booking. No code at all means we never got an
+ *      answer: a timeout, a dropped socket, a gateway page. That is not a refusal
+ *      and must not be recorded as one.
+ */
+export function statusAfterFailedBook(
+  error: unknown,
+  previousStatus: "prebooked" | "payment_pending",
+): "prebooked" | "payment_pending" | "failed" {
+  // A guest who may have been charged never lands in a terminal state.
+  if (previousStatus === "payment_pending") return "payment_pending";
+
+  const code = (error as { code?: unknown } | null)?.code;
+  const definitive =
+    typeof code === "number" && code !== 2014 && code !== LITEAPI_RATE_LIMITED;
+
+  return definitive ? "failed" : previousStatus;
 }
 
 export type RecoveryOutcome =

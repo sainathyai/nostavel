@@ -17,7 +17,7 @@ import { prebook, book, cancelBooking as cancelSupplierBooking } from "@/lib/lit
 import { sendBookingConfirmation } from "@/lib/email";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
 import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
-import { holdLapsed, isUnpaidRefusal } from "@/lib/booking-transitions";
+import { holdLapsed, statusAfterFailedBook } from "@/lib/booking-transitions";
 
 export type HotelSnapshot = {
   name: string;
@@ -549,19 +549,16 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
     // The claim is released either way - a row left at `confirming` is one
     // nothing may ever finalize again, including the guest's own browser.
     //
-    // WHICH STATE IT GOES BACK TO IS NOT A DETAIL. "payment not completed"
-    // (code 2014) does not mean this booking failed; it means nobody has paid
-    // for it YET. Marking that `failed` would make a guest who completes their
-    // card step a moment later unconfirmable, and they would be charged with no
-    // booking - NOS-5 arriving by another route. Caught by the sweeper's own
-    // integration test rather than by reading.
-    //
-    // Any other refusal - no availability, bad data, a dead prebook - really is
-    // the end of this booking.
+    // WHERE IT GOES BACK TO IS THE WHOLE QUESTION, and it is a rule, not a
+    // ternary: `failed` is terminal, so writing it on a booking whose guest may
+    // already have been charged strands them permanently. See
+    // statusAfterFailedBook - a guest who may have paid is never sent to a
+    // terminal state, and an error that is not a definite refusal (a timeout, a
+    // rate limit) is not recorded as one.
     await db
       .update(bookings)
       .set({
-        status: isUnpaidRefusal(e) ? "payment_pending" : "failed",
+        status: statusAfterFailedBook(e, row.status === "payment_pending" ? "payment_pending" : "prebooked"),
         updatedAt: new Date(),
       })
       .where(eq(bookings.id, row.id));

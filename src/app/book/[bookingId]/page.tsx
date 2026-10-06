@@ -114,6 +114,15 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
   }
 
   if (booking.status === "confirmed") redirect(`/book/${bookingId}/confirmation`);
+  // ALREADY PAYING, OR ALREADY BEING BOOKED. A guest who navigates back to the
+  // checkout URL after submitting their card must not be told the rate is gone
+  // and invited to "start a fresh search" - that is how an ordinary back-button
+  // press becomes a second booking and a second charge. Send them where their
+  // booking actually is.
+  if (booking.status === "payment_pending" || booking.status === "confirming") {
+    redirect(`/book/${bookingId}/confirmation`);
+  }
+
   if (booking.status !== "prebooked") {
     return (
       <Shell>

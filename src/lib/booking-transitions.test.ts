@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   CLAIM_STALE_AFTER_MINUTES,
+  confirmationPageIntent,
   PREBOOK_HOLD_MINUTES,
   RECOVER_AFTER_MINUTES,
   holdLapsed,
   isUnpaidRefusal,
   recoveryOutcome,
+  statusAfterFailedBook,
   sweepDecision,
   type SweepCandidate,
   type TransitionStatus,
@@ -191,6 +193,116 @@ describe("what a recovery attempt means", () => {
       for (const error of [new Error("429"), new Error("ETIMEDOUT"), new Error("nope")]) {
         expect(recoveryOutcome({ ok: false, error }, holdGone).outcome).not.toBe("expire");
       }
+    }
+  });
+});
+
+describe("where a booking goes when the supplier call fails", () => {
+  const refusal = (code: number) => Object.assign(new Error("LiteAPI 400: nope"), { code });
+
+  it("never sends a guest who may have paid to a terminal state", () => {
+    // `failed` is terminal - nothing recovers it. Writing it on a row where a
+    // payment was started means that guest is charged and no further attempt is
+    // ever made. The first version of this fix did exactly that for a timeout,
+    // and the test that should have caught it asserted only that the row was not
+    // `expired`, which was true of `failed` too. Found by the NOS-5 code review.
+    for (const error of [
+      refusal(2014),
+      refusal(4290),
+      refusal(9999),
+      new Error("ETIMEDOUT"),
+      new Error(""),
+      undefined,
+    ]) {
+      expect(statusAfterFailedBook(error, "payment_pending")).toBe("payment_pending");
+    }
+  });
+
+  it("keeps an unpaid hold recoverable rather than failing it", () => {
+    // Nobody has paid YET is not the same as this booking cannot happen.
+    expect(statusAfterFailedBook(refusal(2014), "prebooked")).toBe("prebooked");
+  });
+
+  it("does not treat silence as a refusal", () => {
+    // A timeout, a dropped socket, a gateway error page: no structured code, so
+    // no answer. Recording that as `failed` is recording a refusal we never got.
+    for (const error of [new Error("ETIMEDOUT"), new Error("socket hang up"), null, "boom"]) {
+      expect(statusAfterFailedBook(error, "prebooked")).toBe("prebooked");
+    }
+    // A rate limit is silence wearing a code.
+    expect(statusAfterFailedBook(refusal(4290), "prebooked")).toBe("prebooked");
+  });
+
+  it("ends the booking when the supplier definitively refuses one nobody paid for", () => {
+    // No availability, a dead prebook, bad guest data: a real no, and the row
+    // had no payment in flight, so there is nothing to strand.
+    expect(statusAfterFailedBook(refusal(2001), "prebooked")).toBe("failed");
+  });
+});
+
+describe("reading the real supplier error, not a test fiction", () => {
+  it("detects the unpaid refusal from the code, where the supplier actually puts it", () => {
+    // The captured body: code 2014, description "payment not completed",
+    // message "booking incomplete". The client used to throw only the message,
+    // so a text matcher saw "booking incomplete" and said "not an unpaid
+    // refusal" - which made the whole release path dead code.
+    const real = Object.assign(new Error("LiteAPI 400: booking incomplete"), {
+      code: 2014,
+      description: "payment not completed",
+    });
+    expect(isUnpaidRefusal(real)).toBe(true);
+  });
+
+  it("does not mistake another coded refusal for an unpaid one", () => {
+    const other = Object.assign(new Error("LiteAPI 400: no availability found"), {
+      code: 2001,
+      description: "no prebook availability",
+    });
+    expect(isUnpaidRefusal(other)).toBe(false);
+  });
+});
+
+describe("what the confirmation page does with each state", () => {
+  it("finalizes from the state the happy path actually arrives in", () => {
+    // THE CRITICAL BUG BOTH REVIEWS FOUND. The browser marks `payment_pending`
+    // before charging, so that - not `prebooked` - is how a paying guest
+    // arrives. A page that finalized only from `prebooked` showed every
+    // successful payment a failure.
+    expect(confirmationPageIntent("payment_pending")).toBe("finalize");
+    // Still accepted: a browser that failed to send the heads-up charged anyway.
+    expect(confirmationPageIntent("prebooked")).toBe("finalize");
+  });
+
+  it("waits rather than failing when another caller holds the claim", () => {
+    expect(confirmationPageIntent("confirming")).toBe("wait");
+  });
+
+  it("shows the confirmation when it is done", () => {
+    expect(confirmationPageIntent("confirmed")).toBe("done");
+  });
+
+  it("only calls a booking dead where no payment was ever started", () => {
+    // The states that may say "this could not be completed" to a guest. If a
+    // payment-bearing state ever appears here, a paying guest is being told
+    // their booking failed - so this list is the assertion.
+    for (const status of ["draft", "failed", "cancelled", "expired"] as const) {
+      expect(confirmationPageIntent(status)).toBe("dead");
+    }
+  });
+
+  it("has an answer for every status, so a new one cannot fall through silently", () => {
+    const all: TransitionStatus[] = [
+      "draft",
+      "prebooked",
+      "payment_pending",
+      "confirming",
+      "confirmed",
+      "failed",
+      "cancelled",
+      "expired",
+    ];
+    for (const status of all) {
+      expect(["finalize", "wait", "done", "dead"]).toContain(confirmationPageIntent(status));
     }
   });
 });

@@ -59,6 +59,7 @@
 //     on checkout as a fake public rate, and the same rule applies to
 //     anything that ends up in the booking ledger by way of a test double.
 
+import { LiteApiError } from "@/lib/liteapi-error";
 export type FakeBookInput = {
   prebookId: string;
   firstName: string;
@@ -164,6 +165,29 @@ export function configureBookResult(result: Partial<FakeBookResult>): void {
 /** Configure `book()` to reject instead of resolving, for a failure-path test. */
 export function configureBookError(error: Error | null): void {
   bookError = error;
+}
+
+/**
+ * The supplier refusing because nobody has paid for the transaction.
+ *
+ * Built through the REAL error class, from the real captured body
+ * (analysis/2026-10-06/raw/04_POST__rates_book.json), because a test that
+ * invents its own error shape proves nothing about production. The NOS-5
+ * security review found exactly that: the detector matched a literal this
+ * fixture used to hand it - `new Error('book failed: 2014 "payment not
+ * completed"')` - while the real client throws `LiteAPI 400: booking
+ * incomplete`, which the detector could not match at all. The test passed and
+ * the feature did not work.
+ */
+export function unpaidRefusal(): LiteApiError {
+  return new LiteApiError(400, {
+    error: { code: 2014, description: "payment not completed", message: "booking incomplete" },
+  });
+}
+
+/** A refusal that is NOT about payment, in the same real shape. */
+export function supplierRefusal(code: number, description: string, message: string): LiteApiError {
+  return new LiteApiError(400, { error: { code, description, message } });
 }
 
 export async function book(input: FakeBookInput): Promise<FakeBookResult> {
