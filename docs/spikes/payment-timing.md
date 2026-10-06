@@ -71,18 +71,44 @@ right, and we do not need a refund API we could not find anyway. What we must no
 mark such a row `expired` and forget it, because the guest's statement shows a pending
 charge they cannot explain.
 
+## Settled 2026-10-06: `book()` does verify the charge
+
+`book()` against a prebook whose transaction nobody paid returns:
+
+```
+HTTP 400
+code 2014   description "payment not completed"   message "booking incomplete"
+```
+
+Probe: `analysis/2026-10-06/probe-book-idempotency.mts`. The 2026-10-03 attempt could not
+tell, for two reasons: it was rate limited (429), and it tried only the first offer, which
+sandbox inventory refuses with "no prebook availability" (code 2001). The new probe walks
+offers until one holds.
+
+**This is the most useful thing the spike produced.** The sections above establish that the
+server has no way to ask whether a guest was charged — no transaction-status route, and
+(checked 2026-10-06 against LiteAPI's webhook event list: 22 events, all booking and flight
+lifecycle) **no payment webhook of any kind**. So the server appeared to have no
+authoritative source at all.
+
+It has one: **attempting the booking is the payment check.** A row that may or may not have
+been charged is resolved by trying to book it — it books if the guest paid, and answers 2014
+if they did not. That is what the sweeper now does (NOS-5), and it is why decision D-4.2
+("alert a person and leave the row alone") became D-4.12 ("find out first, alert only if you
+cannot"). Bounded by the hold window: past 15 minutes the call fails for a different reason
+and a person has to look.
+
+Only an explicit 2014 may release a room. A timeout, a 429 or an empty body is not evidence
+of non-payment — the first version of this probe made that class of error twice, and the
+sweeper's tests now assert against it directly.
+
 ## Open
 
-### Does `book()` verify the charge?
+### What does a second identical `book()` do once payment HAS completed?
 
-Unresolved. The attempt returned **HTTP 429, rate limited** — which says nothing about
-payment. The first version of this probe reported that as "refused, so `book()` verifies
-the charge", which was wrong, and the script now distinguishes "the supplier refused" from
-"the supplier did not answer".
-
-Re-run `npx tsx analysis/2026-10-03/probe-payment-timing.mts --book` after the limit
-resets. It matters because if `book()` refuses an unpaid transaction, then attempting the
-booking *is* the payment check, and the sweeper's recovery step can simply try it.
+Unresolved, and not resolvable from a script: it needs a real card payment, which the probe
+cannot make. One booking returned twice and two rooms reserved are very different problems.
+NOS-6's claim step is built as though the worse answer were true.
 
 ## What this changes in Segment 4
 
