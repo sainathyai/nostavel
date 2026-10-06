@@ -165,8 +165,22 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
     const row = existing[0];
     bookingId = row.id;
     humanRef = row.humanRef;
-    // Already prebooked — hand back what we have; don't hit the supplier again.
-    if (row.status === "prebooked" && row.prebookId) {
+    // ALREADY PAST THE SUPPLIER — hand back what we have, and never prebook over
+    // it.
+    //
+    // This used to fire only for `prebooked`, so every other status fell through
+    // to a fresh prebook and an unconditional write. The security review traced
+    // what that costs: a guest who had PAID (row `payment_pending`, holding the
+    // only pointer to the real charge) pressed back and clicked Book on the same
+    // rate, the row was reset to `prebooked` with a brand-new transaction and a
+    // fresh `prebookedAt`, and fifteen minutes later the sweeper expired it with
+    // the reason "hold lapsed with no payment started". Charged guest, ledger
+    // saying nobody paid, and no 2014 anywhere - a route straight around the
+    // invariant that only the supplier may release a paid row.
+    //
+    // It also released the NOS-6 claim: an unguarded write would reset a row
+    // that was `confirming` with a `book()` call in flight.
+    if (row.prebookId && row.status !== "draft" && row.status !== "expired" && row.status !== "failed") {
       return {
         bookingId,
         humanRef,
@@ -273,7 +287,13 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
   }
 
   // 4. Advance to prebooked, snapshotting price + policy, and log it.
-  await db
+  //
+  // Guarded on `draft`. The early return above should mean nothing else ever
+  // reaches here, but this is the write that was able to overwrite a paid row's
+  // transaction and reset its hold clock, so it does not rely on that: if the
+  // row has moved on under us, this matches nothing rather than rewriting a
+  // booking someone has already paid for.
+  const advanced = await db
     .update(bookings)
     .set({
       status: "prebooked",
@@ -291,7 +311,11 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
       refundableUntil,
       updatedAt: new Date(),
     })
-    .where(eq(bookings.id, bookingId));
+    .where(and(eq(bookings.id, bookingId), eq(bookings.status, "draft")))
+    .returning({ id: bookings.id });
+  if (!advanced.length) {
+    throw new Error("This booking has already moved on. Please start again from the room.");
+  }
   await db.insert(bookingEvents).values({
     bookingId,
     type: "prebook.ok",
@@ -411,6 +435,39 @@ export async function markPaymentStarting(bookingId: string): Promise<void> {
   await db.insert(bookingEvents).values({
     bookingId,
     type: "payment.starting",
+    actor: "guest",
+  });
+}
+
+/**
+ * The charge did not happen after all. (F6 of the NOS-5 security review.)
+ *
+ * The browser announces a charge before making it, so a card that is DECLINED
+ * leaves the row saying a payment is in flight when none is. That matters in two
+ * places: the sweeper treats such a row as precious and will not release it, and
+ * the checkout page sends a guest in that state to their confirmation rather than
+ * back to the payment form - so a declined card would have stranded a guest who
+ * simply wanted to try another card.
+ *
+ * Only ever moves backwards from the state this browser set, and only while the
+ * hold is still alive - so it cannot be used to revive a lapsed hold, and it
+ * cannot touch a booking that has reached the supplier.
+ */
+export async function markPaymentFailed(bookingId: string): Promise<void> {
+  const [row] = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
+  if (!row || row.status !== "payment_pending") return;
+  if (holdLapsed(row.prebookedAt, new Date())) return;
+
+  const reverted = await db
+    .update(bookings)
+    .set({ status: "prebooked", updatedAt: new Date() })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.status, "payment_pending")))
+    .returning({ id: bookings.id });
+  if (!reverted.length) return;
+
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "payment.declined",
     actor: "guest",
   });
 }
@@ -561,7 +618,13 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
         status: statusAfterFailedBook(e, row.status === "payment_pending" ? "payment_pending" : "prebooked"),
         updatedAt: new Date(),
       })
-      .where(eq(bookings.id, row.id));
+      // FENCED ON THE CLAIM WE STILL HOLD. If the sweeper released a stale claim
+      // while this supplier call was hanging, another caller may already have
+      // booked and confirmed the row - and this write would then overwrite a
+      // CONFIRMED booking with a failure, or push it back to `payment_pending`
+      // where the sweeper would book it a third time off one payment. Found by
+      // the NOS-5 security review.
+      .where(and(eq(bookings.id, row.id), eq(bookings.status, "confirming")));
     throw e;
   }
 
@@ -581,7 +644,10 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
       // The card session secret has served its purpose — drop it.
       paymentSecret: null,
     })
-    .where(eq(bookings.id, row.id));
+    // Fenced on the claim, like the failure path above: a supplier call that
+    // outlived its claim must not overwrite whatever resolved the booking in the
+    // meantime.
+    .where(and(eq(bookings.id, row.id), eq(bookings.status, "confirming")));
 
   await db.insert(payments).values({
     bookingId: row.id,

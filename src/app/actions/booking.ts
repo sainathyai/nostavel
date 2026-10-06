@@ -14,6 +14,7 @@ import { rateLimit, clientIp } from "@/lib/rate-limit";
 import {
   prepareBooking,
   confirmBooking,
+  markPaymentFailed,
   markPaymentStarting,
   saveBookingGuest,
   cancelBooking,
@@ -186,6 +187,32 @@ export async function markPaymentStartingAction(
 
   try {
     await markPaymentStarting(bookingId);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/**
+ * The card was declined, so no charge is coming after all.
+ *
+ * Lets the guest try another card instead of being treated as mid-payment: see
+ * `markPaymentFailed`. Same authorization as starting the payment, and the same
+ * deliberate harmlessness - the worst case for a failed call is a row that looks
+ * mid-payment until the sweeper asks the supplier and is told nobody paid.
+ */
+export async function markPaymentFailedAction(
+  bookingId: string,
+): Promise<PaymentStartingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-paying:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
+  const auth = await authorize(bookingId, "checkout");
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  try {
+    await markPaymentFailed(bookingId);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

@@ -46,7 +46,7 @@
 // Triggered by a scheduled GitHub Actions workflow
 // (.github/workflows/cron-sweep.yml) rather than a platform-specific cron —
 // no deploy target is chosen yet, and this works under any future host.
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
 import { confirmBooking } from "@/lib/booking-service";
@@ -92,13 +92,21 @@ export async function POST(request: Request) {
     leftAlone: 0,
   };
 
-  // Only the three live states. Everything else is terminal, and the rule
-  // leaves them alone anyway — not fetching them keeps the scan small as the
-  // ledger grows.
+  // Only the three live states — everything else is terminal, and the rule leaves
+  // them alone anyway, so not fetching them keeps the scan small as the ledger
+  // grows.
+  //
+  // MOST URGENT FIRST. The recovery budget is finite, and `payment_pending` rows
+  // are deliberately never terminal, so an unordered scan let whichever rows the
+  // planner happened to return consume the whole budget — which a visitor could
+  // arrange using only their own bookings, starving a real guest's rescue. Oldest
+  // hold first: that is the one closest to running out of time to be saved.
+  // Raised by the NOS-5 security review.
   const candidates = await db
     .select()
     .from(bookings)
-    .where(inArray(bookings.status, ["prebooked", "payment_pending", "confirming"]));
+    .where(inArray(bookings.status, ["prebooked", "payment_pending", "confirming"]))
+    .orderBy(asc(bookings.prebookedAt));
 
   let recoveryBudget = RECOVERY_BUDGET;
 

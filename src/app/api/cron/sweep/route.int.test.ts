@@ -33,7 +33,7 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { bookingEvents, bookings } from "@/db/schema";
-import { confirmBooking, markPaymentStarting } from "@/lib/booking-service";
+import { confirmBooking, markPaymentFailed, markPaymentStarting } from "@/lib/booking-service";
 import { PREBOOK_HOLD_MINUTES, RECOVER_AFTER_MINUTES } from "@/lib/booking-transitions";
 import { POST as sweep } from "./route";
 import { seedConfirmableBooking, fakeSharedSecret } from "@/test-support/db-fixtures";
@@ -223,5 +223,42 @@ describe("a confirmation that was claimed and then abandoned", () => {
     // who has paid, so the assertion is "no longer stuck".
     expect(await statusOf(booking.id)).not.toBe("confirming");
     expect(await eventTypes(booking.id)).toContain("confirm.claim_released");
+  });
+});
+
+describe("a card that was declined", () => {
+  it("goes back to being a plain hold, so the guest can try another card", async () => {
+    // The browser announces a charge before making it, so a decline leaves the
+    // row claiming a payment is in flight. Left that way, the sweeper protects a
+    // booking nobody paid for and the checkout page sends the guest to a
+    // confirmation instead of back to the payment form. Raised by the NOS-5
+    // security review.
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(3) });
+    await markPaymentStarting(booking.id);
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+
+    await markPaymentFailed(booking.id);
+
+    expect(await statusOf(booking.id)).toBe("prebooked");
+    expect(await eventTypes(booking.id)).toContain("payment.declined");
+    // And it is still a live hold the sweeper leaves alone.
+    await runSweep();
+    expect(await statusOf(booking.id)).toBe("prebooked");
+  });
+
+  it("cannot be used to revive a hold the supplier has already released", async () => {
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 1),
+    });
+    await db
+      .update(bookings)
+      .set({ status: "payment_pending" })
+      .where(eq(bookings.id, booking.id));
+
+    await markPaymentFailed(booking.id);
+
+    // Still payment_pending: a lapsed hold is not something a browser may undo,
+    // and this row needs a person, not a reset.
+    expect(await statusOf(booking.id)).toBe("payment_pending");
   });
 });

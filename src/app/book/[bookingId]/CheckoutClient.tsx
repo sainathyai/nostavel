@@ -17,7 +17,11 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { markPaymentStartingAction, saveGuestAction } from "@/app/actions/booking";
+import {
+  markPaymentFailedAction,
+  markPaymentStartingAction,
+  saveGuestAction,
+} from "@/app/actions/booking";
 
 type Guest = {
   firstName: string;
@@ -363,6 +367,13 @@ export default function CheckoutClient({
     });
     // Reached only on an immediate failure; success redirects away.
     if (err) {
+      // Take back the "charging now" mark. Without this the row keeps saying a
+      // payment is in flight when the card was declined - which makes the
+      // sweeper protect a booking nobody paid for, and sends this guest to a
+      // confirmation page instead of back to the form when they try another
+      // card. Not awaited before showing the error: the guest should see the
+      // decline immediately, not after a round trip.
+      void markPaymentFailedAction(bookingId).catch(() => {});
       setError(err.message || "Your payment could not be completed.");
       setProcessing(false);
     }
