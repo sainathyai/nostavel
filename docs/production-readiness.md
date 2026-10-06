@@ -360,7 +360,11 @@ Two more that are less obvious:
   whatever machine served it.
 - **No structured logging.** No request id, so a guest's report cannot be traced
   to a request.
-- **No health check** endpoint for uptime monitoring.
+- ~~**No health check** endpoint for uptime monitoring.~~ Added 2026-10-06
+  (NOS-60): `GET /api/health` reports the build, the environment and whether the
+  supplier key is a sandbox key; `?deep=1`, behind `CRON_SECRET`, adds the
+  configuration problems and a database probe. Uptime monitoring itself is still
+  missing (NOS-61).
 - **Email is not production-capable.** Resend returns 403 for any recipient other
   than the account owner until a sending domain is verified. **Every confirmation
   email to a real guest currently fails.**
