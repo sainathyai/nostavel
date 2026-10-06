@@ -59,6 +59,10 @@ export async function seedPrebookedBooking(
     userId: null,
     contactEmail: `fixture+${id}@example.invalid`,
     status: "prebooked",
+    // When the supplier hold was taken. Real rows always have one; defaulting
+    // it to "now" keeps a fixture row behaving like a live hold, and a test
+    // that cares about the boundary passes its own value (NOS-46).
+    prebookedAt: new Date(),
     hotelId: "fixture-hotel-" + id,
     // Not a real property: a fixture snapshot, never rendered to a guest.
     hotelSnapshot: { name: "Fixture Hotel", city: "Fixture City" },

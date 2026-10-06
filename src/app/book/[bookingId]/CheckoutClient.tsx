@@ -17,7 +17,7 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { saveGuestAction } from "@/app/actions/booking";
+import { markPaymentStartingAction, saveGuestAction } from "@/app/actions/booking";
 
 type Guest = {
   firstName: string;
@@ -337,6 +337,26 @@ export default function CheckoutClient({
     if (!stripeRef.current || !elementsRef.current || processing) return;
     setProcessing(true);
     setError(null);
+
+    // TELL THE SERVER FIRST (NOS-5). From the next line on, the guest's card is
+    // being charged by the payment provider with our server not involved, and
+    // there is no payment webhook to tell us afterwards - so this is the only
+    // moment the server can learn a charge is coming. Without it the sweeper
+    // cannot tell this guest from one who closed the tab, and released the room
+    // while they were paying.
+    //
+    // Awaited, so the row has moved before any money does. NOT a gate: its
+    // failure is swallowed, because refusing to let a guest pay because a
+    // bookkeeping write failed would be worse than the bug it prevents. A
+    // payment that happens anyway is still recoverable - the booking can be
+    // finalized from either state, and the sweeper resolves an unmarked row by
+    // asking the supplier rather than by guessing.
+    try {
+      await markPaymentStartingAction(bookingId);
+    } catch {
+      /* the charge is more important than the breadcrumb */
+    }
+
     const { error: err } = await stripeRef.current.confirmPayment({
       elements: elementsRef.current,
       confirmParams: { return_url: `${window.location.origin}/book/${bookingId}/confirmation` },

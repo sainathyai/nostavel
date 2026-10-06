@@ -29,6 +29,13 @@
       "when": 1785947234091,
       "tag": "0003_flat_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791301485226,
+      "tag": "0004_magenta_iron_monger",
+      "breakpoints": true
     }
   ]
 }

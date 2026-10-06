@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe("confirmBooking under two concurrent calls for the same booking (NOS-6)", () => {
-  it.fails("charges and books the supplier only once for one bookingId", async () => {
+  it("charges and books the supplier only once for one bookingId", async () => {
     const { booking } = await seedConfirmableBooking();
 
     // Hold every book() call open until BOTH concurrent confirmBooking calls

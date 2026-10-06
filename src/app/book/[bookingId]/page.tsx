@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { mayActOnBooking, mintedInThisBrowser } from "@/lib/booking-authz";
+import { holdLapsed } from "@/lib/booking-transitions";
 import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { abandonForIdentityChange } from "@/lib/booking-service";
@@ -114,6 +115,22 @@ export default async function CheckoutPage(props: { params: Promise<{ bookingId:
 
   if (booking.status === "confirmed") redirect(`/book/${bookingId}/confirmation`);
   if (booking.status !== "prebooked") {
+    return (
+      <Shell>
+        <Notice title="This rate is no longer held" body="Held rates expire after a short while. Start a fresh search to book this stay." />
+      </Shell>
+    );
+  }
+
+  // THE SUPPLIER HAS ALREADY LET THE ROOM GO (NOS-46).
+  //
+  // The sweeper runs on a schedule, so there is always a window where the hold
+  // has lapsed and no sweep has flipped the row yet. Trusting the status alone
+  // means rendering a working payment form over a room that is gone — and a
+  // guest who pays into that window is charged against a dead prebook, which is
+  // the one outcome this whole segment exists to prevent. The page has to check
+  // the clock itself rather than wait to be told.
+  if (holdLapsed(booking.prebookedAt, new Date())) {
     return (
       <Shell>
         <Notice title="This rate is no longer held" body="Held rates expire after a short while. Start a fresh search to book this stay." />

@@ -87,7 +87,12 @@ export const verificationTokens = pgTable(
 export const bookingStatus = pgEnum("booking_status", [
   "draft", // row created, selection snapshotted, nothing sent to supplier
   "prebooked", // LiteAPI prebook succeeded, price + policy locked
-  "payment_pending", // guest card charged via Payment SDK, awaiting book()
+  "payment_pending", // guest's browser says it is charging the card, awaiting book()
+  // One caller has claimed this booking and is calling the supplier. NOS-6: the
+  // claim is what stops a second finalize - a refresh of the confirmation page
+  // while the supplier call is in flight - reaching the supplier off the same
+  // single payment.
+  "confirming",
   "confirmed", // LiteAPI booking CONFIRMED
   "failed", // prebook or book failed
   "cancelled", // cancelled after confirmation
@@ -168,6 +173,11 @@ export const bookings = pgTable(
 
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    // When the supplier hold was taken. The ONLY clock the hold is measured
+    // from (NOS-46): `updatedAt` moves every time anything writes the row -
+    // saving guest details, for one - so a cutoff read from it was "30 minutes
+    // since the last write", not 30 minutes since the room was held.
+    prebookedAt: timestamp("prebooked_at", { withTimezone: true, mode: "date" }),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "date" }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: "date" }),
   },
