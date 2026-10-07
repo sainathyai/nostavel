@@ -80,6 +80,24 @@ echo "billing account: ${BILLING:?not set - see the command above}"
 echo "repo id:         $(gh api repos/$GITHUB_REPO -q .id)"
 ```
 
+## A red cross on `main` before you finish is expected
+
+Merging anything to `main` runs the pipeline, and until step 10 it has no
+credentials, so it fails. Observed on the first merge (2026-10-07), and it failed
+in the right order:
+
+```
+plan:    failure   migrate-plan: DATABASE_URL is not set.
+migrate: skipped
+deploy:  refusing to deploy because the database plan did not succeed.
+         Without a plan, nobody knows whether this deploy contains a migration.
+```
+
+No image was built and no traffic moved. **The shape of that is the point:** the
+deploy did not reason that a skipped migration meant there was nothing to apply.
+If you ever see the opposite, a failed or skipped plan followed by a deploy that
+proceeded, stop and treat it as a defect in `scripts/deploy-gate.mjs`.
+
 ---
 
 ## 1. Turn on billing
