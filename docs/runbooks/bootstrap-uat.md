@@ -36,6 +36,19 @@ the second command, step 6's `terraform init` fails with *"could not find defaul
 credentials"* - at the step that creates everything, with nothing in the error
 pointing here. Raised by the NOS-61 security review.
 
+Then point both at this project, because the second login takes its quota project
+from whatever was active and says so only in a line that is easy to read past:
+
+```bash
+gcloud auth application-default set-quota-project nostavel
+gcloud config set project nostavel
+gcloud config get-value project                      # nostavel
+```
+
+On an account with several projects this is not cosmetic: Terraform's API calls
+would be attributed to the other project, and fail outright if `serviceusage` is
+not permitted there. Hit on the first real run, 2026-10-07.
+
 Set these once per shell so the commands below can be pasted as they are:
 
 ```bash
@@ -87,6 +100,11 @@ environment is essentially the images the pipeline pushes, which is why step 6
 sets a cleanup policy and a budget.
 
 ## 2. Enable the APIs
+
+**Do not skip this one.** Only `artifactregistry` is on by default, and the
+failures that follow do not name a missing API: `terraform apply` fails part way
+through having already created real resources. Skipped on the first real run
+(2026-10-07) and caught by checking rather than by an error.
 
 ```bash
 gcloud services enable \
@@ -171,7 +189,7 @@ echo "repo id: ${REPO_ID:?could not read it - check gh auth status}"
 
 gcloud iam workload-identity-pools providers create-oidc nostavel-repo \
   --project="$PROJECT" --location=global --workload-identity-pool=github \
-  --display-name="sainathyai/nostavel deploy-uat on main" \
+  --display-name="nostavel deploy-uat on main" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
   --attribute-condition="assertion.repository_id == '${REPO_ID}' && assertion.job_workflow_ref == '${GITHUB_REPO}/.github/workflows/deploy-uat.yml@refs/heads/main'"
@@ -402,6 +420,9 @@ They read `APP_URL` and `CRON_SECRET`, both set in step 10.
 | `the supplier key is "live", not "sandbox"` | A non-sandbox `LITEAPI_KEY` is in Secret Manager. Replace it; do not override the check |
 | The browser never asks for a password | `APP_ENV` is missing or `local` on the service. Same fix as above |
 | A deploy run sits at "Waiting for approval" and later merges do not deploy | One deploy runs at a time, and an unanswered approval holds the queue. Approve it, reject it, or `gh run cancel <id>` to release the queue |
+| `INVALID_ARGUMENT: The WorkloadIdentityPoolProvider's display name must be less than or equal to 32 characters` | Step 5's `--display-name` is too long. The pool and the binding around it still succeeded, so re-run only the `create-oidc` command |
+| `SERVICE_DISABLED`, or `terraform apply` failing on a resource type that was fine a moment ago | Step 2 was skipped or did not finish. Run it, then `terraform apply` again: it is safe to re-run |
+| Anything mentioning a project you have never heard of | ADC's quota project. See "Before you start" |
 
 ## When it is done
 
