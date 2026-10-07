@@ -36,7 +36,10 @@ export const RETRY_DELAY_MS = 3_000;
 /**
  * @typedef {object} Expected
  * @property {string} env      the environment name this deploy is for, e.g. "uat"
- * @property {string} [sha]    the commit being deployed, if known
+ * @property {string} [sha]    the commit being deployed. Omitted ONLY by a
+ *   deliberate `--any-commit` run; the pipeline always supplies it, because a
+ *   check that silently stops checking when its input goes missing is the one
+ *   kind this script must not have (NOS-61 security review).
  */
 
 /**
@@ -90,10 +93,21 @@ export function evaluateDeployHealth(publicHealth, deepHealth, expected) {
     );
   }
 
-  const fatal = Array.isArray(deep.problems)
-    ? deep.problems.filter((p) => p && typeof p === "object" && p.severity === "fatal")
-    : [];
-  for (const p of fatal) problems.push(`fatal configuration problem: ${String(p.code)}`);
+  // AN UNREADABLE ANSWER IS NOT A CLEAN ONE. This used to treat a missing or
+  // non-array `problems` field as "no fatal configuration problems", which is
+  // the same fail-open shape as an unchecked expiry (.agents/rules/security.md,
+  // and NOS-9 where `Date.now() > undefined` read as "not expired"). Raised by
+  // the NOS-61 security review. A copy that cannot tell us what is wrong with it
+  // does not get traffic.
+  if (!Array.isArray(deep.problems)) {
+    problems.push(
+      "the detailed health answer has no problems list, so this copy cannot say whether its " +
+        "configuration is sound. Refusing to read that as 'nothing is wrong'.",
+    );
+  } else {
+    const fatal = deep.problems.filter((p) => p && typeof p === "object" && p.severity === "fatal");
+    for (const p of fatal) problems.push(`fatal configuration problem: ${String(p.code)}`);
+  }
 
   if (expected.sha && pub.sha !== expected.sha) {
     problems.push(
@@ -175,7 +189,21 @@ async function main() {
     console.error("deploy-smoke: CRON_SECRET is not set, so the detailed health check cannot be made.");
     process.exit(1);
   }
-  const expected = { env: process.env.EXPECT_ENV || "uat", sha: process.env.EXPECT_SHA || undefined };
+  // EXPECT_SHA IS REQUIRED UNLESS WAIVED OUT LOUD. The commit comparison is what
+  // catches a deploy that silently did nothing, or a check pointed at the wrong
+  // revision - so an empty EXPECT_SHA used to disable exactly the check that
+  // exists for the failure hardest to notice. Now it refuses, and a human
+  // checking an environment by hand passes --any-commit on purpose.
+  const anyCommit = process.argv.includes("--any-commit");
+  const sha = (process.env.EXPECT_SHA || "").trim();
+  if (!sha && !anyCommit) {
+    console.error(
+      "deploy-smoke: EXPECT_SHA is not set. Pass the commit being deployed, or --any-commit to " +
+        "check an environment without comparing what it is running.",
+    );
+    process.exit(1);
+  }
+  const expected = { env: process.env.EXPECT_ENV || "uat", sha: sha || undefined };
 
   const first = await waitForAnswer(base);
   if ("error" in first) {

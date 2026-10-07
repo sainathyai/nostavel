@@ -39,7 +39,25 @@ block rather than with the deploy.
 ## Why it is applied by hand and not by CI
 
 One service does not justify a Terraform pipeline, and a CI identity able to
-rewrite the environment is a much larger credential than one able to deploy an
-image into it. The pipeline's service account can deploy a revision and move
-traffic; it cannot change who the service runs as, what it may read, or how far
-it may scale.
+rewrite the environment is a larger credential than one scoped to the service and
+the image repository.
+
+**What the deploy identity actually has**, stated accurately because the first
+version of this file overstated it (NOS-61 security review): `run.developer` on
+this one service and `artifactregistry.writer` on this one repository. Within the
+service it can change the revision template - including the env block and the
+secret references - so "it cannot change what the service may read" was false. It
+cannot touch any other service, any other repository, or the IAM on either.
+
+And the part that cannot be designed away: anything that can deploy an image to
+run as the runtime identity can read whatever that identity can read, which is
+all ten secrets. That is what deploying means. The control is not the role, it is
+the federated identity, restricted to one workflow file on one branch.
+
+## `terraform plan` should be quiet, with one exception
+
+A clean `terraform plan` after an apply should report no changes, even if the
+pipeline has deployed since - that is what `ignore_changes` is for. The exception
+is a secret rotation: `docs/runbooks/rotate-secrets.md` restarts the service with
+a label, and labels are not ignored, so the next plan will want to remove it.
+Harmless, and worth knowing before it reads as drift.

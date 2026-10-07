@@ -122,6 +122,22 @@ resource "google_secret_manager_secret" "app" {
   # state bucket in plain text.
 }
 
+# WITHOUT THIS, EVERY DEPLOY FAILS. Deploying a Cloud Run service whose template
+# names a service account requires `iam.serviceAccounts.actAs` on THAT account,
+# for every revision - not only when the account is being changed - and
+# `roles/run.developer` does not include it. Found by the NOS-61 devops review:
+# the first deploy would have stopped at "Start the new revision" with
+# PERMISSION_DENIED, and the error names neither the role nor which of the three
+# credentials in play is wrong.
+#
+# Scoped to this one service account rather than granted project-wide, so the
+# deploy identity can act as the thing it deploys and nothing else.
+resource "google_service_account_iam_member" "deployer_may_act_as_runtime" {
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.deploy_service_account}"
+}
+
 resource "google_secret_manager_secret_iam_member" "runtime_reads" {
   for_each  = google_secret_manager_secret.app
   secret_id = each.value.id
@@ -235,6 +251,40 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
   location = google_cloud_run_v2_service.app.location
   role     = "roles/run.invoker"
   member   = "allUsers"
+}
+
+# ---------------------------------------------------------------------------
+# What the deploy identity may touch
+# ---------------------------------------------------------------------------
+
+# SCOPED HERE RATHER THAN GRANTED ON THE PROJECT. The bootstrap runbook used to
+# grant both of these at project scope, which the NOS-61 security review pointed
+# out is far broader than three documents claimed: project-level run.developer
+# carries `run.services.delete` on EVERY Cloud Run service in the project, and
+# project-level artifactregistry.writer carries version deletion on every
+# repository - including the ten images the rollback runbook depends on.
+#
+# They live in Terraform because Terraform owns the two resources they are scoped
+# to. The deploy identity itself is still created by hand in the runbook, before
+# the first apply, because this configuration references it.
+#
+# What this does NOT buy, so the threat model stays honest: a deploy identity
+# that can deploy an arbitrary image as the runtime identity can read everything
+# the runtime identity can read, which is all ten secrets. That is inherent to
+# deploying at all, not a gap to be closed, and it is why the federated identity
+# is restricted to one workflow file on one branch.
+resource "google_cloud_run_v2_service_iam_member" "deployer" {
+  name     = google_cloud_run_v2_service.app.name
+  location = google_cloud_run_v2_service.app.location
+  role     = "roles/run.developer"
+  member   = "serviceAccount:${var.deploy_service_account}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "deployer" {
+  location   = google_artifact_registry_repository.app.location
+  repository = google_artifact_registry_repository.app.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${var.deploy_service_account}"
 }
 
 # ---------------------------------------------------------------------------

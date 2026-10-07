@@ -81,3 +81,5 @@ next-env.d.ts
 *.tfvars
 !*.tfvars.example
 crash.log
+*.tfplan
+crash.*.log

@@ -40,8 +40,26 @@ gh run list --workflow=deploy-uat.yml --repo sainathyai/nostavel --limit 5
 
 ```bash
 gh workflow run deploy-uat.yml --repo sainathyai/nostavel
-gh workflow run deploy-uat.yml --repo sainathyai/nostavel --ref COMMIT
 ```
+
+**Only `main` deploys, and the workflow refuses anything else.** Not a
+convenience limit: the deploy reads the migration journal from the ref it runs
+on, so a run from a branch would ask you to approve that branch's migrations and
+apply them to the shared database. To ship a particular commit, get it onto
+`main`.
+
+**No deploy possible because the database is unreachable?** The plan job asks the
+database what is applied, so a Neon outage blocks every deploy - including a
+code-only fix, which is when you most want one. There is deliberately no
+automated way round it. By hand, asserting that the change needs no schema
+change:
+
+```bash
+gcloud run deploy nostavel-uat --project=nostavel --region=us-central1   --image=us-central1-docker.pkg.dev/nostavel/nostavel/app:FULL_COMMIT_SHA
+```
+
+Check that assertion before running it, and note it on the ticket afterwards:
+the pipeline has no record of a deploy it did not make.
 
 ## When something looks wrong
 
@@ -62,11 +80,36 @@ it with `terraform apply` in `infra/envs/uat`, which sets it.
 `CRON_SECRET` in GitHub not matching the one in Secret Manager. They are two
 copies of one value: see `bootstrap-uat.md` step 9.
 
-**The deploy is green but `/api/health` reports the old commit.** Traffic is
-pinned to an old revision by a previous rollback. See the end of `rollback.md`.
+**You rolled back by hand, and the next merge undid it.** Expected, and worth
+knowing before it surprises you: every successful deploy ends with
+`update-traffic --to-latest`, which un-pins traffic and points it at the newest
+revision. So a manual rollback holds only until the next deploy. If you need it
+to stick, revert the commit on `main` as well - the rollback buys time, the
+revert is the fix. See `rollback.md`.
 
 **"refusing to deploy ... the approval was never given".** The migration job was
 skipped while migrations were pending. Re-run the deploy and approve it.
+
+**A run is waiting for approval and nothing else can deploy.** Raised by the
+NOS-61 devops review, and it is the real cost of running one deploy at a time:
+only one deploy runs at a time, and a job waiting on an approval has not started,
+so its timeout has not started either. An unanswered approval therefore holds the
+queue indefinitely - including a one-line hotfix with no migration in it.
+
+Two ways out:
+
+```bash
+# 1. Deal with it: approve or reject on the run page. Rejecting is safe and
+#    applies nothing.
+gh run list --workflow=deploy-uat.yml --repo sainathyai/nostavel --limit 3
+
+# 2. Release the queue without approving a migration you have not read.
+gh run cancel RUN_ID --repo sainathyai/nostavel
+```
+
+Cancelling is safe by design: the next deploy's gate sees a cancelled migration
+job and refuses rather than deploying code against an un-migrated database. The
+migration is still pending, so the next run will ask again.
 
 **The deploy says nothing is pending, but you wrote a migration.** The plan reads
 `src/db/migrations/meta/_journal.json`. A migration file added without running
@@ -80,6 +123,10 @@ skipped while migrations were pending. Re-run the deploy and approve it.
   the supplier's sandbox. A production environment gets its own separate pipeline
   (decision D-5.2), designed when the live-money gate is ready to be considered.
 - **It does not roll the database back.** See `rollback.md`.
-- **It does not change the environment's shape** - who it runs as, what it may
-  read, how far it scales. That is `infra/`, applied by hand. The deploy identity
-  cannot do it even if asked.
+- **It does not change the environment's shape across the project.** The deploy
+  identity holds `run.developer` on this one service and `artifactregistry.writer`
+  on this one repository, and nothing else - no other service, no other
+  repository, no IAM. Within this service it CAN change the revision template,
+  and anything able to deploy an image can read what the runtime identity reads,
+  which is every secret here. That is inherent to deploying; `infra/README.md`
+  says so plainly rather than claiming otherwise.

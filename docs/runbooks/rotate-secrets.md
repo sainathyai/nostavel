@@ -13,7 +13,13 @@ Secret Manager keeps versions and the service reads `latest`, so adding a versio
 is the change. The old version stays available until you disable it.
 
 ```bash
-printf '%s' 'THE_NEW_VALUE' | \
+# READ, NEVER TYPED ON THE COMMAND LINE. An earlier version of this runbook put
+# the new value straight into the command - so rotating a LEAKED secret wrote its
+# replacement into ~/.bash_history, moving the exposure rather than ending it.
+# Raised by the NOS-61 security review; the bootstrap runbook always did this
+# correctly and this one had regressed.
+read -rsp "new ACCESS_PASSWORD: " VALUE; echo
+printf '%s' "$VALUE" | \
   gcloud secrets versions add "${SERVICE}-ACCESS_PASSWORD" --project="$PROJECT" --data-file=-
 ```
 
@@ -35,7 +41,10 @@ That starts a new revision with the same image, which reads the new value.
 Check it:
 
 ```bash
-curl -s -u "owner:THE_NEW_VALUE" -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
+# --config reads the credential from a file descriptor, not an argument: an
+# argument is visible in the process table to every other process on the box.
+curl -s --config <(printf 'user = "owner:%s"\n' "$VALUE") \
+  -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
 # 200
 ```
 
@@ -59,13 +68,17 @@ Changing one copy alone breaks something quietly.
 |---|---|---|
 | `CRON_SECRET` | GitHub Actions secret of the same name | The deploy's health check fails with "the detailed health route did not return an object", and the sweeper and reconciler answer 401 - which silently switches off guest-money recovery |
 | `DATABASE_URL` | GitHub Actions secret `UAT_DATABASE_URL` | The pipeline plans and applies migrations against a different database than the app reads |
+| `APP_URL` (not secret, but it drifts the same way) | Terraform `app_url`, the GitHub `APP_URL` variable, and the Google OAuth redirect URI | Dead links in guest email, a scheduled job calling nothing, and sign-in failing - all three silent |
 
 Change both in the same sitting:
 
 ```bash
-printf '%s' 'THE_NEW_VALUE' | \
+read -rsp "new CRON_SECRET: " VALUE; echo
+printf '%s' "$VALUE" | \
   gcloud secrets versions add "${SERVICE}-CRON_SECRET" --project="$PROJECT" --data-file=-
+# gh prompts for the value, so nothing reaches history here either.
 gh secret set CRON_SECRET --repo sainathyai/nostavel
+unset VALUE
 ```
 
 ## The supplier key
@@ -93,8 +106,10 @@ Confirm the environment still reports itself healthy, which also proves the new
 value was actually readable by the service:
 
 ```bash
-curl -s -H "Authorization: Bearer THE_CRON_SECRET" \
+read -rsp "CRON_SECRET: " VALUE; echo
+curl -s -H @<(printf 'Authorization: Bearer %s\n' "$VALUE") \
   "https://THE_SERVICE_URL/api/health?deep=1"
+unset VALUE
 ```
 
 `ok: true`, `supplier: "sandbox"`, `database: "ok"`, and an empty `problems`

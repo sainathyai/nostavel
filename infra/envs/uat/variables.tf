@@ -63,6 +63,17 @@ variable "bootstrap_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
+variable "deploy_service_account" {
+  description = <<-EOT
+    The identity GitHub Actions deploys as. Created by hand in
+    docs/runbooks/bootstrap-uat.md step 4, which is why that step comes BEFORE
+    the first `terraform apply`: this configuration grants it permission to act
+    as the runtime identity, and the grant needs the account to exist.
+  EOT
+  type        = string
+  default     = "github-deploy@nostavel.iam.gserviceaccount.com"
+}
+
 variable "billing_account" {
   description = <<-EOT
     Billing account id, for the budget alarm only. Leave empty to skip the budget

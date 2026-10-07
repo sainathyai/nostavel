@@ -54,31 +54,51 @@ it with the usual approval. Do **not** hand-edit the test environment's database
 the incident behind decision D-5.4 was a migration run by hand against the wrong
 database.
 
-## When traffic is stuck on an old revision
+## A rollback is temporary. Know this before it surprises you.
 
-The pipeline deploys with `--to-latest`, so an ordinary deploy moves traffic back
-on its own. But a rollback done with `--to-revisions` **pins** traffic, and a
-later deploy then starts a new revision that receives nothing. The symptom is a
-green deploy where `/api/health` keeps reporting the old commit.
+Both a rollback and a deploy **pin** traffic to a named revision: the pipeline
+promotes exactly the revision it just checked, rather than "whatever is newest"
+(tightened by the NOS-61 security review, so a revision nothing looked at can
+never receive traffic).
 
-Unpin it:
+So **the next merge to `main` rolls you forward again**, automatically, whether
+or not the thing you rolled back from has been fixed. That is usually what you
+want - it stops a rollback quietly becoming a permanent state everyone forgets
+about - but it means a rollback buys time, it does not fix anything.
+
+**If the broken change must stay out, revert it on `main`.** Then the next deploy
+carries the reverted code and the two agree.
+
+An earlier version of this runbook warned instead about traffic being stranded on
+an old revision after a green deploy. That was wrong, and the review said so:
+nothing strands it, because every deploy names the revision it promotes. Nobody
+has executed either behaviour against real Cloud Run, so **check it on your first
+rollback.**
+
+To hand traffic back to whatever is newest, without deploying:
 
 ```bash
-gcloud run services update-traffic "$SERVICE" \
-  --project="$PROJECT" --region="$REGION" --to-latest
+gcloud run services update-traffic "$SERVICE"   --project="$PROJECT" --region="$REGION" --to-latest
 ```
 
-`terraform apply` will neither fix this nor undo it: `infra/` ignores the traffic
-split on purpose, precisely so an apply cannot undo a rollback someone did during
-an incident.
+`terraform apply` will neither pin nor un-pin: `infra/` ignores the traffic split
+on purpose, precisely so an apply cannot undo a rollback someone did during an
+incident.
 
 ## If a rollback target will not start
 
 Its image may have been deleted. The repository keeps the last ten
 (`infra/envs/uat/main.tf`), so this only happens for a revision older than that.
-There is no recovering the image. Deploy forward from a known-good commit
-instead:
+There is no recovering the image. Deploy forward instead, from `main`:
 
 ```bash
-gh workflow run deploy-uat.yml --repo sainathyai/nostavel --ref COMMIT_OR_BRANCH
+git revert <the bad commit>   # then open a PR and merge it
 ```
+
+**Do not reach for `gh workflow run --ref <branch>`.** It is refused: the deploy
+reads the migration journal from whatever ref it runs on, so a run from a branch
+would ask you to approve that branch's migrations - showing a perfectly ordinary
+list - and apply them to the shared database before failing. The workflow now
+stops on any ref but `main`, and an earlier version of this runbook told you to
+do exactly that (NOS-61 security review). `--ref` with a commit SHA never worked
+either: the dispatch API takes a branch or tag only.

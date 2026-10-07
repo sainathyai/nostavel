@@ -70,8 +70,11 @@ test("refuses a copy running a different commit than the one deployed", () => {
   assert.ok(verdict.problems.some((p) => /0000000/.test(p)));
 });
 
-test("does not compare commits when the deploy did not say which one it is", () => {
-  // The permissive direction, so a manual run without EXPECT_SHA still works.
+test("does not compare commits when the caller deliberately did not name one", () => {
+  // The permissive direction, and the only way to reach it is the CLI's explicit
+  // --any-commit. An EMPTY EXPECT_SHA is refused outright (NOS-61 security
+  // review): the check that catches a deploy which silently did nothing must not
+  // be the check that silently stops running when its input goes missing.
   const verdict = evaluateDeployHealth(healthy({ sha: "whatever" }), deepHealthy(), { env: "uat" });
   assert.equal(verdict.ok, true);
 });
@@ -105,6 +108,24 @@ test("reports several problems at once, so one run names them all", () => {
   );
   assert.equal(verdict.ok, false);
   assert.ok(verdict.problems.length >= 4, `expected several problems, got ${verdict.problems.length}`);
+});
+
+// FAIL-CLOSED ON AN UNREADABLE ANSWER. Previously a missing `problems` field was
+// read as "no fatal configuration problems" - the same shape as an unchecked
+// expiry reading as "not expired" (NOS-9). Raised by the NOS-61 security review.
+test("refuses a detailed answer with no problems list, rather than assuming it is clean", () => {
+  for (const problems of [undefined, null, "none", {}, 0]) {
+    const deep = { ...deepHealthy(), problems };
+    const verdict = evaluateDeployHealth(healthy(), deep, expected);
+    assert.equal(verdict.ok, false, `expected problems=${JSON.stringify(problems)} to refuse`);
+    assert.ok(verdict.problems.some((p) => /cannot say whether/.test(p)));
+  }
+});
+
+test("accepts an empty problems list, which is what a healthy copy sends", () => {
+  // The permissive direction, so the rule above cannot drift into refusing every
+  // healthy deploy.
+  assert.equal(evaluateDeployHealth(healthy(), deepHealthy({ problems: [] }), expected).ok, true);
 });
 
 test("refuses when either health answer is not an object", () => {

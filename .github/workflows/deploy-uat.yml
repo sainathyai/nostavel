@@ -80,6 +80,31 @@ jobs:
       pending: ${{ steps.plan.outputs.pending }}
       tags: ${{ steps.plan.outputs.tags }}
     steps:
+      # MAIN ONLY, CHECKED HERE RATHER THAN TRUSTED. `on: push` is already
+      # restricted to main, but `workflow_dispatch` accepts any branch, and the
+      # only other thing pinned to main is the federated identity's attribute
+      # condition - which is checked in the `deploy` job, AFTER `migrate` has
+      # already applied something.
+      #
+      # So without this, `gh workflow run ... --ref some-branch` would read that
+      # branch's journal, ask the owner to approve its migrations (the approval
+      # would show a perfectly ordinary list), apply them to the shared
+      # database, and only then fail at the auth step. That is the "migration
+      # applied against the wrong thing" class D-5.4 exists to prevent, and the
+      # NOS-61 security review found two of my own runbooks instructing it.
+      #
+      # Failing `plan` is enough to stop everything: `migrate` needs it and is
+      # skipped when a dependency fails, and `deploy` runs its gate, which
+      # refuses on any plan result other than success.
+      - name: Refuse any ref that is not main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "Refusing to run: this workflow deploys refs/heads/main only, and this run is on ${REF}." >&2
+          echo "A deploy from another ref would apply that ref's migrations to the shared database." >&2
+          exit 1
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -137,10 +162,14 @@ jobs:
   deploy:
     name: Build, check, and only then take traffic
     needs: [plan, migrate]
-    # `always()` because `migrate` is skipped on most runs, and a bare `needs:`
-    # would then skip this job too. What that skip MEANT is decided by the gate
-    # script below, not by this condition.
-    if: always()
+    # `!cancelled()` rather than `always()`, because `migrate` is skipped on most
+    # runs and a bare `needs:` would skip this job too - but `always()` is also
+    # true when the OWNER CANCELS THE RUN, which is the normal reflex on
+    # realising the wrong thing was merged. With nothing pending, a cancelled run
+    # would then have deployed anyway: `migrate` skipped, the gate satisfied.
+    # Raised by the NOS-61 security review. What a skip MEANS is still decided by
+    # the gate script, not by this condition.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -233,6 +262,18 @@ jobs:
           fi
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
+          # The revision's name, so the promotion step can name it instead of
+          # saying "whatever is newest". Read back for the same reason as the URL.
+          NAME=$(gcloud run services describe "${SERVICE}" \
+            --project="${GCP_PROJECT}" --region="${GCP_REGION}" --format=json \
+            | jq -r --arg t "${{ steps.image.outputs.tag }}" \
+                '.status.traffic[] | select(.tag == $t) | .revisionName')
+          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
+            echo "No revision name came back for tag ${{ steps.image.outputs.tag }}." >&2
+            exit 1
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
       # Refuses a live supplier key, a copy that does not know which environment
       # it is, an unreachable database, any fatal configuration problem, and a
       # copy running a different commit than the one just built. The decision is
@@ -245,11 +286,38 @@ jobs:
           EXPECT_SHA: ${{ steps.image.outputs.sha }}
         run: node scripts/deploy-smoke.mjs "${{ steps.revision.outputs.url }}"
 
-      - name: Move traffic to it
+      - name: Move traffic to the revision that was checked
+        run: |
+          set -euo pipefail
+          # NOT --to-latest, which promotes whatever is newest and not
+          # necessarily the revision that just passed its check. A
+          # `terraform apply`, a secret rotation's `services update`, or a hand
+          # deploy landing in between would each create a newer revision, and
+          # traffic would go to one nothing ever looked at. Raised by the NOS-61
+          # security review: the same principle as reading the URL back rather
+          # than constructing it, applied to the revision.
+          gcloud run services update-traffic "${SERVICE}" \
+            --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+            --to-revisions="${{ steps.revision.outputs.name }}=100" --quiet
+
+      # EVERY DEPLOY USED TO LEAVE A PERMANENT PUBLIC URL BEHIND IT. `--tag`
+      # creates an addressable traffic target, and moving traffic does not
+      # remove it - so each merge added one more `https://c<sha>---...run.app`
+      # serving that commit forever, reading `version = latest` of every secret
+      # on cold start. Shipping a fix would not have taken the vulnerable commit
+      # offline, and the cron and webhook routes are exempt from the password
+      # gate by design, so a money-path bug stayed reachable on every revision
+      # ever deployed. Found by the NOS-61 security review.
+      #
+      # The tag exists only to give the check somewhere to look before traffic
+      # moves. After that it has no purpose, so it goes - and it goes even when a
+      # later step failed, which is why this is not conditional on success.
+      - name: Take the candidate URL back down
+        if: ${{ !cancelled() }}
         run: |
           gcloud run services update-traffic "${SERVICE}" \
             --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
-            --to-latest --quiet
+            --remove-tags="${{ steps.image.outputs.tag }}" --quiet || true
 
       # The same check again, against the URL visitors actually use. The check
       # above proved the revision; this proves the promotion, which is a
@@ -259,18 +327,45 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           EXPECT_ENV: ${{ env.APP_ENV }}
           EXPECT_SHA: ${{ steps.image.outputs.sha }}
-        run: node scripts/deploy-smoke.mjs "${{ vars.APP_URL }}"
+          LIVE_URL: ${{ vars.APP_URL }}
+        run: |
+          set -euo pipefail
+          # Checked rather than guessed at: with APP_URL unset this used to call
+          # the checker with an empty argument and fail on its usage message, so
+          # a successful deploy went red for a reason that read like a broken app.
+          if [ -z "${LIVE_URL}" ]; then
+            echo "The APP_URL repository variable is not set, so the live URL cannot be checked." >&2
+            echo "Traffic has already moved, and the revision passed its own check before it did." >&2
+            echo "Set it: gh variable set APP_URL (docs/runbooks/bootstrap-uat.md step 9)." >&2
+            exit 1
+          fi
+          node scripts/deploy-smoke.mjs "${LIVE_URL}"
 
+      # `if: always()` so there is something to read when a step above failed:
+      # the run that most needs a summary is the one that went wrong.
+      #
+      # EVERY VALUE GOES THROUGH `env:`, NONE INTO THE SHELL. Migration tags come
+      # from a committed file, and the NOS-61 security review showed that a tag
+      # shaped like a shell fragment would execute here, in a runner that has
+      # already authenticated to Google Cloud. Getting it there needs a merged
+      # pull request, but "a reviewer will spot an odd character inside a
+      # generated file nobody reads" is not a control.
       - name: Say what was deployed
+        if: always()
+        env:
+          SHA: ${{ steps.image.outputs.sha }}
+          PENDING: ${{ needs.plan.outputs.pending }}
+          TAGS: ${{ needs.plan.outputs.tags }}
+          LIVE_URL: ${{ vars.APP_URL }}
         run: |
           {
             echo "## Deployed to the test environment"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| Commit | \`${{ steps.image.outputs.sha }}\` |"
-            echo "| Database changes | ${{ needs.plan.outputs.pending }} (${{ needs.plan.outputs.tags }}) |"
-            echo "| URL | ${{ vars.APP_URL }} |"
+            printf '| Commit | `%s` |\n' "${SHA:-unknown}"
+            printf '| Database changes | %s (%s) |\n' "${PENDING:-unknown}" "${TAGS:-none}"
+            printf '| URL | %s |\n' "${LIVE_URL:-not set}"
             echo
-            echo "Rollback: \`docs/runbooks/rollback.md\`."
+            echo "Rollback: docs/runbooks/rollback.md"
           } >> "$GITHUB_STEP_SUMMARY"
