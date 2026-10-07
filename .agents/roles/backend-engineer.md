@@ -9,6 +9,8 @@ owns:
   - "src/app/actions/**"
   - "src/app/api/**"
   - "src/db/**"
+  - "src/proxy.ts"
+  - "src/instrumentation.ts"
   - "drizzle.config.ts"
 ---
 

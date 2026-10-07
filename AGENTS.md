@@ -72,6 +72,6 @@ Before editing a file, read every rule whose globs match its path.
 | database | `src/db/**`<br>`drizzle.config.ts` | [`.agents/rules/database.md`](.agents/rules/database.md) |
 | frontend | `src/app/**/*.tsx`<br>`src/components/**` | [`.agents/rules/frontend.md`](.agents/rules/frontend.md) |
 | money-and-claims | `src/lib/{pricing,fees,member-pricing,cancellation,booking-service,booking-format,quote-token}.ts`<br>`src/app/book/**`<br>`src/app/stay/**` | [`.agents/rules/money-and-claims.md`](.agents/rules/money-and-claims.md) |
-| security | `src/auth.ts`<br>`src/lib/{dal,guest-verify,webhook-auth,rate-limit,quote-token,signed-claim,booking-access,booking-authz,booking-caller}.ts`<br>`src/app/api/**`<br>`src/app/actions/**`<br>`next.config.ts` | [`.agents/rules/security.md`](.agents/rules/security.md) |
+| security | `src/auth.ts`<br>`src/lib/{dal,guest-verify,webhook-auth,rate-limit,quote-token,signed-claim,booking-access,booking-authz,booking-caller}.ts`<br>`src/lib/{access-gate,deploy-config,health}.ts`<br>`src/app/api/**`<br>`src/app/actions/**`<br>`src/proxy.ts`<br>`src/instrumentation.ts`<br>`next.config.ts` | [`.agents/rules/security.md`](.agents/rules/security.md) |
 | tests | `src/**/*.test.ts`<br>`scripts/**/*.test.mjs` | [`.agents/rules/tests.md`](.agents/rules/tests.md) |
 <!-- END:agents-rules-index -->

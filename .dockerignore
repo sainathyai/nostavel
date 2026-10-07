@@ -1,0 +1,73 @@
+# What never enters the build context (NOS-60).
+#
+# The first entries are the ones that matter: a secret or a raw supplier dump
+# copied into an image layer is published with that image, and deleting it in a
+# later layer does not remove it. These mirror the committed-file rules in
+# scripts/agent-guards/patterns.mjs, for the same reasons.
+
+# Secrets. .env.example is a template of names only and is harmless, but the
+# build needs no environment at all, so nothing is let through.
+.env
+.env.*
+
+# Raw supplier responses and net-pricing dumps. Not needed to build, and not
+# publishable.
+analysis/
+
+# Private keys and certificates, wherever they turn up.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Cloud service-account keys, which arrive as .json and so match none of the
+# above. Raised by the NOS-60 security review: NOS-61 is exactly when one of
+# these appears in the repository root. A blanket *.json cannot be used - the
+# build needs package.json, tsconfig.json and src/data/*.json - so these are the
+# names such a file actually arrives with. The commit-guard half of this, which
+# is the layer that does not depend on reading the file, is NOS-63.
+service-account*.json
+*service-account*.json
+gcp-*.json
+gcloud-*.json
+*-credentials.json
+*credentials*.json
+
+# Rebuilt inside the image; copying a host build would mix a Windows build into
+# a Linux one.
+node_modules/
+.next/
+
+# History and local tooling state. .git in particular is both large and a way
+# for a deleted secret to travel inside an image.
+.git/
+.gitignore
+.githooks/
+
+# Tests, reports and fixtures: none of them are needed to build or serve.
+e2e/
+playwright-report/
+test-results/
+compose.test.yml
+playwright.config.ts
+vitest.config.ts
+vitest.integration.config.ts
+
+# Documentation and the agent layer. Read by people and agents, not by the app.
+docs/
+.agents/
+.claude/
+.gemini/
+.github/
+tools/
+AGENTS.md
+CLAUDE.md
+README.md
+SECURITY.md
+LICENSE
+
+# Editor and OS noise.
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -37,6 +37,13 @@ const CSP_REPORT_ONLY = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // Trace exactly the files the server needs and emit a self-contained
+  // server.js, so the deployed image carries no source, no build tools and no
+  // development dependencies (Dockerfile, NOS-60). Harmless outside a
+  // container: `next dev` ignores it, and `next build` just writes an extra
+  // .next/standalone directory that nothing else reads.
+  output: "standalone",
+
   async headers() {
     return [
       {
