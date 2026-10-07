@@ -17,7 +17,12 @@ Source of truth: `docs/conventions.md` §1 and §8. Stack: Neon Postgres over HT
   - Add new columns as nullable or with a default, and backfill.
   - Remove or rename only in a later change, after no code reads the old shape.
   - Environments share the schema over time, so a destructive migration can break a running deploy.
-- Never edit a migration that has already been merged. Write a new one.
+- Never edit a migration that has already been merged. Write a new one. **The
+  pipeline cannot see that you edited one:** it decides what is pending by
+  comparing the journal's timestamps with the rows in
+  `drizzle.__drizzle_migrations`, never the SQL, so an edited file that has
+  already been applied is invisible to both the plan and the migrator. The
+  environment then runs code written against SQL that was never executed there.
 - Applying migrations (`db:migrate`) is a deliberate step that needs approval, never a side effect of other work.
 
 ## The booking ledger (§8)

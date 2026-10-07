@@ -51,6 +51,14 @@ export function repoRoot() {
 export const JOURNAL_PATH = "src/db/migrations/meta/_journal.json";
 
 /** Where drizzle-kit records what it has applied. */
+// Drizzle's own defaults, read from its installed source (`PgDialect.migrate`):
+// table `__drizzle_migrations` in schema `drizzle`. It is hardcoded here because
+// `drizzle.config.ts` does not set `migrations:` and so takes the same defaults.
+// IF THAT CONFIG EVER SETS A TABLE OR SCHEMA, change this with it: the plan would
+// otherwise read an empty table, report every migration as pending, and ask the
+// owner to approve work that was already applied. Raised as a low finding by the
+// NOS-61 review; a shared constant is not possible because this script must run
+// with no TypeScript and no database credentials.
 export const MIGRATIONS_TABLE = "drizzle.__drizzle_migrations";
 
 /**

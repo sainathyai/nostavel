@@ -14,8 +14,10 @@ globs:
 
 Source of truth: `docs/conventions.md` §2 (the server boundary and secrets) and
 §8 (additive migrations, the append-only ledger), plus
-[ADR 0005](../../docs/adr/0005-deployment-and-environments.md) and the runbooks in
-`docs/runbooks/`. One shared test environment on Cloud Run, on the supplier's
+[ADR 0005](../../docs/adr/0005-deployment-and-environments.md), the runbooks in
+`docs/runbooks/`, and the threat model in
+[docs/security/delivery-pipeline.md](../../docs/security/delivery-pipeline.md),
+which records what the review closed and what is accepted. One shared test environment on Cloud Run, on the supplier's
 **sandbox**. A real-money production environment gets its own separate pipeline,
 later (D-5.2); nothing here is that, and nothing here should be written as though
 it will become that by growing.
@@ -42,7 +44,16 @@ it will become that by growing.
 ## The pipeline
 
 - **Deploys run on `main` only.** Never on `pull_request`: a fork must not
-  receive a deployment credential.
+  receive a deployment credential. `workflow_dispatch` is allowed but the first
+  step refuses any ref but `main`: the plan reads the migration journal from the
+  ref it runs on, so a dispatch from a branch would show the owner an ordinary
+  list of that branch's migrations and apply them to the shared database.
+- **`UAT_DATABASE_URL` is a repository-scoped Actions secret, so it is reachable
+  from any workflow on any branch that a maintainer merges** - the approval
+  environment protects the deploy job, not the credential. A workflow that only
+  needs to read this secret does not exist and should not be added; if one ever
+  must, move the secret into the `uat-database` environment first so the
+  reviewer gate is what unlocks it.
 - **A decision in a workflow is a decision nobody tests.** `if:` expressions
   decide only whether a step runs at all; anything that weighs job results or
   health answers belongs in a tested script (`scripts/deploy-gate.mjs`,
@@ -68,7 +79,15 @@ it will become that by growing.
   protection rule, not an `if:`.
 - Migrations stay **additive only** (§8, and the database rule). That is what
   makes applying them before the new code serves safe, and what makes a code
-  rollback safe afterwards.
+  rollback safe afterwards. **Nothing enforces it.** No check reads the SQL, so
+  a `DROP COLUMN` would be planned, approved and applied like anything else, and
+  the rollback runbook's promise that older code keeps working would quietly stop
+  being true. The approval exists partly to be the place a human notices that.
+- **The plan shows which migrations are pending, not what they contain.** It
+  compares the journal's timestamps with the rows in the bookkeeping table, so an
+  edited migration file that has already been applied is invisible to both the
+  plan and the migrator. That is the mechanical reason the database rule says
+  never to edit a merged migration.
 - Never hand-edit a deployed database. The incident behind this whole rule was a
   migration run by hand against the wrong one.
 
@@ -79,9 +98,18 @@ it will become that by growing.
   deploy or undo a rollback done during an incident. Do not remove that
   `lifecycle` block.
 - Applied **by hand**, not by CI: a CI identity able to rewrite the environment is
-  a far larger credential than one able to deploy an image into it. The deploy
-  identity has `run.developer` and `artifactregistry.writer`, and no secret
-  access.
+  a larger credential than one scoped to the service and the image repository.
+- **What the deploy identity actually holds**, because three documents once
+  claimed less: `roles/run.developer` on this one Cloud Run service,
+  `roles/artifactregistry.writer` on this one image repository, and
+  `roles/iam.serviceAccountUser` on the runtime identity (without that last one
+  it cannot deploy at all). Both grants are scoped in `infra/`, not at project
+  level. Within the service it **can** change the revision template, including
+  the secret references, so "it cannot change what the service may read" was
+  false. And anything able to deploy an image that runs as the runtime identity
+  can read whatever that identity reads, which is all ten secrets - that is what
+  deploying means, not a gap to close. The control is the federated identity,
+  pinned to one workflow file on one branch.
 - The service runs as its own identity, not the project default (which holds
   Editor on everything).
 - `min_instance_count = 0` and `cpu_idle = true`. Measured on this account
