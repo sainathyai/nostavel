@@ -1,0 +1,263 @@
+name: Deploy to the test environment
+
+# Delivery for the one shared test environment (NOS-61, epic NOS-59, ADR 0005).
+#
+# WHAT RUNS WHEN. Only on a push to `main`, i.e. only on a change that has
+# already been reviewed and merged, and `workflow_dispatch` so a deploy can be
+# re-run by hand without an empty commit. NEVER on `pull_request`: this is a
+# public repository, a fork's pull request must never receive a deployment
+# credential, and nothing here should be reachable by changing a file in a fork.
+#
+# THE SHAPE, AND WHY IT IS THREE JOBS.
+#
+#   plan    -> what would this deploy change about the database?
+#   migrate -> SKIPPED unless something is pending; otherwise waits for the
+#              owner's approval, then applies it
+#   deploy  -> build, push, start the new copy WITHOUT traffic, check it, and
+#              only then move traffic
+#
+# The middle job is decision D-5.4 and the owner's own refinement: the pipeline
+# may apply database changes, but it must stop and ask - and it must only ask
+# when there is something to apply, because an approval requested on every merge
+# is one that gets clicked without being read. The approval itself is a GitHub
+# Environment protection rule on `uat-database` (required reviewer: the owner),
+# not anything in this file.
+#
+# A SKIPPED MIGRATION JOB IS AMBIGUOUS, AND THAT IS THE DANGEROUS PART. It looks
+# identical whether it was skipped because there was nothing to apply or because
+# nobody approved it. GitHub's `needs:` cannot tell those apart. So the deploy
+# job does not decide in an `if:` expression - it runs scripts/deploy-gate.mjs,
+# which is tested, and which refuses the second case. Same reasoning, and the
+# same class of bug, as scripts/ci-checks-result.mjs.
+#
+# NO TRAFFIC MOVES TO A COPY THAT HAS NOT ANSWERED. The new revision is deployed
+# with --no-traffic and a tag, checked through its own URL by
+# scripts/deploy-smoke.mjs (which refuses a live supplier key, a copy that does
+# not know which environment it is, an unreachable database, or a copy running a
+# different commit than the one being deployed), and only then promoted. A
+# failure anywhere leaves the previous revision serving every visitor.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required for Workload Identity Federation: GitHub mints a short-lived OIDC
+  # token that Google exchanges for an access token. No service-account key file
+  # exists anywhere, which is the point - a key file is a credential that can be
+  # copied, and this repository is public.
+  id-token: write
+
+concurrency:
+  # One deploy at a time, and never cancel one in flight: a cancelled deploy can
+  # leave a migration applied with no matching code deployed. A queued run simply
+  # waits.
+  group: deploy-uat
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: nostavel
+  GCP_REGION: us-central1
+  SERVICE: nostavel-uat
+  REPOSITORY: nostavel
+  APP_ENV: uat
+
+jobs:
+  # ---------------------------------------------------------------------------
+  plan:
+    name: What would this change about the database?
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.plan.outputs.pending }}
+      tags: ${{ steps.plan.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      # Reads only; it queries the migrations table and compares it with the
+      # journal. A failure here stops the deploy rather than being read as
+      # "nothing pending" - the script is explicit about that, because an
+      # unreadable plan must never be mistaken for an empty one.
+      - name: Plan database changes
+        id: plan
+        env:
+          DATABASE_URL: ${{ secrets.UAT_DATABASE_URL }}
+        run: node scripts/migrate-plan.mjs
+
+  # ---------------------------------------------------------------------------
+  migrate:
+    name: Apply database changes (needs approval)
+    needs: plan
+    # Skipped entirely when nothing is pending, so no approval is requested and
+    # nobody is trained to click through one.
+    if: needs.plan.outputs.pending != '0'
+    runs-on: ubuntu-latest
+    # THE GATE. `uat-database` carries a required-reviewer protection rule, so
+    # this job does not start until the owner approves it. The plan above has
+    # already written what will be applied into the run summary, so the approval
+    # is made against a list rather than a job name.
+    environment: uat-database
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Show what is about to be applied
+        env:
+          DATABASE_URL: ${{ secrets.UAT_DATABASE_URL }}
+        run: node scripts/migrate-plan.mjs
+
+      # drizzle-kit applies exactly the entries the plan reported, in order.
+      # Migrations in this repository are additive only (docs/conventions.md),
+      # which is what makes applying them before the new code is serving safe:
+      # the old code keeps working against the wider schema.
+      - name: Apply
+        env:
+          DATABASE_URL: ${{ secrets.UAT_DATABASE_URL }}
+        run: npx drizzle-kit migrate
+
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Build, check, and only then take traffic
+    needs: [plan, migrate]
+    # `always()` because `migrate` is skipped on most runs, and a bare `needs:`
+    # would then skip this job too. What that skip MEANT is decided by the gate
+    # script below, not by this condition.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before anything is built: was the database left in a state this code can
+      # run against? Refuses when migrations were pending and the approval never
+      # came, which is the case a workflow expression cannot see.
+      - name: May this deploy proceed?
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/deploy-gate.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # PINNED TO A COMMIT, not a tag, unlike the first-party actions/* above.
+      # This is a third-party action that receives the OIDC token this job is
+      # allowed to mint, and a moved tag would be enough to exfiltrate it. The
+      # version comment is what keeps the pin readable; resolved 2026-10-07 from
+      # each repository's latest release.
+      - id: auth
+        name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Allow docker to push to Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # Tagged with the commit, never `latest`: every revision is traceable to
+      # the code it was built from, and /api/health reports the same commit back
+      # (NOS-60), which is what the smoke check compares against.
+      - name: Build and push the image
+        id: image
+        run: |
+          set -euo pipefail
+          # ONE source for the commit, used for the build argument, the image tag
+          # and the value the smoke check asserts against. Deriving it twice (once
+          # from git, once from the environment) is how a check meant to catch a
+          # deploy that did nothing ends up either comparing a value with itself
+          # or failing for no reason.
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPOSITORY}/app:${GITHUB_SHA}"
+          docker build --build-arg "APP_SHA=${SHORT_SHA}" -t "$IMAGE" .
+          docker push "$IMAGE"
+          # The digest, not the tag, is what gets deployed: a tag can be moved,
+          # a digest cannot, so the revision is pinned to these exact bytes.
+          DIGEST=$(gcloud artifacts docker images describe "$IMAGE" --format='value(image_summary.digest)')
+          echo "ref=${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPOSITORY}/app@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=c${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      # --no-traffic is the whole safety property: the revision starts, and
+      # every visitor keeps being served the previous one until it has proved
+      # itself. --tag gives it its own URL to be proved on.
+      - name: Start the new revision without giving it traffic
+        id: revision
+        run: |
+          set -euo pipefail
+          gcloud run deploy "${SERVICE}" \
+            --project="${GCP_PROJECT}" \
+            --region="${GCP_REGION}" \
+            --image="${{ steps.image.outputs.ref }}" \
+            --no-traffic \
+            --tag="${{ steps.image.outputs.tag }}" \
+            --quiet
+
+          # The tagged revision's own URL, read back from the service rather than
+          # constructed: Cloud Run's tag URLs carry a project-specific hash, so
+          # building the string here would be a guess that silently points the
+          # health check at nothing - and a health check pointed at nothing
+          # passes.
+          URL=$(gcloud run services describe "${SERVICE}" \
+            --project="${GCP_PROJECT}" --region="${GCP_REGION}" --format=json \
+            | jq -r --arg t "${{ steps.image.outputs.tag }}" \
+                '.status.traffic[] | select(.tag == $t) | .url')
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "No URL came back for tag ${{ steps.image.outputs.tag }}." >&2
+            echo "Refusing to continue rather than checking an empty URL." >&2
+            exit 1
+          fi
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+      # Refuses a live supplier key, a copy that does not know which environment
+      # it is, an unreachable database, any fatal configuration problem, and a
+      # copy running a different commit than the one just built. The decision is
+      # a tested pure function, because "do not send guests to a copy on a live
+      # key" is a money rule.
+      - name: Check the new revision before promoting it
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EXPECT_ENV: ${{ env.APP_ENV }}
+          EXPECT_SHA: ${{ steps.image.outputs.sha }}
+        run: node scripts/deploy-smoke.mjs "${{ steps.revision.outputs.url }}"
+
+      - name: Move traffic to it
+        run: |
+          gcloud run services update-traffic "${SERVICE}" \
+            --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
+            --to-latest --quiet
+
+      # The same check again, against the URL visitors actually use. The check
+      # above proved the revision; this proves the promotion, which is a
+      # separate thing that can fail on its own.
+      - name: Check the live URL
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EXPECT_ENV: ${{ env.APP_ENV }}
+          EXPECT_SHA: ${{ steps.image.outputs.sha }}
+        run: node scripts/deploy-smoke.mjs "${{ vars.APP_URL }}"
+
+      - name: Say what was deployed
+        run: |
+          {
+            echo "## Deployed to the test environment"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ steps.image.outputs.sha }}\` |"
+            echo "| Database changes | ${{ needs.plan.outputs.pending }} (${{ needs.plan.outputs.tags }}) |"
+            echo "| URL | ${{ vars.APP_URL }} |"
+            echo
+            echo "Rollback: \`docs/runbooks/rollback.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+# No secret values belong in this file; see main.tf's header.
+
+# From `gcloud projects describe nostavel --format='value(projectNumber)'`.
+project_number = ""
+
+# From `gcloud billing accounts list`. Leave empty to skip the budget alarm.
+billing_account = ""
+
+# Left at the placeholder for the first apply; set to the service's own URL for
+# the second (the runbook explains the two passes).
+# app_url = "https://nostavel-uat-xxxxxxxx-uc.a.run.app"

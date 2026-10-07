@@ -70,3 +70,14 @@ CLAUDE.local.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Terraform (infra/). State and plans hold every attribute of every managed
+# resource in plain text, and a .tfvars file holds whatever the operator put in
+# it - neither belongs in a public repository. The committed files are the
+# configuration and terraform.tfvars.example.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log

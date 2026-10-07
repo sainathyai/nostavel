@@ -70,6 +70,7 @@ Before editing a file, read every rule whose globs match its path.
 | analysis | `analysis/**` | [`.agents/rules/analysis.md`](.agents/rules/analysis.md) |
 | backend | `src/lib/**`<br>`src/app/actions/**`<br>`src/app/api/**` | [`.agents/rules/backend.md`](.agents/rules/backend.md) |
 | database | `src/db/**`<br>`drizzle.config.ts` | [`.agents/rules/database.md`](.agents/rules/database.md) |
+| deploy | `infra/**`<br>`Dockerfile`<br>`.dockerignore`<br>`.github/workflows/deploy-uat.yml`<br>`scripts/deploy-*.mjs`<br>`scripts/migrate-plan.mjs` | [`.agents/rules/deploy.md`](.agents/rules/deploy.md) |
 | frontend | `src/app/**/*.tsx`<br>`src/components/**` | [`.agents/rules/frontend.md`](.agents/rules/frontend.md) |
 | money-and-claims | `src/lib/{pricing,fees,member-pricing,cancellation,booking-service,booking-format,quote-token}.ts`<br>`src/app/book/**`<br>`src/app/stay/**` | [`.agents/rules/money-and-claims.md`](.agents/rules/money-and-claims.md) |
 | security | `src/auth.ts`<br>`src/lib/{dal,guest-verify,webhook-auth,rate-limit,quote-token,signed-claim,booking-access,booking-authz,booking-caller}.ts`<br>`src/lib/{access-gate,deploy-config,health}.ts`<br>`src/app/api/**`<br>`src/app/actions/**`<br>`src/proxy.ts`<br>`src/instrumentation.ts`<br>`next.config.ts` | [`.agents/rules/security.md`](.agents/rules/security.md) |
