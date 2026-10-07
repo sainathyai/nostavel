@@ -30,7 +30,27 @@ ENV_FILE="${ENV_FILE:-.env.local}"
 # it failed twice on them for reasons a single stubbed run would have caught.
 GCLOUD="${GCLOUD:-gcloud}"
 
+# Where the prompts read from. /dev/tty is the person's actual terminal, which
+# nothing in a pipeline can consume; TTY can be overridden so a stubbed run can
+# feed answers on stdin.
+if [ -n "${TTY:-}" ]; then
+  :
+elif [ -r /dev/tty ]; then
+  TTY=/dev/tty
+else
+  TTY=/dev/stdin
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# With no arguments, all ten. With names, only those - so correcting one value
+# does not add a pointless new version to the other nine, and so this doubles as
+# the rotation tool. `bash scripts/seed-uat-secrets.sh DATABASE_URL`
+WANTED=" $* "
+wanted() {
+  [ "$WANTED" = "  " ] && return 0
+  case "$WANTED" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 printf 'project %s, service %s, reading reusable values from %s\n\n' \
   "$PROJECT" "$SERVICE" "$ENV_FILE"
@@ -115,6 +135,7 @@ check_shape() {
 # re-running the script wondering why nothing changed.
 store() {
   local name="$1" value="$2" source="$3" problem
+  wanted "$name" || return 0
   if ! problem=$(check_shape "$name" "$value"); then
     printf '  %-24s REFUSED (%s): %s\n' "$name" "$source" "$problem"
     return 1
@@ -144,6 +165,7 @@ OPTIONAL="ANTHROPIC_API_KEY RESEND_API_KEY"
 # the feature gets an authentication error instead of a clear "not set".
 store_off() {
   local name="$1"
+  wanted "$name" || return 0
   if printf %s "" |
     "$GCLOUD" secrets versions add "${SERVICE}-${name}" \
       --project="$PROJECT" --data-file=- >/dev/null 2>&1; then
@@ -192,7 +214,9 @@ for NAME in LITEAPI_KEY LITEAPI_WEBHOOK_SECRET ANTHROPIC_API_KEY RESEND_API_KEY 
   if VALUE=$(read_env_file "$NAME") && store "$NAME" "$VALUE" "$ENV_FILE"; then
     :
   else
-    printf '  %-24s will ask below\n' "$NAME"
+    if wanted "$NAME"; then
+      printf '  %-24s will ask below\n' "$NAME"
+    fi
     MISSING+=("$NAME")
   fi
 done
@@ -210,8 +234,14 @@ echo "ANTHROPIC_API_KEY and RESEND_API_KEY may be left empty: press Enter and th
 echo "feature is switched off and reported as a warning by /api/health."
 
 for NAME in DATABASE_URL ${MISSING+"${MISSING[@]}"}; do
+  wanted "$NAME" || continue
   printf '\n  %s\n  > ' "$NAME"
-  IFS= read -r VALUE || true
+  # FROM THE TERMINAL, NOT STDIN. On the owner's second run the prompt did not
+  # wait: something earlier in the script had consumed stdin to EOF, so `read`
+  # returned immediately with nothing and DATABASE_URL was reported "skipped"
+  # without ever being asked for. /dev/tty is the input the person is actually
+  # sitting at, and it cannot be eaten by anything in the pipeline above.
+  IFS= read -r VALUE < "$TTY" || true
   if [ -z "$VALUE" ]; then
     if is_optional "$NAME"; then
       store_off "$NAME"

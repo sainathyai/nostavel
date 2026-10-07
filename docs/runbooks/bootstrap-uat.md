@@ -329,12 +329,22 @@ starts with the eval harness that makes the choice measurable.
 
 "Off" means a version the app reads as absent, not a missing version: the Cloud
 Run service names all ten secrets and will not start if any has no version at
-all. It is deliberately **not** a word like `unset`, because a non-empty value
+all. **Secret Manager refuses an empty payload** - measured on the first real
+run, 2026-10-07 - so the script writes a single blank character, which every
+check in the app trims away before testing. It is deliberately **not** a word like `unset`, because a non-empty value
 reads as configured, stops the health route warning, and turns a clear "not set"
 into an authentication error for whoever uses the feature first.
 
 Re-running it is safe: Secret Manager keeps versions and the service reads
-`latest`, so a corrected value wins. Tidy up afterwards:
+`latest`, so a corrected value wins. **Name one or more secrets to set only
+those**, which avoids adding a pointless version to the other nine and is also
+how a rotation is done:
+
+```bash
+bash scripts/seed-uat-secrets.sh DATABASE_URL
+```
+
+Tidy up afterwards:
 
 ```bash
 gcloud secrets versions list "${SERVICE}-DATABASE_URL" --project="$PROJECT"
