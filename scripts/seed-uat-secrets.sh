@@ -99,12 +99,15 @@ check_shape() {
   return 0
 }
 
+# Returns non-zero when it refused, so a caller can fall back to asking. That
+# matters for the reused group: a stale AUTH_GOOGLE_ID in .env.local from before
+# the real OAuth client existed should send you to a prompt, not leave you
+# re-running the script wondering why nothing changed.
 store() {
   local name="$1" value="$2" source="$3" problem
   if ! problem=$(check_shape "$name" "$value"); then
     printf '  %-24s REFUSED (%s): %s\n' "$name" "$source" "$problem"
-    FAILED+=("$name")
-    return 0
+    return 1
   fi
   printf '%s' "$value" |
     gcloud secrets versions add "${SERVICE}-${name}" \
@@ -136,10 +139,10 @@ echo
 echo "reused from ${ENV_FILE}:"
 for NAME in LITEAPI_KEY LITEAPI_WEBHOOK_SECRET ANTHROPIC_API_KEY RESEND_API_KEY \
             AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET; do
-  if VALUE=$(read_env_file "$NAME"); then
-    store "$NAME" "$VALUE" "$ENV_FILE"
+  if VALUE=$(read_env_file "$NAME") && store "$NAME" "$VALUE" "$ENV_FILE"; then
+    :
   else
-    printf '  %-24s not in %s - will ask below\n' "$NAME" "$ENV_FILE"
+    printf '  %-24s will ask below\n' "$NAME"
     MISSING+=("$NAME")
   fi
 done
@@ -161,7 +164,7 @@ for NAME in DATABASE_URL ${MISSING+"${MISSING[@]}"}; do
     FAILED+=("$NAME")
     continue
   fi
-  store "$NAME" "$VALUE" typed
+  store "$NAME" "$VALUE" typed || FAILED+=("$NAME")
 done
 unset VALUE
 echo
