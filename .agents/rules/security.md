@@ -60,6 +60,10 @@ These exist in the code today, each with a ticket. Don't treat them as precedent
 | CSP is report-only; no HSTS header | `next.config.ts` | — |
 | The live-key refusal is **not** the live-money gate: no caps, no allowlist, no kill switch, no acknowledgement. It refuses a non-sandbox key outright, which is all it claims (ADR 0005) | `src/lib/deploy-config.ts`, `requireSandboxKey` in `src/lib/liteapi.ts` | — |
 | The environment access gate has no rate limit and no lockout. A refusal is logged, which is the floor, not the fix | `src/proxy.ts` | NOS-62 |
+| The deploy identity can read every secret in the test environment, transitively: anything able to deploy an image that runs as the runtime identity reads what that identity reads. Inherent to deploying; the boundary is the federated identity, pinned to one workflow file on `main` | `infra/envs/uat/main.tf`, `.github/workflows/deploy-uat.yml` | — |
+| `UAT_DATABASE_URL` is a repository-scoped Actions secret, reachable from any workflow on any merged branch. The reviewer gate protects the deploy job, not the credential | `.github/workflows/deploy-uat.yml` | — |
+| Nothing enforces additive-only migrations. No check reads the SQL, so a destructive migration would be planned, approved and applied like any other; the owner's approval is the only place it is caught | `scripts/migrate-plan.mjs` | — |
+| Nothing in the delivery pipeline has executed against Google Cloud even once. Every behaviour it relies on was read from documentation or installed source, not observed | `.github/workflows/deploy-uat.yml`, `infra/envs/uat/` | — |
 
 The full list of pre-production gaps is in `docs/production-readiness.md` §4.
 

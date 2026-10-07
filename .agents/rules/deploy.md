@@ -1,0 +1,134 @@
+---
+name: deploy
+description: The delivery pipeline, the container image, and the infrastructure that defines the test environment. Read before editing infra/, the Dockerfile, or a workflow that deploys.
+globs:
+  - "infra/**"
+  - "Dockerfile"
+  - ".dockerignore"
+  - ".github/workflows/deploy-uat.yml"
+  - "scripts/deploy-*.mjs"
+  - "scripts/migrate-plan.mjs"
+---
+
+# Deploy rules
+
+Source of truth: `docs/conventions.md` §2 (the server boundary and secrets) and
+§8 (additive migrations, the append-only ledger), plus
+[ADR 0005](../../docs/adr/0005-deployment-and-environments.md), the runbooks in
+`docs/runbooks/`, and the threat model in
+[docs/security/delivery-pipeline.md](../../docs/security/delivery-pipeline.md),
+which records what the review closed and what is accepted. One shared test environment on Cloud Run, on the supplier's
+**sandbox**. A real-money production environment gets its own separate pipeline,
+later (D-5.2); nothing here is that, and nothing here should be written as though
+it will become that by growing.
+
+## Secrets
+
+- **No secret value ever goes through Terraform.** Terraform writes state to a
+  bucket in plain text, including every attribute of every resource it manages.
+  `infra/` creates empty secret *containers*; the owner adds versions by hand
+  (`docs/runbooks/bootstrap-uat.md`). There is deliberately no
+  `google_secret_manager_secret_version` resource anywhere, and adding one is a
+  change that needs security review.
+- **No service-account key files.** The pipeline authenticates through Workload
+  Identity Federation, restricted by attribute condition to this repository's
+  `main` branch. A key file is a credential that can be copied, and this
+  repository is public.
+- A build takes no secrets, and must keep taking none: `next build` works with no
+  credentials because the database client connects on first query (§2). A secret
+  passed to a build is a secret baked into an image layer.
+- `.dockerignore` excludes `.env*`, `analysis/`, `.git/`, private keys and
+  cloud service-account JSON. Mirror any new rule into
+  `scripts/agent-guards/patterns.mjs` as well (NOS-63).
+
+## The pipeline
+
+- **Deploys run on `main` only.** Never on `pull_request`: a fork must not
+  receive a deployment credential. `workflow_dispatch` is allowed but the first
+  step refuses any ref but `main`: the plan reads the migration journal from the
+  ref it runs on, so a dispatch from a branch would show the owner an ordinary
+  list of that branch's migrations and apply them to the shared database.
+- **`UAT_DATABASE_URL` is a repository-scoped Actions secret, so it is reachable
+  from any workflow on any branch that a maintainer merges** - the approval
+  environment protects the deploy job, not the credential. A workflow that only
+  needs to read this secret does not exist and should not be added; if one ever
+  must, move the secret into the `uat-database` environment first so the
+  reviewer gate is what unlocks it.
+- **A decision in a workflow is a decision nobody tests.** `if:` expressions
+  decide only whether a step runs at all; anything that weighs job results or
+  health answers belongs in a tested script (`scripts/deploy-gate.mjs`,
+  `scripts/deploy-smoke.mjs`, `scripts/migrate-plan.mjs`), like
+  `scripts/ci-checks-result.mjs` before them. A skipped job is ambiguous and
+  GitHub cannot tell you why it was skipped.
+- **Traffic moves last.** A revision is started with `--no-traffic`, checked on
+  its own URL, and promoted only then. A failure anywhere leaves the previous
+  revision serving.
+- **Read a URL back, never construct one.** Cloud Run's tag URLs carry a
+  project-specific hash; a health check pointed at nothing passes.
+- **One source for the commit.** The build argument, the image tag and the value
+  the smoke check asserts against all come from the same variable, or the check
+  that catches a deploy which did nothing ends up comparing a value with itself.
+- **Deploy by digest, not by tag.** A tag can be moved; the revision should be
+  pinned to the exact bytes that were checked.
+
+## Database changes (D-5.4)
+
+- The pipeline applies them, but **stops for the owner's approval first**, and
+  **only when there is something to apply**. An approval requested on every merge
+  is one that gets clicked without reading. The gate is a GitHub Environment
+  protection rule, not an `if:`.
+- Migrations stay **additive only** (§8, and the database rule). That is what
+  makes applying them before the new code serves safe, and what makes a code
+  rollback safe afterwards. **Nothing enforces it.** No check reads the SQL, so
+  a `DROP COLUMN` would be planned, approved and applied like anything else, and
+  the rollback runbook's promise that older code keeps working would quietly stop
+  being true. The approval exists partly to be the place a human notices that.
+- **The plan shows which migrations are pending, not what they contain.** It
+  compares the journal's timestamps with the rows in the bookkeeping table, so an
+  edited migration file that has already been applied is invisible to both the
+  plan and the migrator. That is the mechanical reason the database rule says
+  never to edit a merged migration.
+- Never hand-edit a deployed database. The incident behind this whole rule was a
+  migration run by hand against the wrong one.
+
+## The environment's shape
+
+- `infra/` owns the shape; the pipeline owns the image. `main.tf` ignores changes
+  to the container image and the traffic split, so an `apply` cannot roll back a
+  deploy or undo a rollback done during an incident. Do not remove that
+  `lifecycle` block.
+- Applied **by hand**, not by CI: a CI identity able to rewrite the environment is
+  a larger credential than one scoped to the service and the image repository.
+- **What the deploy identity actually holds**, because three documents once
+  claimed less: `roles/run.developer` on this one Cloud Run service,
+  `roles/artifactregistry.writer` on this one image repository, and
+  `roles/iam.serviceAccountUser` on the runtime identity (without that last one
+  it cannot deploy at all). Both grants are scoped in `infra/`, not at project
+  level. Within the service it **can** change the revision template, including
+  the secret references, so "it cannot change what the service may read" was
+  false. And anything able to deploy an image that runs as the runtime identity
+  can read whatever that identity reads, which is all ten secrets - that is what
+  deploying means, not a gap to close. The control is the federated identity,
+  pinned to one workflow file on one branch.
+- The service runs as its own identity, not the project default (which holds
+  Editor on everything).
+- `min_instance_count = 0` and `cpu_idle = true`. Measured on this account
+  (2026-10-07): four scale-to-zero services cost $0.0007 for a month, while
+  **image storage was the entire bill**. Always-allocated CPU or a minimum
+  instance turns a free service into a monthly charge.
+- **Image repositories need a cleanup policy.** This pipeline pushes an image per
+  merge, forever. One older project in this same account reached 2 GB and
+  accounted for 85% of the bill. Keep the last ten, so a rollback target still
+  exists, and delete the rest after a week.
+
+## Changing a workflow
+
+- Least privilege in `permissions:`, and no secret reachable from a fork-triggered
+  run.
+- **A third-party action in a workflow that holds cloud credentials is pinned to a
+  commit, not a tag**, with the version in a trailing comment. A moved tag on an
+  action that receives this job's OIDC token is enough to exfiltrate it. First-party
+  `actions/*` follow the rest of this repository and use major-version tags.
+- A check this adds must be seen to fail before it is trusted to pass.
+- `concurrency` without `cancel-in-progress` for anything that migrates: a
+  cancelled deploy can leave a migration applied with no matching code.
