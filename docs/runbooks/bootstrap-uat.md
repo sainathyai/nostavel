@@ -315,6 +315,24 @@ on the supplier key, and the recognisable prefix of every API key.
 It prints a name, a length and a source. It never prints a value, never writes
 one to a file, and never puts one on a command line.
 
+### Two of the ten are optional
+
+`ANTHROPIC_API_KEY` and `RESEND_API_KEY` are **warnings, not fatal problems**
+(`src/lib/deploy-config.ts`): no AI key means natural-language search is
+unavailable, no email key means guest email is logged rather than sent. Neither
+refuses a deploy. Press Enter at the prompt and the script switches the feature
+off, and `/api/health?deep=1` then reports it.
+
+Leaving the AI key out costs nothing today: `interpretQuery` has no caller, so
+nothing in the app reaches it. Choosing a model belongs to Segment 5, which
+starts with the eval harness that makes the choice measurable.
+
+"Off" means a version the app reads as absent, not a missing version: the Cloud
+Run service names all ten secrets and will not start if any has no version at
+all. It is deliberately **not** a word like `unset`, because a non-empty value
+reads as configured, stops the health route warning, and turns a clear "not set"
+into an authentication error for whoever uses the feature first.
+
 Re-running it is safe: Secret Manager keeps versions and the service reads
 `latest`, so a corrected value wins. Tidy up afterwards:
 

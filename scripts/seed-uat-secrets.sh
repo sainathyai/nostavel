@@ -118,6 +118,40 @@ store() {
 FAILED=()
 MISSING=()
 
+# The two the app is designed to run without. `deploy-config.ts` reports each as
+# a WARNING, not a fatal problem: no AI key means natural-language search is
+# unavailable, no email key means guest email is logged instead of sent. A
+# deploy is not refused for either.
+OPTIONAL="ANTHROPIC_API_KEY RESEND_API_KEY"
+
+# The Cloud Run service still needs a VERSION to exist for every secret it
+# names, so "off" cannot mean "no version". It has to mean a version the app
+# reads as absent, and every check in the app trims before testing, so
+# whitespace is exactly that. An empty payload would be better still, and
+# whether Secret Manager accepts one is not worth guessing about - so try it
+# and fall back. Deliberately NOT a word like "unset": a non-empty value reads
+# as configured, the health route stops warning, and the first person to use
+# the feature gets an authentication error instead of a clear "not set".
+store_off() {
+  local name="$1"
+  if printf %s "" |
+    gcloud secrets versions add "${SERVICE}-${name}" \
+      --project="$PROJECT" --data-file=- >/dev/null 2>&1; then
+    printf '  %-24s OFF (empty version)\n' "$name"
+  elif printf %s " " |
+    gcloud secrets versions add "${SERVICE}-${name}" \
+      --project="$PROJECT" --data-file=- >/dev/null; then
+    printf '  %-24s OFF (blank version; an empty one was refused)\n' "$name"
+  else
+    printf '  %-24s could not be set to off\n' "$name"
+    FAILED+=("$name")
+  fi
+}
+
+is_optional() {
+  case " $OPTIONAL " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
 # ---------------------------------------------------------------------------
 # 1. Generated here, because these should not be shared with anywhere else
 # ---------------------------------------------------------------------------
@@ -155,13 +189,20 @@ echo
 # Shown rather than hidden on purpose. A hidden prompt is why a doubled paste got
 # through, and `read` input never enters shell history, so the only exposure is
 # your own screen. The shape check runs before anything is uploaded.
-echo "paste these (they are shown, so you can see what arrived):"
+echo "paste these (they are shown, so you can see what arrived)."
+echo "ANTHROPIC_API_KEY and RESEND_API_KEY may be left empty: press Enter and the"
+echo "feature is switched off and reported as a warning by /api/health."
+
 for NAME in DATABASE_URL ${MISSING+"${MISSING[@]}"}; do
   printf '\n  %s\n  > ' "$NAME"
   IFS= read -r VALUE || true
   if [ -z "$VALUE" ]; then
-    printf '  %-24s skipped - the service cannot start without it\n' "$NAME"
-    FAILED+=("$NAME")
+    if is_optional "$NAME"; then
+      store_off "$NAME"
+    else
+      printf '  %-24s skipped - the service cannot start without it\n' "$NAME"
+      FAILED+=("$NAME")
+    fi
     continue
   fi
   store "$NAME" "$VALUE" typed || FAILED+=("$NAME")
