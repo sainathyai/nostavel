@@ -74,15 +74,28 @@ be overridden; opening the live-money gate is a separate, reviewed segment.
 | An edited migration is invisible to the plan and the migrator | Pending work is decided by timestamp, never by content. The rule "never edit a merged migration" is the whole control |
 | The site password has no rate limit and no lockout | NOS-62. A refusal is logged, which is the floor, not the fix |
 
-## What nobody has observed
+## What has been observed, and what still has not
 
-**Not one step of this has run against Google Cloud.** Every behaviour it depends
-on was read from documentation or from installed source, not measured: that
-`--no-traffic --tag` creates an addressable target, that `--remove-tags` removes
-it, that `gcloud run deploy --image` preserves secret references, that drizzle
-records `folderMillis` in `created_at`, and that a rollback holds until the next
-merge rolls it forward. The first bootstrap is therefore also the first test of
-all of it, and `docs/runbooks/rollback.md` flags its own unverified claim.
+**Observed on 2026-10-07**, the first time any of this ran against Google Cloud:
+
+- The account setup through Workload Identity Federation, including the attribute
+  condition, which was read back and checked rather than assumed.
+- `terraform apply`, which created 26 of its 28 resources and failed on two. Both
+  failures were ordering and configuration defects in this repository, not in the
+  threat model: a Cloud Run service cannot be created before its secret values
+  exist, and the budget needs `user_project_override` on the provider. Fixed.
+- **The gate refusing a deploy**, which is the one behaviour most worth seeing.
+  Merging the pipeline to `main` ran it with no credentials: the plan failed, the
+  migration was skipped, and the deploy **refused**, because a skipped migration
+  is not evidence that there was nothing to apply. No image was built and no
+  traffic moved.
+
+**Still not observed**, and therefore still assumption: that `--no-traffic --tag`
+creates an addressable target and `--remove-tags` removes it, that
+`gcloud run deploy --image` preserves secret references, that drizzle records
+`folderMillis` in `created_at` the way its source says, and that a rollback holds
+until the next merge rolls it forward. `docs/runbooks/rollback.md` flags its own
+unverified claim. The first green deploy is the test of all of these.
 
 The one thing measured on this account (2026-10-07): four scale-to-zero Cloud Run
 services cost $0.0007 for a month, and container image storage was the entire

@@ -116,6 +116,19 @@ it will become that by growing.
   (2026-10-07): four scale-to-zero services cost $0.0007 for a month, while
   **image storage was the entire bill**. Always-allocated CPU or a minimum
   instance turns a free service into a monthly charge.
+- **A Cloud Run service cannot be created before its secret values exist.** The
+  template reads `versions/latest`, and the API validates that the version is
+  really there, so `terraform apply` fails on the service with one line per
+  secret. The bootstrap therefore creates the containers with
+  `-target='google_secret_manager_secret.app'`, waits for the owner to paste the
+  values, and applies the rest afterwards. Any new secret the service reads
+  follows the same order, or the next apply fails for whoever runs it.
+- **`user_project_override` and `billing_project` on the provider are not
+  optional.** `billingbudgets.googleapis.com` refuses a call that names no quota
+  project, and under a human's Application Default Credentials the provider sends
+  none - so the budget fails with `SERVICE_DISABLED` against gcloud's own client
+  project number. `gcloud auth application-default set-quota-project` does not
+  fix it; only the provider setting does.
 - **Image repositories need a cleanup policy.** This pipeline pushes an image per
   merge, forever. One older project in this same account reached 2 GB and
   accounted for 85% of the bill. Keep the last ten, so a rollback target still

@@ -31,6 +31,19 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
+
+  # THE BUDGET CANNOT BE CREATED WITHOUT THESE, and the error does not say so.
+  # `billingbudgets.googleapis.com` refuses a call that names no quota project,
+  # and under a human's Application Default Credentials the provider sends none
+  # by default - so the API sees gcloud's own shared client project, where the
+  # service is disabled, and reports `SERVICE_DISABLED` against a project number
+  # nobody recognises. `user_project_override` makes the provider send
+  # `X-Goog-User-Project` instead. Hit on the first real apply, 2026-10-07, after
+  # `gcloud auth application-default set-quota-project` had already been run,
+  # which is the part that makes it confusing: that setting alone does nothing
+  # here.
+  user_project_override = true
+  billing_project       = var.project_id
 }
 
 # ---------------------------------------------------------------------------
