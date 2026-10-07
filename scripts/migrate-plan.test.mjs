@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   JOURNAL_PATH,
+  describeError,
   describePlan,
+  isMissingMigrationsTable,
   pendingMigrations,
   readAppliedAt,
   repoRoot,
@@ -89,6 +91,79 @@ test("a missing migrations table reads as nothing applied, not as an error", () 
     throw new Error('relation "drizzle.__drizzle_migrations" does not exist');
   };
   return readAppliedAt(query).then((applied) => assert.deepEqual(applied, []));
+});
+
+// REGRESSION TEST FOR THE DEFECT THE INTEGRATION TEST FOUND. The real driver
+// does not throw the database's error; it throws its own, with the database's
+// underneath. So the words this used to match on were two levels down, and the
+// only path this function exists for - a brand-new database, i.e. the first
+// deploy - would have thrown instead of planning every migration.
+test("a missing table is recognised through the driver's own wrapper", async () => {
+  const wrapped = () => {
+    const inner = Object.assign(
+      new Error('relation "drizzle.__drizzle_migrations" does not exist'),
+      { code: "42P01" },
+    );
+    throw new Error("Failed query: select created_at from drizzle.__drizzle_migrations", { cause: inner });
+  };
+  assert.deepEqual(await readAppliedAt(wrapped), []);
+});
+
+test("a missing table is recognised by its Postgres code even with no useful text", async () => {
+  // The code is the contract; the prose is what changes without warning. Same
+  // ordering as isUnpaidRefusal on the money path (NOS-5).
+  const byCode = () => {
+    throw new Error("Failed query", { cause: Object.assign(new Error("boom"), { code: "42P01" }) });
+  };
+  assert.deepEqual(await readAppliedAt(byCode), []);
+});
+
+test("a missing schema is recognised too, which is what a brand-new database has", async () => {
+  const noSchema = () => {
+    throw new Error("Failed query", { cause: Object.assign(new Error("boom"), { code: "3F000" }) });
+  };
+  assert.deepEqual(await readAppliedAt(noSchema), []);
+});
+
+test("a wrapped error that is NOT a missing table is still thrown", async () => {
+  // The direction that costs something. A connection failure wrapped the same
+  // way must not be read as "nothing applied".
+  //
+  // Asserted on the CAUSE, not the message, because that is where the reason
+  // lives: the rethrown error is the driver's wrapper, whose own message is just
+  // "Failed query: ...". Writing this test is what showed that a deploy log
+  // would otherwise name the query and not the problem - which is why
+  // `describeError` below exists.
+  const wrapped = () => {
+    const inner = Object.assign(new Error("ECONNREFUSED 10.0.0.1:5432"), { code: "ECONNREFUSED" });
+    throw new Error("Failed query: select created_at from drizzle.__drizzle_migrations", { cause: inner });
+  };
+  await assert.rejects(() => readAppliedAt(wrapped), (err) => {
+    assert.match(String(err.message), /Failed query/);
+    assert.match(String(err.cause?.message), /ECONNREFUSED/);
+    return true;
+  });
+});
+
+test("an error is described down its cause chain, so a log names the reason", () => {
+  // At 2am the useful line is "ECONNREFUSED", not "Failed query".
+  const inner = new Error("ECONNREFUSED 10.0.0.1:5432");
+  const outer = new Error("Failed query: select created_at", { cause: inner });
+  const described = describeError(outer);
+  assert.match(described, /Failed query/);
+  assert.match(described, /ECONNREFUSED/);
+});
+
+test("describing an error cannot loop forever on a self-referencing cause", () => {
+  const loop = new Error("outer");
+  loop.cause = loop;
+  assert.ok(describeError(loop).length < 500);
+});
+
+test("the cause chain is bounded, so a self-referencing error cannot hang the deploy", async () => {
+  const loop = new Error("outer");
+  loop.cause = loop;
+  assert.equal(isMissingMigrationsTable(loop), false);
 });
 
 // THE DIRECTION THAT COSTS SOMETHING. "Cannot reach the database" must never be

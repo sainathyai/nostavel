@@ -53,6 +53,13 @@ concurrency:
   # One deploy at a time, and never cancel one in flight: a cancelled deploy can
   # leave a migration applied with no matching code deployed. A queued run simply
   # waits.
+  #
+  # THE COST OF THAT CHOICE, AND WHAT BOUNDS IT. Not cancelling means a hung run
+  # holds the queue, and GitHub's default job limit is six hours - so one stuck
+  # deploy would block every later one for most of a day. Every job below
+  # therefore carries its own `timeout-minutes`. The approval wait is not
+  # affected: a job waiting on an environment reviewer has not started, so its
+  # timeout has not started either.
   group: deploy-uat
   cancel-in-progress: false
 
@@ -68,6 +75,7 @@ jobs:
   plan:
     name: What would this change about the database?
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       pending: ${{ steps.plan.outputs.pending }}
       tags: ${{ steps.plan.outputs.tags }}
@@ -97,6 +105,7 @@ jobs:
     # nobody is trained to click through one.
     if: needs.plan.outputs.pending != '0'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # THE GATE. `uat-database` carries a required-reviewer protection rule, so
     # this job does not start until the owner approves it. The plan above has
     # already written what will be applied into the run summary, so the approval
@@ -133,8 +142,16 @@ jobs:
     # script below, not by this condition.
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # Before the gate, not after: the gate is a node script, and running it on
+      # whatever node the runner image happens to ship is a dependency on
+      # something nobody here controls.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       # Before anything is built: was the database left in a state this code can
       # run against? Refuses when migrations were pending and the approval never
@@ -143,10 +160,6 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: node scripts/deploy-gate.mjs
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
 
       # PINNED TO A COMMIT, not a tag, unlike the first-party actions/* above.
       # This is a third-party action that receives the OIDC token this job is

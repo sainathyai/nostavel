@@ -10,13 +10,27 @@
 // migration run by hand against the wrong database. So the pipeline needs to
 // know, before it asks, whether this deploy has any migration in it at all.
 //
-// HOW PENDING IS DECIDED, AND WHY IT MATCHES WHAT WILL ACTUALLY RUN. drizzle-kit
-// records each applied migration in `drizzle.__drizzle_migrations` with the
-// `created_at` taken from the journal entry's `when` (a millisecond timestamp),
-// and on the next run it applies every journal entry whose `when` is greater
-// than the newest `created_at` it finds. This reproduces exactly that rule
-// rather than inventing a second one, so "what the plan says" and "what migrate
-// does" cannot disagree.
+// HOW PENDING IS DECIDED, AND WHY IT MATCHES WHAT WILL ACTUALLY RUN. This
+// reproduces drizzle's own rule rather than inventing a second one, so "what the
+// plan says" and "what migrate does" cannot disagree. Read out of the installed
+// source rather than assumed (node_modules/drizzle-orm/pg-core/dialect.js,
+// `PgDialect.migrate`, 2026-10-07), because the owner approves this plan and a
+// disagreement would mean approving one list while a different set runs:
+//
+//   migrationsTable  = config.migrationsTable  ?? "__drizzle_migrations"
+//   migrationsSchema = config.migrationsSchema ?? "drizzle"
+//   select ... order by created_at desc limit 1          -> lastDbMigration
+//   if (!lastDbMigration || Number(lastDbMigration.created_at) < migration.folderMillis) { apply }
+//   insert into ... ("hash", "created_at") values(hash, migration.folderMillis)
+//
+// So `created_at` IS the journal entry's `when` (drizzle calls it
+// `folderMillis`), and the test is strictly-greater-than the newest applied -
+// which is what `pendingMigrations` below does. `drizzle-kit migrate`, which the
+// pipeline runs, delegates to that same migrator with those same defaults.
+//
+// This could not be proven by the integration suite: that suite applies the .sql
+// files with psql directly and never runs drizzle-kit (scripts/test-int-migrate.mjs
+// explains why), so the bookkeeping table does not exist there at all.
 //
 //   node scripts/migrate-plan.mjs             reads DATABASE_URL, prints the plan
 //   node scripts/migrate-plan.mjs --json      machine-readable, for a workflow
@@ -131,13 +145,44 @@ export function describePlan(pending, unreadable) {
 }
 
 /**
+ * Is this the error a database that has never been migrated gives?
+ *
+ * WALKS THE `cause` CHAIN, WHICH IS THE WHOLE POINT. The first version of this
+ * tested only `err.message`, and the integration test written to check that
+ * assumption against a real Postgres is what caught it: the driver wraps its
+ * errors, so the outer message is `Failed query: select created_at from ...`
+ * and the words `does not exist` are on the cause, two levels down. The effect
+ * was that the ONE path this function exists for - a brand-new database, which
+ * is the first deploy - would have thrown instead, and the first deploy could
+ * never have run.
+ *
+ * Reads the Postgres error CODE first and the text only as a fallback, the same
+ * ordering and for the same reason as `isUnpaidRefusal` on the money path
+ * (NOS-5): a code is a contract, and prose is what a supplier changes without
+ * telling anyone. 42P01 is undefined_table, 3F000 is invalid_schema_name - a
+ * database that has never been migrated has neither the table nor the schema.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isMissingMigrationsTable(err) {
+  for (let e = err, depth = 0; e && typeof e === "object" && depth < 6; e = e.cause, depth++) {
+    const code = /** @type {{code?: unknown}} */ (e).code;
+    if (code === "42P01" || code === "3F000") return true;
+    const message = String(/** @type {{message?: unknown}} */ (e).message ?? "");
+    if (/does not exist|undefined_table|invalid_schema_name/i.test(message)) return true;
+  }
+  return false;
+}
+
+/**
  * Timestamps already recorded in the migrations table.
  *
  * A missing table is not an error: it is what a database that has never been
  * migrated looks like, and the honest answer there is "nothing applied yet".
- * Any OTHER failure is left to the caller to throw, because "cannot reach the
- * database" must never be reported as "no migrations pending" - that would hand
- * the approver an empty plan and then apply five migrations.
+ * Any OTHER failure is rethrown, because "cannot reach the database" must never
+ * be reported as "no migrations pending" - that would hand the approver an empty
+ * plan and then apply five migrations behind it.
  *
  * @param {(sql: string) => Promise<Array<Record<string, unknown>>>} query
  * @returns {Promise<number[]>}
@@ -155,11 +200,34 @@ export async function readAppliedAt(query) {
       .map((v) => Number(v))
       .filter((n) => Number.isFinite(n));
   } catch (err) {
-    const message = String(err?.message ?? err);
-    // Postgres 42P01 undefined_table, and the schema-level equivalent.
-    if (/does not exist|42P01|undefined_table|3F000/i.test(message)) return [];
+    if (isMissingMigrationsTable(err)) return [];
     throw err;
   }
+}
+
+/**
+ * An error and every reason underneath it, on one line.
+ *
+ * The driver wraps its errors, so `err.message` alone is `Failed query: select
+ * created_at from ...` - the query, not the problem. A deploy that stops needs to
+ * say why in the line someone reads first, not two levels down in a stack trace.
+ * Bounded, because a cause chain can be circular.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function describeError(err) {
+  const parts = [];
+  const seen = new Set();
+  for (let e = err, depth = 0; e && depth < 6; e = /** @type {{cause?: unknown}} */ (e).cause, depth++) {
+    if (typeof e === "object") {
+      if (seen.has(e)) break;
+      seen.add(e);
+    }
+    const message = String(/** @type {{message?: unknown}} */ (e)?.message ?? e);
+    if (message && !parts.includes(message)) parts.push(message);
+  }
+  return parts.join(" <- ") || "unknown error";
 }
 
 function emit(name, value) {
@@ -202,8 +270,9 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     // Never swallowed into "nothing pending": a plan this script could not
-    // produce must stop the deploy, not pass it with an empty list.
-    console.error(`migrate-plan: ${err?.message ?? err}`);
+    // produce must stop the deploy, not pass it with an empty list. Described
+    // down the cause chain, or the log says "Failed query" and not why.
+    console.error(`migrate-plan: ${describeError(err)}`);
     process.exit(1);
   });
 }
