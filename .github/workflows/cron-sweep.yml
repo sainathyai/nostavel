@@ -9,7 +9,13 @@ name: Cron - sweep abandoned holds
 # there's nothing deployed to sweep yet.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Every three minutes, not every fifteen. The supplier's hold is fifteen
+    # minutes and a booking is only recoverable inside it, so a quarter-hourly
+    # sweep gave a guest whose browser died exactly one chance to be rescued -
+    # and none at all if the tick landed in the first two minutes, or if GitHub
+    # delayed the run, which it routinely does under load. Raised by the NOS-5
+    # security review.
+    - cron: "*/3 * * * *"
   workflow_dispatch:
 
 jobs:

@@ -14,6 +14,8 @@ import { rateLimit, clientIp } from "@/lib/rate-limit";
 import {
   prepareBooking,
   confirmBooking,
+  markPaymentFailed,
+  markPaymentStarting,
   saveBookingGuest,
   cancelBooking,
   type PrepareInput,
@@ -148,6 +150,69 @@ export async function saveGuestAction(input: GuestInput): Promise<SaveGuestRespo
 
   try {
     await saveBookingGuest(input);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+export type PaymentStartingResponse = { ok: true } | { ok: false; error: string };
+
+/**
+ * The guest is about to submit their card. (NOS-5.)
+ *
+ * Called by the checkout page immediately before the payment provider charges
+ * the card in the browser. That is the only moment anyone can tell the server a
+ * charge is coming: the provider bills the guest client-side and the supplier
+ * sends no payment webhook at all, so without this call a row mid-payment looks
+ * exactly like one the guest abandoned - and the sweeper used to release the
+ * room out from under them.
+ *
+ * Deliberately cheap and deliberately not a gate. The guest's own money is
+ * already committed a moment later, so this must not be able to stop them
+ * paying; the caller is told it failed and charges anyway. A row that stays
+ * `prebooked` through a real payment is still recoverable, because the claim
+ * step accepts both states and the sweeper asks the supplier rather than
+ * guessing.
+ */
+export async function markPaymentStartingAction(
+  bookingId: string,
+): Promise<PaymentStartingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-paying:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
+  const auth = await authorize(bookingId, "checkout");
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  try {
+    await markPaymentStarting(bookingId);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/**
+ * The card was declined, so no charge is coming after all.
+ *
+ * Lets the guest try another card instead of being treated as mid-payment: see
+ * `markPaymentFailed`. Same authorization as starting the payment, and the same
+ * deliberate harmlessness - the worst case for a failed call is a row that looks
+ * mid-payment until the sweeper asks the supplier and is told nobody paid.
+ */
+export async function markPaymentFailedAction(
+  bookingId: string,
+): Promise<PaymentStartingResponse> {
+  const ip = await clientIp();
+  const rl = rateLimit(`booking-paying:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  if (!rl.ok) return { ok: false, error: TOO_MANY };
+
+  const auth = await authorize(bookingId, "checkout");
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  try {
+    await markPaymentFailed(bookingId);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

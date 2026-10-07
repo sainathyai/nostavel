@@ -98,6 +98,10 @@ const STATUS_STYLE: Record<string, string> = {
   draft: "bg-line/40 text-soft border-line",
   prebooked: "bg-brass/10 text-brass border-brass/30",
   payment_pending: "bg-brass/10 text-brass border-brass/30",
+  // Claimed and being booked with the supplier right now (NOS-6). Same
+  // reassuring tone as payment_pending: for a guest this is progress, not a
+  // problem.
+  confirming: "bg-brass/10 text-brass border-brass/30",
   failed: "bg-red-500/10 text-red-500 border-red-500/30",
   cancelled: "bg-line/40 text-soft border-line",
   expired: "bg-line/40 text-soft border-line",

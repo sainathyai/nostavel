@@ -17,7 +17,11 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { saveGuestAction } from "@/app/actions/booking";
+import {
+  markPaymentFailedAction,
+  markPaymentStartingAction,
+  saveGuestAction,
+} from "@/app/actions/booking";
 
 type Guest = {
   firstName: string;
@@ -337,12 +341,39 @@ export default function CheckoutClient({
     if (!stripeRef.current || !elementsRef.current || processing) return;
     setProcessing(true);
     setError(null);
+
+    // TELL THE SERVER FIRST (NOS-5). From the next line on, the guest's card is
+    // being charged by the payment provider with our server not involved, and
+    // there is no payment webhook to tell us afterwards - so this is the only
+    // moment the server can learn a charge is coming. Without it the sweeper
+    // cannot tell this guest from one who closed the tab, and released the room
+    // while they were paying.
+    //
+    // Awaited, so the row has moved before any money does. NOT a gate: its
+    // failure is swallowed, because refusing to let a guest pay because a
+    // bookkeeping write failed would be worse than the bug it prevents. A
+    // payment that happens anyway is still recoverable - the booking can be
+    // finalized from either state, and the sweeper resolves an unmarked row by
+    // asking the supplier rather than by guessing.
+    try {
+      await markPaymentStartingAction(bookingId);
+    } catch {
+      /* the charge is more important than the breadcrumb */
+    }
+
     const { error: err } = await stripeRef.current.confirmPayment({
       elements: elementsRef.current,
       confirmParams: { return_url: `${window.location.origin}/book/${bookingId}/confirmation` },
     });
     // Reached only on an immediate failure; success redirects away.
     if (err) {
+      // Take back the "charging now" mark. Without this the row keeps saying a
+      // payment is in flight when the card was declined - which makes the
+      // sweeper protect a booking nobody paid for, and sends this guest to a
+      // confirmation page instead of back to the form when they try another
+      // card. Not awaited before showing the error: the guest should see the
+      // decline immediately, not after a round trip.
+      void markPaymentFailedAction(bookingId).catch(() => {});
       setError(err.message || "Your payment could not be completed.");
       setProcessing(false);
     }

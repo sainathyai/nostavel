@@ -1,100 +1,264 @@
-// Integration test: proves the NOS-5 sweeper-vs-payment-in-flight gap
-// against a REAL Postgres (vitest.integration.config.ts) — the sweep
-// route's own concurrency argument (its file comment) rests on Postgres's
-// `UPDATE ... WHERE status = 'prebooked' ... RETURNING` being atomic, so the
-// row this test seeds and the route's actual query need to be the same
-// database, not a mock, for the gap to mean anything.
+// Integration test: the sweeper against a REAL Postgres
+// (vitest.integration.config.ts). The route's concurrency argument rests on
+// `UPDATE ... WHERE status = '<from>' ... RETURNING` being atomic, so the rows
+// this file seeds and the route's own queries have to be the same database, not
+// a mock, for any of it to mean anything.
 //
-// WHAT THIS PROVES: a `prebooked` row can sit in that status for the WHOLE
-// gap between the guest's card being charged (client-side, via the Payment
-// SDK — see confirmBooking's own comment: "No guest charge, no booking")
-// and the guest's browser returning to the returnUrl to call confirmBooking.
-// Nothing in the schema or the sweep route distinguishes "abandoned, guest
-// never reached payment" from "payment already charged, guest hasn't come
-// back yet" — both are just a `prebooked` row whose `updatedAt` hasn't
-// moved. If that gap exceeds PREBOOK_TTL_MINUTES (a slow bank 3-D Secure
-// challenge, a flaky redirect, a guest who leaves the tab open), the
-// sweeper expires the row — clearing paymentSecret, flipping status to
-// `expired` — and confirmBooking, called moments later by the guest's own
-// returning browser, refuses to finalize a non-`prebooked` row. The card
-// was charged; there is no booking, and nothing un-does the charge.
+// WHAT THIS FILE PROMISES THE GUEST — unchanged from before NOS-5 landed:
 //
-// WHAT WOULD MAKE THIS PASS: NOS-5 giving the sweeper (or confirmBooking) a
-// way to tell "payment already initiated" apart from "truly abandoned" —
-// for example, a `payment_pending` transition written when the guest's
-// browser reaches the payment step, which the sweeper's WHERE clause would
-// then exclude, so a row mid-charge is never swept out from under a guest.
-// When that lands, this test's assertion (confirmBooking can still finalize
-// a booking whose prebook aged past the TTL while payment was in flight)
-// starts passing, which `it.fails` turns into a hard suite failure until
-// this marker is removed — see the ticket (NOS-29/NOS-33) for why that is
-// deliberate, not a placeholder.
+//   a guest whose card was charged ends up with the booking they paid for;
+//   a room nobody paid for is released.
+//
+// HOW THE MECHANISM CHANGED (NOS-5, NOS-46). Before, the only signal was a
+// `prebooked` row's `updatedAt`, which says nothing about whether a charge is in
+// flight — so a guest mid-payment and a guest who closed the tab were the same
+// row, and the sweeper released both. The earlier version of this file asserted
+// that shape directly: it swept a backdated row, asserted `status === "expired"`,
+// and then that `confirmBooking` could still finalize it. That assertion
+// described the bug's own mechanics, so it could not survive the fix — under the
+// fix the row is never expired in the first place.
+//
+// What replaced it:
+//   - the guest's browser says "charging now" before any money moves, so the row
+//     is `payment_pending` and the sweeper leaves it alone;
+//   - if that browser never comes back, the sweeper ASKS THE SUPPLIER, because
+//     `book()` refuses an unpaid transaction with code 2014 (measured
+//     2026-10-06). The guest is recovered rather than guessed about;
+//   - the hold is measured from `prebookedAt`, the moment it was taken, not from
+//     the last write to the row.
+//
+// The `it.fails` marker is gone because the bug is gone. Every assertion below
+// is a live one.
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { bookings } from "@/db/schema";
-import { confirmBooking } from "@/lib/booking-service";
-import { cutoffFor } from "@/lib/cron-format";
+import { bookingEvents, bookings } from "@/db/schema";
+import { confirmBooking, markPaymentFailed, markPaymentStarting } from "@/lib/booking-service";
+import { PREBOOK_HOLD_MINUTES, RECOVER_AFTER_MINUTES } from "@/lib/booking-transitions";
 import { POST as sweep } from "./route";
 import { seedConfirmableBooking, fakeSharedSecret } from "@/test-support/db-fixtures";
-import { resetFakeSupplier } from "@/test-support/fake-liteapi";
+import {
+  configureBookError,
+  resetFakeSupplier,
+  supplierRefusal,
+  unpaidRefusal,
+} from "@/test-support/fake-liteapi";
 
-// confirmBooking (called after the sweep, simulating the guest's return
-// trip) still reaches @/lib/liteapi's `book` — stubbed so this file never
-// touches the real supplier (NOS-29 AC 6). See fake-liteapi.ts for the
-// contract it mimics.
+// Every supplier call in this file is stubbed, including the ones the sweeper
+// now makes itself (NOS-29 AC 6: no test reaches LiteAPI over the network).
 vi.mock("@/lib/liteapi", async () => import("@/test-support/fake-liteapi"));
 
-// Mirrors route.ts's own PREBOOK_TTL_MINUTES, which the route does not
-// export. Duplicated here deliberately — a silent drift between this value
-// and the route's real one is exactly the kind of thing that would make
-// this test wrong about which side of the TTL boundary it is testing.
-const PREBOOK_TTL_MINUTES = 30;
+// The real constants, imported rather than copied. The earlier version kept its
+// own `PREBOOK_TTL_MINUTES = 30` with a comment admitting the route did not
+// export it — so a change in one place would leave this test asserting about a
+// boundary that no longer existed, and passing anyway (NOS-46).
+const minsAgo = (m: number) => new Date(Date.now() - m * 60_000);
+
+async function runSweep(): Promise<Record<string, number>> {
+  const cronSecret = fakeSharedSecret("cron");
+  process.env.CRON_SECRET = cronSecret;
+  const response = await sweep(
+    new Request("http://localhost/api/cron/sweep", {
+      method: "POST",
+      headers: { authorization: `Bearer ${cronSecret}` },
+    }),
+  );
+  expect(response.status).toBe(200);
+  return response.json();
+}
+
+async function statusOf(id: string): Promise<string> {
+  const [row] = await db.select().from(bookings).where(eq(bookings.id, id)).limit(1);
+  return row.status;
+}
+
+async function eventTypes(id: string): Promise<string[]> {
+  const rows = await db.select().from(bookingEvents).where(eq(bookingEvents.bookingId, id));
+  return rows.map((r) => r.type);
+}
+
+/** Put the row's last write far enough back that the sweeper stops waiting. */
+async function wentQuiet(id: string, minutes: number): Promise<void> {
+  await db.update(bookings).set({ updatedAt: minsAgo(minutes) }).where(eq(bookings.id, id));
+}
 
 beforeEach(() => {
   resetFakeSupplier();
 });
 
-describe("sweeping a prebooked hold whose payment is already in flight (NOS-5)", () => {
-  it.fails("still lets the guest's return trip finalize the booking they were already charged for", async () => {
-    const cronSecret = fakeSharedSecret("cron");
-    process.env.CRON_SECRET = cronSecret;
+describe("a guest who is paying when the sweeper runs (NOS-5)", () => {
+  it("is left alone, and their own return trip still completes the booking", async () => {
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    // What the browser does immediately before the card is charged.
+    await markPaymentStarting(booking.id);
 
-    // Backdated using cutoffFor — the same pure rule the sweep route itself
-    // applies (docs/conventions.md §6: inject the clock, don't wait on it) —
-    // rather than sleeping 30 real minutes for the TTL to elapse.
-    const longAgo = cutoffFor(PREBOOK_TTL_MINUTES + 1, new Date());
-    const { booking } = await seedConfirmableBooking({ updatedAt: longAgo });
+    await runSweep();
 
-    // In the real flow the guest's card has already been charged via the
-    // Payment SDK at this point — entirely client-side, before
-    // confirmBooking is ever called. There is no column on `bookings` that
-    // records that fact today; that absence is the gap NOS-5 is about. This
-    // row is otherwise indistinguishable from a hold the guest simply
-    // walked away from.
-    const sweepResponse = await sweep(
-      new Request("http://localhost/api/cron/sweep", {
-        method: "POST",
-        headers: { authorization: `Bearer ${cronSecret}` },
-      }),
-    );
-    expect(sweepResponse.status).toBe(200);
+    // THE BUG, DIRECTLY: this used to be "expired".
+    expect(await statusOf(booking.id)).toBe("payment_pending");
 
-    const [sweptRow] = await db.select().from(bookings).where(eq(bookings.id, booking.id));
-    // Confirms the sweep actually reached this row — if this fails, the
-    // test isn't exercising the TTL path at all and the assertion below
-    // would be vacuous.
-    expect(sweptRow.status).toBe("expired");
-
-    // The guest's browser now returns to the returnUrl and confirmBooking
-    // runs, exactly as it would for a real completed charge. A fix must let
-    // this still succeed; today it throws "Booking is not ready to confirm",
-    // and the guest is left charged with no confirmed booking and nothing
-    // in the UI to explain why — the guest-harming direction. It is also
-    // money-losing for us: a charged, unconfirmed booking is a support
-    // ticket and likely a manual refund, not a sale.
+    // And the promise this file has always made.
     await expect(confirmBooking({ bookingId: booking.id })).resolves.toMatchObject({
       status: "confirmed",
     });
+  });
+
+  it("is rescued by the sweeper when their browser never comes back at all", async () => {
+    // The case nothing could handle before: the charge succeeded, the redirect
+    // was lost, the guest is gone. Asking the supplier makes it recoverable.
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);
+
+    const counts = await runSweep();
+
+    expect(counts.recovered).toBe(1);
+    expect(await statusOf(booking.id)).toBe("confirmed");
+    expect(await eventTypes(booking.id)).toContain("payment.recovered");
+  });
+
+  it("is never released on silence from the supplier", async () => {
+    // The mistake that would reintroduce NOS-5 somewhere new: reading "we could
+    // not reach the supplier" as "the guest did not pay". A rate limit is the
+    // realistic version, and the sweeper itself can provoke one.
+    configureBookError(supplierRefusal(4290, "exceeded the allowed request limit", "too many requests"));
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);
+
+    await runSweep();
+
+    // EXACT, not `not.toBe("expired")`. The first version of this assertion was
+    // the weaker one, and it passed while the row was being written `failed` -
+    // terminal, outside the sweeper's candidate set, unrecoverable for a guest
+    // who had paid. The code review spotted it by noticing that the test two
+    // cases down asserts an exact status and this one did not. A test whose
+    // assertion is weaker than its neighbour's is where a non-fix hides.
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+    expect(await eventTypes(booking.id)).toContain("payment.unresolved");
+  });
+
+  it("is not released even when the supplier says unpaid, while the hold is still alive", async () => {
+    // Provably unpaid — but they may be finishing a slow card step right now.
+    // Releasing here would be the same bug with a better excuse.
+    // The real refusal, built through the real error class - see unpaidRefusal().
+    configureBookError(unpaidRefusal());
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);
+
+    await runSweep();
+
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+  });
+
+  it("is reported for a person to look at once the hold lapsed mid-payment", async () => {
+    // Past the hold the supplier cannot answer either. The row keeps its status
+    // on purpose: marking it `expired` would close the only record saying a
+    // human still has to check whether this guest was charged.
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 5),
+    });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, PREBOOK_HOLD_MINUTES + 5);
+
+    const counts = await runSweep();
+
+    expect(counts.alerts).toBe(1);
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+    expect(await eventTypes(booking.id)).toContain("payment.unresolved");
+  });
+});
+
+describe("a room nobody paid for (the complementary promise)", () => {
+  it("is released once the supplier's hold has lapsed", async () => {
+    // The sweeper still has to do its original job. A "fix" that simply stopped
+    // expiring anything would pass every test above.
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 1),
+    });
+
+    const counts = await runSweep();
+
+    expect(counts.holdsExpired).toBe(1);
+    expect(await statusOf(booking.id)).toBe("expired");
+    expect(await eventTypes(booking.id)).toContain("hold.expired");
+  });
+
+  it("is left alone while the hold is still alive", async () => {
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    await runSweep();
+    expect(await statusOf(booking.id)).toBe("prebooked");
+  });
+
+  it("is not kept alive by the guest editing the form, which is the NOS-46 bug", async () => {
+    // The old cutoff read `updatedAt`, so a write at minute 14 pushed it out to
+    // minute 44 while the supplier's hold died at 15. Here the hold is long gone
+    // and the row was written a moment ago: the old code kept it, this releases
+    // it.
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 10),
+    });
+    await db.update(bookings).set({ updatedAt: new Date() }).where(eq(bookings.id, booking.id));
+
+    await runSweep();
+
+    expect(await statusOf(booking.id)).toBe("expired");
+  });
+});
+
+describe("a confirmation that was claimed and then abandoned", () => {
+  it("has its claim released so the booking is not stuck forever", async () => {
+    // A process that claims a booking and dies would otherwise leave a row
+    // nothing is allowed to finalize — including the guest's own browser.
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(5) });
+    await db
+      .update(bookings)
+      .set({ status: "confirming", updatedAt: minsAgo(10) })
+      .where(eq(bookings.id, booking.id));
+
+    await runSweep();
+
+    // It may also be recovered on the same pass; both are correct for a guest
+    // who has paid, so the assertion is "no longer stuck".
+    expect(await statusOf(booking.id)).not.toBe("confirming");
+    expect(await eventTypes(booking.id)).toContain("confirm.claim_released");
+  });
+});
+
+describe("a card that was declined", () => {
+  it("goes back to being a plain hold, so the guest can try another card", async () => {
+    // The browser announces a charge before making it, so a decline leaves the
+    // row claiming a payment is in flight. Left that way, the sweeper protects a
+    // booking nobody paid for and the checkout page sends the guest to a
+    // confirmation instead of back to the payment form. Raised by the NOS-5
+    // security review.
+    const { booking } = await seedConfirmableBooking({ prebookedAt: minsAgo(3) });
+    await markPaymentStarting(booking.id);
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+
+    await markPaymentFailed(booking.id);
+
+    expect(await statusOf(booking.id)).toBe("prebooked");
+    expect(await eventTypes(booking.id)).toContain("payment.declined");
+    // And it is still a live hold the sweeper leaves alone.
+    await runSweep();
+    expect(await statusOf(booking.id)).toBe("prebooked");
+  });
+
+  it("cannot be used to revive a hold the supplier has already released", async () => {
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 1),
+    });
+    await db
+      .update(bookings)
+      .set({ status: "payment_pending" })
+      .where(eq(bookings.id, booking.id));
+
+    await markPaymentFailed(booking.id);
+
+    // Still payment_pending: a lapsed hold is not something a browser may undo,
+    // and this row needs a person, not a reset.
+    expect(await statusOf(booking.id)).toBe("payment_pending");
   });
 });

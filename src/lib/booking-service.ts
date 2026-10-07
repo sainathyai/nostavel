@@ -3,7 +3,7 @@
 // truth for status; here we snapshot everything at each step so a past record is
 // never corrupted by later supplier changes.
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import {
   bookings,
@@ -17,6 +17,7 @@ import { prebook, book, cancelBooking as cancelSupplierBooking } from "@/lib/lit
 import { sendBookingConfirmation } from "@/lib/email";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
 import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
+import { holdLapsed, statusAfterFailedBook } from "@/lib/booking-transitions";
 
 export type HotelSnapshot = {
   name: string;
@@ -164,8 +165,22 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
     const row = existing[0];
     bookingId = row.id;
     humanRef = row.humanRef;
-    // Already prebooked — hand back what we have; don't hit the supplier again.
-    if (row.status === "prebooked" && row.prebookId) {
+    // ALREADY PAST THE SUPPLIER — hand back what we have, and never prebook over
+    // it.
+    //
+    // This used to fire only for `prebooked`, so every other status fell through
+    // to a fresh prebook and an unconditional write. The security review traced
+    // what that costs: a guest who had PAID (row `payment_pending`, holding the
+    // only pointer to the real charge) pressed back and clicked Book on the same
+    // rate, the row was reset to `prebooked` with a brand-new transaction and a
+    // fresh `prebookedAt`, and fifteen minutes later the sweeper expired it with
+    // the reason "hold lapsed with no payment started". Charged guest, ledger
+    // saying nobody paid, and no 2014 anywhere - a route straight around the
+    // invariant that only the supplier may release a paid row.
+    //
+    // It also released the NOS-6 claim: an unguarded write would reset a row
+    // that was `confirming` with a `book()` call in flight.
+    if (row.prebookId && row.status !== "draft" && row.status !== "expired" && row.status !== "failed") {
       return {
         bookingId,
         humanRef,
@@ -272,10 +287,19 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
   }
 
   // 4. Advance to prebooked, snapshotting price + policy, and log it.
-  await db
+  //
+  // Guarded on `draft`. The early return above should mean nothing else ever
+  // reaches here, but this is the write that was able to overwrite a paid row's
+  // transaction and reset its hold clock, so it does not rely on that: if the
+  // row has moved on under us, this matches nothing rather than rewriting a
+  // booking someone has already paid for.
+  const advanced = await db
     .update(bookings)
     .set({
       status: "prebooked",
+      // The clock the hold is measured from, set once, here, and never
+      // rewritten. See src/lib/booking-transitions.ts (NOS-46).
+      prebookedAt: new Date(),
       prebookId,
       transactionId,
       paymentSecret,
@@ -287,7 +311,11 @@ export async function prepareBooking(input: PrepareInput): Promise<PrepareResult
       refundableUntil,
       updatedAt: new Date(),
     })
-    .where(eq(bookings.id, bookingId));
+    .where(and(eq(bookings.id, bookingId), eq(bookings.status, "draft")))
+    .returning({ id: bookings.id });
+  if (!advanced.length) {
+    throw new Error("This booking has already moved on. Please start again from the room.");
+  }
   await db.insert(bookingEvents).values({
     bookingId,
     type: "prebook.ok",
@@ -375,15 +403,91 @@ export async function saveBookingGuest(input: GuestInput): Promise<void> {
     .where(eq(bookings.id, row.id));
 }
 
+/**
+ * The guest's browser is about to charge the card. (NOS-5.)
+ *
+ * This is the only moment anyone can tell us. The payment provider charges the
+ * card in the browser, with our server not involved, and LiteAPI has no payment
+ * webhook of any kind - its event list is entirely booking and flight lifecycle
+ * (checked 2026-10-06). So without this call a row where a guest is being
+ * charged is indistinguishable from one they abandoned, which is exactly what
+ * let the sweeper release a room out from under a paying guest.
+ *
+ * Best-effort by nature: a browser that dies between this call and the charge
+ * leaves a row saying a payment started that never did. That case is NOT
+ * expired on a timer - the sweeper asks the supplier instead, and a supplier
+ * that says "payment not completed" is the only thing that releases the room.
+ *
+ * Compare-and-swap, so calling it twice is harmless and calling it on a row
+ * that has moved on cannot drag it backwards.
+ */
+export async function markPaymentStarting(bookingId: string): Promise<void> {
+  const claimed = await db
+    .update(bookings)
+    .set({ status: "payment_pending", updatedAt: new Date() })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.status, "prebooked")))
+    .returning({ id: bookings.id });
+
+  // Nothing moved: either another tab already said this, or the row is past
+  // the point where it matters. Either way there is nothing to record.
+  if (!claimed.length) return;
+
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "payment.starting",
+    actor: "guest",
+  });
+}
+
+/**
+ * The charge did not happen after all. (F6 of the NOS-5 security review.)
+ *
+ * The browser announces a charge before making it, so a card that is DECLINED
+ * leaves the row saying a payment is in flight when none is. That matters in two
+ * places: the sweeper treats such a row as precious and will not release it, and
+ * the checkout page sends a guest in that state to their confirmation rather than
+ * back to the payment form - so a declined card would have stranded a guest who
+ * simply wanted to try another card.
+ *
+ * Only ever moves backwards from the state this browser set, and only while the
+ * hold is still alive - so it cannot be used to revive a lapsed hold, and it
+ * cannot touch a booking that has reached the supplier.
+ */
+export async function markPaymentFailed(bookingId: string): Promise<void> {
+  const [row] = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
+  if (!row || row.status !== "payment_pending") return;
+  if (holdLapsed(row.prebookedAt, new Date())) return;
+
+  const reverted = await db
+    .update(bookings)
+    .set({ status: "prebooked", updatedAt: new Date() })
+    .where(and(eq(bookings.id, bookingId), eq(bookings.status, "payment_pending")))
+    .returning({ id: bookings.id });
+  if (!reverted.length) return;
+
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "payment.declined",
+    actor: "guest",
+  });
+}
+
 export type ConfirmInput = { bookingId: string };
 
-export type ConfirmResult = {
-  bookingId: string;
-  humanRef: string;
-  status: "confirmed";
-  liteapiBookingId: string | null;
-  supplierStatus: string;
-};
+export type ConfirmResult =
+  | {
+      bookingId: string;
+      humanRef: string;
+      status: "confirmed";
+      liteapiBookingId: string | null;
+      supplierStatus: string;
+    }
+  /**
+   * Another caller is already finalizing this booking (NOS-6). Not an error:
+   * the guest has paid and their booking is being made, by the request that got
+   * there first. The page says so and a refresh will show the confirmation.
+   */
+  | { bookingId: string; humanRef: string; status: "finalizing" };
 
 // Finalize on the returnUrl: books against the row's prebookId + transactionId
 // (the SDK charge), advances the ledger to confirmed, records the payment, and
@@ -404,8 +508,21 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
       supplierStatus: "CONFIRMED",
     };
   }
-  if (row.status !== "prebooked" || !row.prebookId) {
+  // SOMEONE ELSE IS ALREADY DOING THIS.
+  if (row.status === "confirming") {
+    return { bookingId: row.id, humanRef: row.humanRef, status: "finalizing" };
+  }
+  if ((row.status !== "prebooked" && row.status !== "payment_pending") || !row.prebookId) {
     throw new Error(`Booking is not ready to confirm (status: ${row.status})`);
+  }
+
+  // THE HOLD IS GONE. The supplier releases a prebooked room after 15 minutes
+  // and `book()` would fail anyway (NOS-46); saying so plainly beats passing a
+  // dead prebook to the supplier and relaying whatever it says. A guest who
+  // already paid is not turned away here - a paid row is `payment_pending`, and
+  // the sweeper's recovery, not this path, is what resolves it.
+  if (row.status === "prebooked" && holdLapsed(row.prebookedAt, new Date())) {
+    throw new Error("This rate is no longer held. Please start the booking again.");
   }
 
   // The lead guest was captured before payment; without it we can't book.
@@ -419,11 +536,54 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
     throw new Error("Guest details are missing for this booking");
   }
 
-  // No guest charge, no booking. LiteAPI's only other payment methods bill our
-  // own account for the room, so a missing transactionId must stop the flow
-  // rather than quietly fall through to us paying for a stranger's stay.
+  // A transactionId is NOT proof of payment - prebook mints one before the
+  // guest has seen a card form (NOS-45). Refusing WITHOUT one is still right,
+  // because LiteAPI's other payment methods bill our own account for the room,
+  // and that would have us paying for a stranger's stay. What actually checks
+  // the charge is the supplier: `book()` refuses an unpaid transaction with
+  // code 2014, "payment not completed" (measured 2026-10-06).
   if (!row.transactionId) {
     throw new Error("Booking has no guest payment transaction; refusing to book");
+  }
+
+  // THE CLAIM (NOS-6). One caller gets to call the supplier.
+  //
+  // Nothing below writes the row until after `book()` returns, and `book()` is
+  // a multi-second call out to the supplier - so two requests that both read
+  // `status === "prebooked"` would both reach it. The realistic trigger is not
+  // a guest paying twice: it is ONE payment and two loads of the confirmation
+  // page, which finalizes on load. A refresh of a page that appears stuck right
+  // after paying is the most ordinary thing a guest can do.
+  //
+  // A single `UPDATE ... WHERE status = <expected> RETURNING` is the mutex -
+  // Postgres's own row-level atomicity, the same mechanism the sweep route
+  // relies on, and the only one available to us: the neon-http driver is
+  // stateless per query, so a lock spanning two queries could not be held.
+  //
+  // Both pre-payment states are accepted. A browser that failed to reach
+  // `markPaymentStarting` before charging leaves the row at `prebooked` with the
+  // guest's money already taken, and refusing them here would be the
+  // over-rejection this fix must not introduce.
+  const claimed = await db
+    .update(bookings)
+    .set({ status: "confirming", updatedAt: new Date() })
+    .where(and(eq(bookings.id, row.id), inArray(bookings.status, ["prebooked", "payment_pending"])))
+    .returning({ id: bookings.id });
+
+  if (!claimed.length) {
+    // Lost the race. Re-read rather than guess: the winner may already have
+    // finished, in which case this caller can have the real answer.
+    const [fresh] = await db.select().from(bookings).where(eq(bookings.id, row.id)).limit(1);
+    if (fresh?.status === "confirmed") {
+      return {
+        bookingId: fresh.id,
+        humanRef: fresh.humanRef,
+        status: "confirmed",
+        liteapiBookingId: fresh.liteapiBookingId,
+        supplierStatus: "CONFIRMED",
+      };
+    }
+    return { bookingId: row.id, humanRef: row.humanRef, status: "finalizing" };
   }
 
   // Supplier book — the point of no return.
@@ -443,10 +603,28 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
       actor: "system",
       payload: { error: (e as Error).message },
     });
+    // The claim is released either way - a row left at `confirming` is one
+    // nothing may ever finalize again, including the guest's own browser.
+    //
+    // WHERE IT GOES BACK TO IS THE WHOLE QUESTION, and it is a rule, not a
+    // ternary: `failed` is terminal, so writing it on a booking whose guest may
+    // already have been charged strands them permanently. See
+    // statusAfterFailedBook - a guest who may have paid is never sent to a
+    // terminal state, and an error that is not a definite refusal (a timeout, a
+    // rate limit) is not recorded as one.
     await db
       .update(bookings)
-      .set({ status: "failed", updatedAt: new Date() })
-      .where(eq(bookings.id, row.id));
+      .set({
+        status: statusAfterFailedBook(e, row.status === "payment_pending" ? "payment_pending" : "prebooked"),
+        updatedAt: new Date(),
+      })
+      // FENCED ON THE CLAIM WE STILL HOLD. If the sweeper released a stale claim
+      // while this supplier call was hanging, another caller may already have
+      // booked and confirmed the row - and this write would then overwrite a
+      // CONFIRMED booking with a failure, or push it back to `payment_pending`
+      // where the sweeper would book it a third time off one payment. Found by
+      // the NOS-5 security review.
+      .where(and(eq(bookings.id, row.id), eq(bookings.status, "confirming")));
     throw e;
   }
 
@@ -466,7 +644,10 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
       // The card session secret has served its purpose — drop it.
       paymentSecret: null,
     })
-    .where(eq(bookings.id, row.id));
+    // Fenced on the claim, like the failure path above: a supplier call that
+    // outlived its claim must not overwrite whatever resolved the booking in the
+    // meantime.
+    .where(and(eq(bookings.id, row.id), eq(bookings.status, "confirming")));
 
   await db.insert(payments).values({
     bookingId: row.id,

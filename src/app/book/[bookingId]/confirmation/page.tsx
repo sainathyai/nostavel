@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { mayActOnBooking } from "@/lib/booking-authz";
+import { confirmationPageIntent } from "@/lib/booking-transitions";
 import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { confirmBooking } from "@/lib/booking-service";
@@ -66,21 +67,52 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
   const caller = await resolveCaller();
   if (!mayActOnBooking(caller, booking, "manage").ok) return notFound;
 
-  // Finalize on arrival. Idempotent: an already-confirmed booking just returns its
-  // stored result, so a refresh or double-hit here is safe.
+  // Finalize on arrival. Idempotent: an already-confirmed booking just returns
+  // its stored result, so a refresh or double-hit here is safe.
+  //
+  // BOTH PRE-PAYMENT STATES, and this is not a detail. The guest's browser now
+  // says "charging now" before the card is charged (NOS-5), so on the normal
+  // path they arrive here as `payment_pending`, not `prebooked`. A version of
+  // this page that finalized only from `prebooked` sent every successful payment
+  // down the failure branch below: no booking, no email, and a red page telling
+  // a guest who had just paid that their charge would be reversed. Caught by the
+  // security review of NOS-5, in a file that branch never touched - which is
+  // why it was missed.
+  // Which states mean what is a tested rule, not a chain of conditions in a
+  // page nothing in CI can exercise. See confirmationPageIntent: the version of
+  // this block that finalized only from `prebooked` showed every successful
+  // payment a failure, because the browser now marks `payment_pending` before
+  // the charge.
   let errorMsg: string | null = null;
-  if (booking.status === "prebooked") {
-    if (mayActOnBooking(caller, booking, "checkout").ok) {
-      try {
-        await confirmBooking({ bookingId });
-      } catch (e) {
-        errorMsg = (e as Error).message;
+  let finalizing = false;
+  switch (confirmationPageIntent(booking.status)) {
+    case "finalize":
+      if (mayActOnBooking(caller, booking, "checkout").ok) {
+        try {
+          const result = await confirmBooking({ bookingId });
+          // Another request claimed it first (NOS-6). Nothing is wrong: the
+          // guest has paid, and their booking is being made by whoever got
+          // there first.
+          finalizing = result.status === "finalizing";
+        } catch (e) {
+          errorMsg = (e as Error).message;
+        }
+      } else {
+        errorMsg = "This booking was never completed. Start a fresh search to book this stay.";
       }
-    } else {
-      errorMsg = "This booking was never completed. Start a fresh search to book this stay.";
-    }
-  } else if (booking.status !== "confirmed") {
-    errorMsg = "This booking could not be completed. If you were charged, it will be reversed.";
+      break;
+    case "wait":
+      // A claim is in flight - the guest refreshed, or the sweeper is finishing
+      // the job. Waiting is the honest answer, not an error.
+      finalizing = true;
+      break;
+    case "dead":
+      // Reached only for a booking no payment was ever started for, which is
+      // why this no longer promises to reverse a charge we may not have taken.
+      errorMsg = "This booking could not be completed. Start a fresh search to book this stay.";
+      break;
+    case "done":
+      break;
   }
 
   // Re-read for the freshest status + ids after finalize.
@@ -88,6 +120,26 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
   const hotel = (finalBooking.hotelSnapshot ?? {}) as HotelSnap;
   const room = (finalBooking.roomSnapshot ?? {}) as RoomSnap;
   const confirmed = finalBooking.status === "confirmed";
+
+  // STILL BEING FINALIZED, which is not a failure. Someone - another tab, or
+  // the sweeper - is making this booking right now. Telling the guest that, with
+  // their reference, beats both a red error and a spinner that never resolves.
+  if (!confirmed && (finalizing || finalBooking.status === "confirming")) {
+    return (
+      <Shell>
+        <div className="rounded-xl border border-line bg-surface p-6 text-center">
+          <h1 className="font-display text-[22px]">We&rsquo;re completing your booking</h1>
+          <p className="mt-2 text-[14px] text-soft">
+            Your payment went through and we&rsquo;re confirming the room with the hotel now.
+            Refresh this page in a moment.
+          </p>
+          <p className="mt-1 text-[13px] text-soft">
+            Reference <span className="font-mono font-semibold text-ink">{finalBooking.humanRef}</span>
+          </p>
+        </div>
+      </Shell>
+    );
+  }
 
   if (!confirmed) {
     return (

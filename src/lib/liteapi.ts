@@ -4,6 +4,7 @@
 //   prebook: data.prebookId / .price / .priceDifferencePercent / .cancellationChanged
 
 import "server-only";
+import { LiteApiError } from "@/lib/liteapi-error";
 import { DEST_BY_KEY } from "./destinations";
 import { US_CITY_SET } from "./us-cities";
 import { INTL_CITY_BY_DEST } from "./intl-cities";
@@ -65,8 +66,11 @@ async function api(
   }
 
   if (!res.ok) {
-    const msg = (data as any)?.error?.message || JSON.stringify(data);
-    throw new Error(`LiteAPI ${res.status}: ${msg}`);
+    // Typed, so a caller can act on the supplier's own error CODE rather than
+    // on its prose. See src/lib/liteapi-error.ts: for the response the booking
+    // recovery path depends on, the code is the only field that says what went
+    // wrong.
+    throw new LiteApiError(res.status, data);
   }
   return data;
 }
