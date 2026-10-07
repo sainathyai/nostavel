@@ -284,72 +284,60 @@ Leave the redirect URI for now: it needs the service URL, and the service does
 not exist until step 10. Step 12 comes back and adds it. Keep the client id and
 client secret for the next step.
 
-## 9. Put the secret values in, by hand
+## 9. Put the secret values in
 
 **No agent does this step, and no secret value goes through Terraform** - see
 `infra/README.md` for why.
 
-Generate the two secrets that are ours to invent:
-
 ```bash
-# The password for the environment. GENERATED, not memorable: the app enforces a
-# 16-character minimum, and a length check cannot tell "nostavel-uat-pwd" from a
-# real password. That distinction is this instruction's job (NOS-62).
-openssl rand -base64 24
-
-# The operations secret the scheduled jobs and the deploy's health check use.
-openssl rand -hex 32
+cd "$(git rev-parse --show-toplevel)"
+bash scripts/seed-uat-secrets.sh
 ```
 
-Then add a version to each of the ten:
+That script does three different things to three groups of values, because they
+are not the same kind of thing:
+
+| | Secrets | Why |
+|---|---|---|
+| **Generated** | `AUTH_SECRET`, `CRON_SECRET`, `ACCESS_PASSWORD` | This environment gets its own. A shared `CRON_SECRET` means one leaked value unlocks the scheduled jobs everywhere, and a shared `AUTH_SECRET` makes a session cookie from development valid here |
+| **Reused from `.env.local`** | `LITEAPI_KEY`, `LITEAPI_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET` | Same sandbox supplier, same accounts, same OAuth client. Nothing to retype |
+| **Asked for, and shown as you type** | `DATABASE_URL` | This environment's own database (D-5.3). Development's string must never reach it, so it cannot be read from a file |
+
+**It refuses a value whose shape is wrong, before uploading it.** That is the
+point of the script rather than a prompt. The first real run typed all ten into a
+hidden prompt and stored a **300-character `DATABASE_URL`** - the pooled Neon
+string pasted twice - and a 144-character `AUTH_SECRET`. Neither would have
+surfaced until the deployed app could not reach its database, because a hidden
+prompt gives you nothing to check against. The script checks the scheme, the
+host, the length, a repeated scheme, a stray newline or space, the `sand_` prefix
+on the supplier key, and the recognisable prefix of every API key.
+
+It prints a name, a length and a source. It never prints a value, never writes
+one to a file, and never puts one on a command line.
+
+Re-running it is safe: Secret Manager keeps versions and the service reads
+`latest`, so a corrected value wins. Tidy up afterwards:
 
 ```bash
-for NAME in DATABASE_URL AUTH_SECRET LITEAPI_KEY LITEAPI_WEBHOOK_SECRET \
-            ANTHROPIC_API_KEY RESEND_API_KEY CRON_SECRET ACCESS_PASSWORD \
-            AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET; do
-  # -p so there is a visible prompt (-rs alone echoes nothing at all, which looks
-  # like a hung terminal), and the length is confirmed afterwards because an empty
-  # entry creates an empty secret version that only surfaces as a fatal problem
-  # three steps later.
-  read -rsp "${NAME}: " VALUE; echo
-  if [ -z "$VALUE" ]; then echo "  empty - skipped, set it before deploying"; continue; fi
-  printf '%s' "$VALUE" | gcloud secrets versions add "${SERVICE}-${NAME}" \
-    --project="$PROJECT" --data-file=- >/dev/null
-  echo "  stored ${#VALUE} characters"
-done
-unset VALUE
+gcloud secrets versions list "${SERVICE}-DATABASE_URL" --project="$PROJECT"
+gcloud secrets versions disable N --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT"
 ```
 
-| Secret | Where it comes from |
-|---|---|
-| `DATABASE_URL` | the Neon `uat` branch, step 7 |
-| `AUTH_SECRET` | `npx auth secret`, or reuse nothing - generate a new one |
-| `LITEAPI_KEY` | the LiteAPI **sandbox** key. Must start `sand_`, or the app refuses to serve |
-| `LITEAPI_WEBHOOK_SECRET` | LiteAPI dashboard |
-| `ANTHROPIC_API_KEY` | console.anthropic.com. Spend-capped |
-| `RESEND_API_KEY` | resend.com |
-| `CRON_SECRET` | generated above. **Also needed in step 11** |
-| `ACCESS_PASSWORD` | generated above. This is what you type to open the site |
-| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | the Google OAuth client, step 8 |
+Disable rather than destroy until the first deploy is green.
 
-> `printf '%s'` rather than `echo`: `echo` appends a newline, and a newline inside
-> `ACCESS_PASSWORD` or `CRON_SECRET` is the kind of thing that costs an hour. The
-> app trims the access password for exactly this reason, but not every value is
-> trimmed.
+### The two you need again later
 
-**Check all ten landed before the next step**, because the service will refuse to
-be created for any one that did not:
+Read them back out of Secret Manager rather than writing them down:
 
 ```bash
-for NAME in DATABASE_URL AUTH_SECRET LITEAPI_KEY LITEAPI_WEBHOOK_SECRET \
-            ANTHROPIC_API_KEY RESEND_API_KEY CRON_SECRET ACCESS_PASSWORD \
-            AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET; do
-  printf '%-24s %s\n' "$NAME" "$(gcloud secrets versions list "${SERVICE}-${NAME}" \
-    --project="$PROJECT" --filter='state:ENABLED' --format='value(name)' | wc -l)"
-done
-```
+# the site password, which you type into the browser
+gcloud secrets versions access latest --secret="${SERVICE}-ACCESS_PASSWORD" \
+  --project="$PROJECT"; echo
 
-Every line must read `1` or more. A `0` is a secret with no value.
+# the operations secret, piped into GitHub without ever being displayed (step 11)
+gcloud secrets versions access latest --secret="${SERVICE}-CRON_SECRET" \
+  --project="$PROJECT" | gh secret set CRON_SECRET --repo "$GITHUB_REPO"
+```
 
 ## 10. Create the environment itself
 
@@ -386,8 +374,15 @@ gh variable set APP_URL --repo "$GITHUB_REPO" --body "https://<the service url>"
 
 gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$GITHUB_REPO" --body "<from step 5>"
 gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --repo "$GITHUB_REPO" --body "$DEPLOY_SA"
-gh secret set UAT_DATABASE_URL --repo "$GITHUB_REPO"     # paste the Neon uat string
-gh secret set CRON_SECRET --repo "$GITHUB_REPO"          # the SAME value as step 9
+# THE UNPOOLED STRING HERE, not the pooled one in Secret Manager: the same URL
+# with `-pooler` dropped from the host. `scripts/migrate-plan.mjs` talks HTTP and
+# does not care, but `drizzle-kit migrate` connects over TCP and runs every
+# pending migration in ONE transaction, which is what Neon's direct endpoint is
+# for.
+gh secret set UAT_DATABASE_URL --repo "$GITHUB_REPO"
+# Piped out of Secret Manager, so the two copies cannot differ by a typo.
+gcloud secrets versions access latest --secret="${SERVICE}-CRON_SECRET" \
+  --project="$PROJECT" | gh secret set CRON_SECRET --repo "$GITHUB_REPO"
 ```
 
 > `CRON_SECRET` exists in two places and they must match. If they drift, the
