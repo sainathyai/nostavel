@@ -25,6 +25,11 @@ PROJECT="${PROJECT:-nostavel}"
 SERVICE="${SERVICE:-nostavel-uat}"
 ENV_FILE="${ENV_FILE:-.env.local}"
 
+# Indirect so the whole flow can be exercised against a stub. The first version
+# of this script was handed to the owner having never been run end to end, and
+# it failed twice on them for reasons a single stubbed run would have caught.
+GCLOUD="${GCLOUD:-gcloud}"
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 printf 'project %s, service %s, reading reusable values from %s\n\n' \
@@ -93,8 +98,13 @@ check_shape() {
       # Theirs, not ours, so the floor is only "not obviously a placeholder".
       (( len >= 8 )) || { echo "$len characters looks like a placeholder"; return 1; } ;;
   esac
-  # Catches a trailing newline or a stray quote from a copy-paste, for every name.
+  # EVERY name, and every kind of whitespace. A carriage return is the one that
+  # got through: it is invisible in output, it survives command substitution, and
+  # Windows tooling produces it by default. Checking only for a newline is how a
+  # generated secret ended up one character longer than it should have been.
   [[ "$value" != *$'\n'* ]] || { echo "contains a newline"; return 1; }
+  [[ "$value" != *$'\r'* ]] || { echo "contains a carriage return"; return 1; }
+  [[ "$value" != *$'\t'* ]] || { echo "contains a tab"; return 1; }
   [[ "$value" != *' '* ]] || { echo "contains a space"; return 1; }
   return 0
 }
@@ -110,7 +120,7 @@ store() {
     return 1
   fi
   printf '%s' "$value" |
-    gcloud secrets versions add "${SERVICE}-${name}" \
+    "$GCLOUD" secrets versions add "${SERVICE}-${name}" \
       --project="$PROJECT" --data-file=- >/dev/null
   printf '  %-24s stored %3d chars  (%s)\n' "$name" "${#value}" "$source"
 }
@@ -135,11 +145,11 @@ OPTIONAL="ANTHROPIC_API_KEY RESEND_API_KEY"
 store_off() {
   local name="$1"
   if printf %s "" |
-    gcloud secrets versions add "${SERVICE}-${name}" \
+    "$GCLOUD" secrets versions add "${SERVICE}-${name}" \
       --project="$PROJECT" --data-file=- >/dev/null 2>&1; then
     printf '  %-24s OFF (empty version)\n' "$name"
   elif printf %s " " |
-    gcloud secrets versions add "${SERVICE}-${name}" \
+    "$GCLOUD" secrets versions add "${SERVICE}-${name}" \
       --project="$PROJECT" --data-file=- >/dev/null; then
     printf '  %-24s OFF (blank version; an empty one was refused)\n' "$name"
   else
@@ -159,9 +169,15 @@ is_optional() {
 # one leaked value unlocks the scheduled jobs in both, and reusing its AUTH_SECRET
 # would make a session cookie from one valid in the other.
 echo "generated for this environment only:"
-store AUTH_SECRET     "$(openssl rand -base64 32 | tr -d '\n=' )" generated
-store CRON_SECRET     "$(openssl rand -hex 32)"                   generated
-store ACCESS_PASSWORD "$(openssl rand -base64 24 | tr -d '\n=/+')" generated
+# `tr -d` MUST INCLUDE \r. On Windows openssl emits CRLF, command substitution
+# strips the trailing newline but not the carriage return, and the first real run
+# stored an AUTH_SECRET 44 characters long where a clean one is 43. Low impact in
+# that case, because the value was consistent within the service, but a value you
+# later copy by hand differs invisibly from the one in use - and the shape check
+# below tested for \n and spaces, not \r, which is why it got through.
+store AUTH_SECRET     "$(openssl rand -base64 32 | tr -d '\r\n=')" generated || FAILED+=(AUTH_SECRET)
+store CRON_SECRET     "$(openssl rand -hex 32   | tr -d '\r\n')"  generated || FAILED+=(CRON_SECRET)
+store ACCESS_PASSWORD "$(openssl rand -base64 24 | tr -d '\r\n=/+')" generated || FAILED+=(ACCESS_PASSWORD)
 echo
 
 # ---------------------------------------------------------------------------
@@ -218,16 +234,21 @@ ALL=(DATABASE_URL AUTH_SECRET LITEAPI_KEY LITEAPI_WEBHOOK_SECRET ANTHROPIC_API_K
      RESEND_API_KEY CRON_SECRET ACCESS_PASSWORD AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET)
 EMPTY=0
 for NAME in "${ALL[@]}"; do
-  COUNT=$(gcloud secrets versions list "${SERVICE}-${NAME}" --project="$PROJECT" \
+  COUNT=$("$GCLOUD" secrets versions list "${SERVICE}-${NAME}" --project="$PROJECT" \
     --filter='state:ENABLED' --format='value(name)' 2>/dev/null | wc -l | tr -d ' ')
   printf '  %-24s %s\n' "$NAME" "$COUNT"
-  [ "$COUNT" = "0" ] && EMPTY=$((EMPTY + 1))
+  if [ "$COUNT" = "0" ]; then EMPTY=$((EMPTY + 1)); fi
 done
 echo
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
   printf 'REFUSED OR SKIPPED: %s\n' "${FAILED[*]}"
   echo "Nothing was uploaded for those. Fix and re-run; re-running is safe."
+  # EXIT NON-ZERO EVEN IF EVERY SECRET HAS A VERSION. A refusal plus an older
+  # version from a previous run counts as "1" above, so the version table alone
+  # would report success while the value you just corrected was the one rejected.
+  # Seen in testing, 2026-10-07.
+  exit 1
 fi
 if [ "$EMPTY" -gt 0 ]; then
   echo "$EMPTY secret(s) still hold no value. \`terraform apply\` will fail on the"
