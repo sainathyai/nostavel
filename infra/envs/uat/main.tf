@@ -166,6 +166,21 @@ resource "google_cloud_run_v2_service" "app" {
   name     = var.service_name
   location = var.region
 
+  # STATED RATHER THAN LEFT TO THE PROVIDER'S DEFAULT, which is `true`. Left
+  # unset, this dead-ends any replacement: the first real apply created a service
+  # whose only revision failed its secret check, Terraform correctly wanted to
+  # replace the tainted resource, and the attempt stopped with "cannot destroy
+  # service without setting deletion_protection=false". A protection you have to
+  # go and switch off by hand during an incident is not protecting anything.
+  #
+  # Safe here specifically because this service holds no state: the database is a
+  # separate Neon branch, the secrets are in Secret Manager, the images are in
+  # Artifact Registry, and the URL is derived from the project number and the
+  # service name, so a recreated service answers on the same address. Nothing is
+  # lost but the revision history. A real-money environment is a different
+  # calculation and gets its own configuration (D-5.2).
+  deletion_protection = false
+
   # The app's own password gate is the lock (src/lib/access-gate.ts), not the
   # platform's: the supplier's webhook and the two scheduled jobs have to be
   # able to reach it with only their own shared secret, and an

@@ -383,7 +383,8 @@ service running a placeholder image, the read grants, and the budget alarm.
 > Billing → Budgets & alerts.
 
 Now get the service's URL and apply a second time, because links in guest email
-need it and it does not exist until the service does:
+need it and it does not exist until the service does. **Read it back; never
+construct it**, even though it looks derivable:
 
 ```bash
 gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" \
@@ -487,6 +488,8 @@ They read `APP_URL` and `CRON_SECRET`, both set in step 11.
 | A deploy run sits at "Waiting for approval" and later merges do not deploy | One deploy runs at a time, and an unanswered approval holds the queue. Approve it, reject it, or `gh run cancel <id>` to release the queue |
 | `INVALID_ARGUMENT: The WorkloadIdentityPoolProvider's display name must be less than or equal to 32 characters` | Step 5's `--display-name` is too long. The pool and the binding around it still succeeded, so re-run only the `create-oidc` command |
 | `Secret projects/.../versions/latest was not found`, ten times, on the Cloud Run service | The secret values are not in yet. Do steps 7 to 9, then `terraform apply` again. Everything else in the apply already succeeded |
+| `cannot destroy service without setting deletion_protection=false` | An older copy of `infra/` left that attribute unset, and the provider defaults it to `true`. It is now set to `false` in `main.tf` with the reasoning; `git pull` and apply again. Safe because this service holds no state and keeps its URL across a recreate |
+| The service exists but its only revision says `SECRETS_ACCESS_CHECK_FAILED` | It was created before the values went in. Terraform marks it tainted and replaces it on the next apply, which is what you want: the first pipeline deploy uses `--no-traffic`, and that needs a revision that is already ready |
 | `Error creating Budget: ... SERVICE_DISABLED` naming a project number you do not recognise | The provider sent no quota project. `infra/envs/uat/main.tf` sets `user_project_override`; if you are on an older copy, add it, or set `billing_account = ""` and create the budget by hand |
 | `SERVICE_DISABLED`, or `terraform apply` failing on a resource type that was fine a moment ago | Step 2 was skipped or did not finish. Run it, then `terraform apply` again: it is safe to re-run |
 | Anything mentioning a project you have never heard of | ADC's quota project. See "Before you start" |
