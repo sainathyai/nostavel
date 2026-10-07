@@ -116,6 +116,16 @@ it will become that by growing.
   (2026-10-07): four scale-to-zero services cost $0.0007 for a month, while
   **image storage was the entire bill**. Always-allocated CPU or a minimum
   instance turns a free service into a monthly charge.
+- **A tainted Cloud Run service does not need replacing.** Untaint it and apply:
+  the in-place template change starts a new revision, which is all a failed first
+  revision needed. Reaching for a replacement instead runs into
+  `deletion_protection`, which cannot be flipped in the same apply as the
+  replacement it blocks, because a replacement destroys before it creates. Both
+  measured 2026-10-07.
+- **Read a service URL from `urls`, not `status.url`.** `status.url` and `uri` are
+  empty until the service has a ready revision, so the one moment you most want
+  the URL - setting `app_url` on a service that has never served - is the moment
+  they return an empty string, and nothing errors.
 - **A Cloud Run service cannot be created before its secret values exist.** The
   template reads `versions/latest`, and the API validates that the version is
   really there, so `terraform apply` fails on the service with one line per
