@@ -274,6 +274,33 @@ export function isMissingMigrationsTable(err) {
 }
 
 /**
+ * The one correct way to run a plain SQL string through the Neon driver.
+ *
+ * `neon()` returns a TAGGED-TEMPLATE function. Calling it with an ordinary
+ * string - `sql("select 1")` - throws "This function can now be called only as
+ * a tagged-template function", synchronously, before any network call.
+ * `sql.query(text)` is the non-tagged form.
+ *
+ * EXPORTED PURELY SO THIS WIRING HAS A TEST. The first real deploy failed here,
+ * and the integration test did not catch it because it injects its own query
+ * through drizzle's `db.execute`, so the driver's calling convention was never
+ * exercised - exactly the shape of the NOS-60 proxy defect, where the rule was
+ * well tested and the wiring that feeds it had nothing. The integration test
+ * cannot cover it either: `@neondatabase/serverless` speaks to Neon over HTTP
+ * and that harness runs a plain Postgres.
+ *
+ * @param {{ query: (text: string) => Promise<unknown> }} sql
+ * @returns {(text: string) => Promise<Array<Record<string, unknown>>>}
+ */
+export function driverQuery(sql) {
+  return async (text) => {
+    const result = await sql.query(text);
+    // 1.x returns the rows directly for `query`; older shapes wrapped them.
+    return Array.isArray(result) ? result : (result?.rows ?? []);
+  };
+}
+
+/**
  * Timestamps already recorded in the migrations table.
  *
  * A missing table is not an error: it is what a database that has never been
@@ -370,8 +397,7 @@ async function main() {
   // Imported here rather than at the top so `--help`-style use and the unit
   // tests never need the driver or a credential.
   const { neon } = await import("@neondatabase/serverless");
-  const sql = neon(url);
-  const appliedAt = await readAppliedAt((text) => sql(text));
+  const appliedAt = await readAppliedAt(driverQuery(neon(url)));
 
   const plan = describePlan(
     pendingMigrations(journal, appliedAt),

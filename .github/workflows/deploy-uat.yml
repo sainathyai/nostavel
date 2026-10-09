@@ -312,8 +312,13 @@ jobs:
       # The tag exists only to give the check somewhere to look before traffic
       # moves. After that it has no purpose, so it goes - and it goes even when a
       # later step failed, which is why this is not conditional on success.
+      # Only when there is a tag to take down. The first real run refused at the
+      # gate, before authenticating, and this step still ran and printed "You do
+      # not currently have an active account selected" - an ERROR line in the log
+      # of a deploy that had correctly stopped, which is the kind of noise that
+      # makes a real failure harder to find.
       - name: Take the candidate URL back down
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.image.outputs.tag != '' }}
         run: |
           gcloud run services update-traffic "${SERVICE}" \
             --project="${GCP_PROJECT}" --region="${GCP_REGION}" \
