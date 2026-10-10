@@ -36,6 +36,19 @@ the second command, step 6's `terraform init` fails with *"could not find defaul
 credentials"* - at the step that creates everything, with nothing in the error
 pointing here. Raised by the NOS-61 security review.
 
+Then point both at this project, because the second login takes its quota project
+from whatever was active and says so only in a line that is easy to read past:
+
+```bash
+gcloud auth application-default set-quota-project nostavel
+gcloud config set project nostavel
+gcloud config get-value project                      # nostavel
+```
+
+On an account with several projects this is not cosmetic: Terraform's API calls
+would be attributed to the other project, and fail outright if `serviceusage` is
+not permitted there. Hit on the first real run, 2026-10-07.
+
 Set these once per shell so the commands below can be pasted as they are:
 
 ```bash
@@ -67,6 +80,24 @@ echo "billing account: ${BILLING:?not set - see the command above}"
 echo "repo id:         $(gh api repos/$GITHUB_REPO -q .id)"
 ```
 
+## A red cross on `main` before you finish is expected
+
+Merging anything to `main` runs the pipeline, and until step 10 it has no
+credentials, so it fails. Observed on the first merge (2026-10-07), and it failed
+in the right order:
+
+```
+plan:    failure   migrate-plan: DATABASE_URL is not set.
+migrate: skipped
+deploy:  refusing to deploy because the database plan did not succeed.
+         Without a plan, nobody knows whether this deploy contains a migration.
+```
+
+No image was built and no traffic moved. **The shape of that is the point:** the
+deploy did not reason that a skipped migration meant there was nothing to apply.
+If you ever see the opposite, a failed or skipped plan followed by a deploy that
+proceeded, stop and treat it as a defect in `scripts/deploy-gate.mjs`.
+
 ---
 
 ## 1. Turn on billing
@@ -83,10 +114,15 @@ gcloud billing projects describe "$PROJECT"      # billingEnabled: true
 2026-10-07: four always-available Cloud Run services across two projects cost
 **$0.0007** for the month, because they scale to zero and nothing was calling
 them. The entire bill was container image storage. So the cost of this
-environment is essentially the images the pipeline pushes, which is why step 6
+environment is essentially the images the pipeline pushes, which is why step 10
 sets a cleanup policy and a budget.
 
 ## 2. Enable the APIs
+
+**Do not skip this one.** Only `artifactregistry` is on by default, and the
+failures that follow do not name a missing API: `terraform apply` fails part way
+through having already created real resources. Skipped on the first real run
+(2026-10-07) and caught by checking rather than by an error.
 
 ```bash
 gcloud services enable \
@@ -119,9 +155,9 @@ gcloud storage buckets update "gs://${PROJECT}-tfstate" --versioning
 
 Two things, and the separation matters: this is the identity that **deploys**,
 and it deliberately cannot read any secret. The identity the app **runs** as is
-created by Terraform in step 6 and can read secrets but cannot deploy anything.
+created by Terraform in step 10 and can read secrets but cannot deploy anything.
 
-**This step must come before step 6.** Terraform grants this account permission
+**This step must come before step 10.** Terraform grants this account permission
 to act as the runtime identity, and that grant needs the account to already
 exist. If you run them the other way round, `terraform apply` fails on
 `google_service_account_iam_member.deployer_may_act_as_runtime`; run step 4, then
@@ -171,7 +207,7 @@ echo "repo id: ${REPO_ID:?could not read it - check gh auth status}"
 
 gcloud iam workload-identity-pools providers create-oidc nostavel-repo \
   --project="$PROJECT" --location=global --workload-identity-pool=github \
-  --display-name="sainathyai/nostavel deploy-uat on main" \
+  --display-name="nostavel deploy-uat on main" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
   --attribute-condition="assertion.repository_id == '${REPO_ID}' && assertion.job_workflow_ref == '${GITHUB_REPO}/.github/workflows/deploy-uat.yml@refs/heads/main'"
@@ -182,7 +218,7 @@ gcloud iam service-accounts add-iam-policy-binding "$DEPLOY_SA" \
   --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository/${GITHUB_REPO}"
 ```
 
-Print the provider's full name, which GitHub needs in step 10:
+Print the provider's full name, which GitHub needs in step 11:
 
 ```bash
 gcloud iam workload-identity-pools providers describe nostavel-repo \
@@ -190,7 +226,19 @@ gcloud iam workload-identity-pools providers describe nostavel-repo \
   --format="value(name)"
 ```
 
-## 6. Create the environment itself
+## 6. Create the ten secret containers, and nothing else yet
+
+**Read this before running it, because the order is not the obvious one.** A
+Cloud Run service whose template reads `secrets/.../versions/latest` cannot be
+created until each of those secrets actually holds a version. Terraform creates
+the containers, you put the values in by hand, and only then can the service
+exist. So this step creates the containers, steps 7 to 9 fill them, and step 10
+creates everything else.
+
+The first real run of this runbook did it in the obvious order and `terraform
+apply` failed on the service with ten lines of `Secret ... versions/latest was
+not found`, after creating 26 of 28 resources. Nothing was damaged, because an
+apply is resumable, but the ordering was wrong and this is the fix.
 
 ```bash
 cd infra/envs/uat
@@ -198,7 +246,7 @@ cd infra/envs/uat
 # Written from the variables set at the top of this runbook. terraform.tfvars is
 # git-ignored, which is why these values go here rather than into a committed
 # file. app_url is left out for now on purpose - the service has to exist before
-# its URL does, which is why there are two applies below.
+# its URL does, which is why step 10 applies twice.
 cat > terraform.tfvars <<VARS
 project_number  = "${PROJECT_NUMBER}"
 billing_account = "${BILLING}"
@@ -206,39 +254,16 @@ VARS
 cat terraform.tfvars
 ```
 
-Then:
-
 ```bash
 terraform init
-terraform plan      # read it before applying
-terraform apply
+terraform apply -target='google_secret_manager_secret.app'
 ```
 
-This creates the image repository **with a cleanup policy** (keep the last 10,
-delete anything else older than a week), the runtime identity, ten empty secret
-containers, the Cloud Run service running a placeholder image, and the budget
-alarm at $5 and $15.
+`-target` is Terraform's own escape hatch and it warns you about it. This is the
+exceptional case it is for: a one-off bootstrap with a real dependency Terraform
+cannot express, because the thing in between is a human pasting a secret.
 
-> If the budget fails to apply because the account lacks billing permissions,
-> everything else still applies. Set `billing_account = ""` and add the budget by
-> hand in the Console under Billing → Budgets & alerts.
-
-Now get the service's URL and do a second apply, because links in guest email
-need it and it does not exist until the service does:
-
-```bash
-gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" \
-  --format="value(status.url)"
-```
-
-Add it to `terraform.tfvars` and apply once more:
-
-```bash
-echo "app_url = \"https://THE-URL-FROM-ABOVE\"" >> terraform.tfvars
-terraform apply
-```
-
-Keep that URL to hand: steps 9, 10 and 11 all need it.
+That creates ten **empty** secret containers and nothing else.
 
 ## 7. Create this environment's own database
 
@@ -252,82 +277,146 @@ Nothing is migrated yet. The first deploy will ask you to approve that.
 
 ## 8. Create the Google sign-in client
 
-Out of order on purpose: step 9 asks for its two values, and a runbook that says
-"stop if a step fails" should not then send you forward.
-
 In the Google Cloud Console, under **APIs & Services → Credentials**, create (or
-reuse) an **OAuth 2.0 Client ID** of type *Web application*, and add this
-redirect URI, using the URL from step 6:
+reuse) an **OAuth 2.0 Client ID** of type *Web application*.
 
-```
-https://THE-SERVICE-URL/api/auth/callback/google
-```
+Leave the redirect URI for now: it needs the service URL, and the service does
+not exist until step 10. Step 12 comes back and adds it. Keep the client id and
+client secret for the next step.
 
-Keep the client id and client secret for the next step.
+## 9. Put the secret values in
 
-## 9. Put the secret values in, by hand
-
-**No agent does this step, and no secret value goes through Terraform** — see
+**No agent does this step, and no secret value goes through Terraform** - see
 `infra/README.md` for why.
 
-Generate the two secrets that are ours to invent:
-
 ```bash
-# The password for the environment. GENERATED, not memorable: the app enforces a
-# 16-character minimum, and a length check cannot tell "nostavel-uat-pwd" from a
-# real password. That distinction is this instruction's job (NOS-62).
-openssl rand -base64 24
-
-# The operations secret the scheduled jobs and the deploy's health check use.
-openssl rand -hex 32
+cd "$(git rev-parse --show-toplevel)"
+bash scripts/seed-uat-secrets.sh
 ```
 
-Then add a version to each secret. Using a file and deleting it afterwards keeps
-the value out of your shell history:
+That script does three different things to three groups of values, because they
+are not the same kind of thing:
+
+| | Secrets | Why |
+|---|---|---|
+| **Generated** | `AUTH_SECRET`, `CRON_SECRET`, `ACCESS_PASSWORD` | This environment gets its own. A shared `CRON_SECRET` means one leaked value unlocks the scheduled jobs everywhere, and a shared `AUTH_SECRET` makes a session cookie from development valid here |
+| **Reused from `.env.local`** | `LITEAPI_KEY`, `LITEAPI_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET` | Same sandbox supplier, same accounts, same OAuth client. Nothing to retype |
+| **Asked for, and shown as you type** | `DATABASE_URL` | This environment's own database (D-5.3). Development's string must never reach it, so it cannot be read from a file |
+
+**It refuses a value whose shape is wrong, before uploading it.** That is the
+point of the script rather than a prompt. The first real run typed all ten into a
+hidden prompt and stored a **300-character `DATABASE_URL`** - the pooled Neon
+string pasted twice - and a 144-character `AUTH_SECRET`. Neither would have
+surfaced until the deployed app could not reach its database, because a hidden
+prompt gives you nothing to check against. The script checks the scheme, the
+host, the length, a repeated scheme, a stray newline or space, the `sand_` prefix
+on the supplier key, and the recognisable prefix of every API key.
+
+It prints a name, a length and a source. It never prints a value, never writes
+one to a file, and never puts one on a command line.
+
+### Two of the ten are optional
+
+`ANTHROPIC_API_KEY` and `RESEND_API_KEY` are **warnings, not fatal problems**
+(`src/lib/deploy-config.ts`): no AI key means natural-language search is
+unavailable, no email key means guest email is logged rather than sent. Neither
+refuses a deploy. Press Enter at the prompt and the script switches the feature
+off, and `/api/health?deep=1` then reports it.
+
+Leaving the AI key out costs nothing today: `interpretQuery` has no caller, so
+nothing in the app reaches it. Choosing a model belongs to Segment 5, which
+starts with the eval harness that makes the choice measurable.
+
+"Off" means a version the app reads as absent, not a missing version: the Cloud
+Run service names all ten secrets and will not start if any has no version at
+all. **Secret Manager refuses an empty payload** - measured on the first real
+run, 2026-10-07 - so the script writes a single blank character, which every
+check in the app trims away before testing. It is deliberately **not** a word like `unset`, because a non-empty value
+reads as configured, stops the health route warning, and turns a clear "not set"
+into an authentication error for whoever uses the feature first.
+
+Re-running it is safe: Secret Manager keeps versions and the service reads
+`latest`, so a corrected value wins. **Name one or more secrets to set only
+those**, which avoids adding a pointless version to the other nine and is also
+how a rotation is done:
 
 ```bash
-for NAME in DATABASE_URL AUTH_SECRET LITEAPI_KEY LITEAPI_WEBHOOK_SECRET \
-            ANTHROPIC_API_KEY RESEND_API_KEY CRON_SECRET ACCESS_PASSWORD \
-            AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET; do
-  # -p so there is a visible prompt (-rs alone echoes nothing at all, which looks
-  # like a hung terminal), and the length is confirmed afterwards because an empty
-  # entry creates an empty secret version that only surfaces as a fatal problem
-  # three steps later.
-  read -rsp "${NAME}: " VALUE; echo
-  if [ -z "$VALUE" ]; then echo "  empty - skipped, set it before deploying"; continue; fi
-  printf '%s' "$VALUE" | gcloud secrets versions add "${SERVICE}-${NAME}" \
-    --project="$PROJECT" --data-file=- >/dev/null
-  echo "  stored ${#VALUE} characters"
-done
-unset VALUE
+bash scripts/seed-uat-secrets.sh DATABASE_URL
 ```
 
-| Secret | Where it comes from |
-|---|---|
-| `DATABASE_URL` | the Neon `uat` branch, step 7 |
-| `AUTH_SECRET` | `npx auth secret`, or reuse nothing - generate a new one |
-| `LITEAPI_KEY` | the LiteAPI **sandbox** key. Must start `sand_`, or the app refuses to serve |
-| `LITEAPI_WEBHOOK_SECRET` | LiteAPI dashboard |
-| `ANTHROPIC_API_KEY` | console.anthropic.com. Spend-capped |
-| `RESEND_API_KEY` | resend.com |
-| `CRON_SECRET` | generated above. **Also needed in step 10** |
-| `ACCESS_PASSWORD` | generated above. This is what you type to open the site |
-| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | the Google OAuth client, step 8 |
+Tidy up afterwards:
 
-> `printf '%s'` rather than `echo`: `echo` appends a newline, and a newline inside
-> `ACCESS_PASSWORD` or `CRON_SECRET` is the kind of thing that costs an hour. The
-> app trims the access password for exactly this reason, but not every value is
-> trimmed.
+```bash
+gcloud secrets versions list "${SERVICE}-DATABASE_URL" --project="$PROJECT"
+gcloud secrets versions disable N --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT"
+```
 
-## 10. Tell GitHub how to deploy
+Disable rather than destroy until the first deploy is green.
+
+### The two you need again later
+
+Read them back out of Secret Manager rather than writing them down:
+
+```bash
+# the site password, which you type into the browser
+gcloud secrets versions access latest --secret="${SERVICE}-ACCESS_PASSWORD" \
+  --project="$PROJECT"; echo
+
+# the operations secret, piped into GitHub without ever being displayed (step 11)
+gcloud secrets versions access latest --secret="${SERVICE}-CRON_SECRET" \
+  --project="$PROJECT" | gh secret set CRON_SECRET --repo "$GITHUB_REPO"
+```
+
+## 10. Create the environment itself
+
+```bash
+terraform plan      # read it before applying
+terraform apply
+```
+
+This creates the image repository **with a cleanup policy** (keep the last 10,
+delete anything else older than a week), the runtime identity, the Cloud Run
+service running a placeholder image, the read grants, and the budget alarm.
+
+> If the budget alone fails, everything else still applied. Set
+> `billing_account = ""` and add it by hand in the Console under
+> Billing → Budgets & alerts.
+
+Now get the service's URL and apply a second time, because links in guest email
+need it and it does not exist until the service does. **Read it back; never
+construct it**, even though it looks derivable.
+
+Note the field: `urls`, not `status.url`. `status.url` and `uri` are empty until
+the service has a **ready** revision, which it does not have if this is the apply
+that is about to give it one. Measured 2026-10-07: `status.url` returned an empty
+string and the step silently wrote `app_url = ""`.
+
+```bash
+gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" \
+  --format="value(urls)"
+
+echo "app_url = \"https://THE-URL-FROM-ABOVE\"" >> terraform.tfvars
+terraform apply
+```
+
+Keep that URL to hand: steps 11, 12 and 13 all need it.
+
+## 11. Tell GitHub how to deploy
 
 ```bash
 gh variable set APP_URL --repo "$GITHUB_REPO" --body "https://<the service url>"
 
 gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$GITHUB_REPO" --body "<from step 5>"
 gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --repo "$GITHUB_REPO" --body "$DEPLOY_SA"
-gh secret set UAT_DATABASE_URL --repo "$GITHUB_REPO"     # paste the Neon uat string
-gh secret set CRON_SECRET --repo "$GITHUB_REPO"          # the SAME value as step 8
+# THE UNPOOLED STRING HERE, not the pooled one in Secret Manager: the same URL
+# with `-pooler` dropped from the host. `scripts/migrate-plan.mjs` talks HTTP and
+# does not care, but `drizzle-kit migrate` connects over TCP and runs every
+# pending migration in ONE transaction, which is what Neon's direct endpoint is
+# for.
+gh secret set UAT_DATABASE_URL --repo "$GITHUB_REPO"
+# Piped out of Secret Manager, so the two copies cannot differ by a typo.
+gcloud secrets versions access latest --secret="${SERVICE}-CRON_SECRET" \
+  --project="$PROJECT" | gh secret set CRON_SECRET --repo "$GITHUB_REPO"
 ```
 
 > `CRON_SECRET` exists in two places and they must match. If they drift, the
@@ -343,16 +432,16 @@ gh secret set CRON_SECRET --repo "$GITHUB_REPO"          # the SAME value as ste
 Without this, database changes apply with no approval. With it, the pipeline
 stops and waits - and only when there is actually something to apply.
 
-## 11. Check the sign-in redirect
+## 12. Add the sign-in redirect
 
-Already added in step 8. Confirm it is exactly the service URL from step 6, with
-no trailing slash:
+Back to the OAuth client from step 8. Add this redirect URI, using the service
+URL from step 10, with no trailing slash:
 
 ```
 https://THE-SERVICE-URL/api/auth/callback/google
 ```
 
-## 12. Deploy for the first time
+## 13. Deploy for the first time
 
 ```bash
 gh workflow run deploy-uat.yml --repo "$GITHUB_REPO"
@@ -370,9 +459,9 @@ curl -s "https://<the service url>/api/health"
 ```
 
 Open the site in a browser. It will ask for a password: any username, and the
-`ACCESS_PASSWORD` from step 8.
+`ACCESS_PASSWORD` from step 9.
 
-## 13. Switch the money-safety jobs back on
+## 14. Switch the money-safety jobs back on
 
 These have been written, tested and disabled since they were built, because there
 was nothing to call. The sweeper is the only thing that rescues a guest who was
@@ -387,7 +476,7 @@ gh workflow run cron-sweep.yml --repo "$GITHUB_REPO"
 gh run watch --repo "$GITHUB_REPO"
 ```
 
-They read `APP_URL` and `CRON_SECRET`, both set in step 10.
+They read `APP_URL` and `CRON_SECRET`, both set in step 11.
 
 ---
 
@@ -395,13 +484,20 @@ They read `APP_URL` and `CRON_SECRET`, both set in step 10.
 
 | What you see | What it means |
 |---|---|
-| `PERMISSION_DENIED ... iam.serviceaccounts.actAs` on the deploy | Step 6 has not been applied since step 4 created the account, so the deploy identity cannot act as the runtime one. Re-run `terraform apply` |
+| `PERMISSION_DENIED ... iam.serviceaccounts.actAs` on the deploy | Step 10 has not been applied since step 4 created the account, so the deploy identity cannot act as the runtime one. Re-run `terraform apply` |
 | `terraform apply` fails on `deployer_may_act_as_runtime` | Step 4 was skipped or the account has a different name. Check `gcloud iam service-accounts list --project="$PROJECT"` |
-| The deploy's health check says `the detailed health route did not return an object` | `CRON_SECRET` in GitHub does not match the one in Secret Manager. They are two copies of one value (step 9 and step 10) |
+| The deploy's health check says `the detailed health route did not return an object` | `CRON_SECRET` in GitHub does not match the one in Secret Manager. They are two copies of one value (step 9 and step 11) |
 | `this copy says it is "unconfigured"` | The service has no `APP_ENV`. The image defaults to refusing for exactly this reason; `terraform apply` sets it |
 | `the supplier key is "live", not "sandbox"` | A non-sandbox `LITEAPI_KEY` is in Secret Manager. Replace it; do not override the check |
 | The browser never asks for a password | `APP_ENV` is missing or `local` on the service. Same fix as above |
 | A deploy run sits at "Waiting for approval" and later merges do not deploy | One deploy runs at a time, and an unanswered approval holds the queue. Approve it, reject it, or `gh run cancel <id>` to release the queue |
+| `INVALID_ARGUMENT: The WorkloadIdentityPoolProvider's display name must be less than or equal to 32 characters` | Step 5's `--display-name` is too long. The pool and the binding around it still succeeded, so re-run only the `create-oidc` command |
+| `Secret projects/.../versions/latest was not found`, ten times, on the Cloud Run service | The secret values are not in yet. Do steps 7 to 9, then `terraform apply` again. Everything else in the apply already succeeded |
+| `cannot destroy service without setting deletion_protection=false`, **even after setting it to `false`** | A replacement destroys before it creates, so the new value is never applied in the same run. Do not fight it: `terraform untaint google_cloud_run_v2_service.app`, then apply. The service then updates **in place**, which creates a fresh revision, which is all that was needed. Measured 2026-10-07 |
+| The service exists but its only revision says `SECRETS_ACCESS_CHECK_FAILED` | It was created before the values went in. Terraform marks it tainted, but it does not need replacing: untaint it and apply, and the in-place template change starts a revision that can read the secrets. The service keeps its URL either way |
+| `Error creating Budget: ... SERVICE_DISABLED` naming a project number you do not recognise | The provider sent no quota project. `infra/envs/uat/main.tf` sets `user_project_override`; if you are on an older copy, add it, or set `billing_account = ""` and create the budget by hand |
+| `SERVICE_DISABLED`, or `terraform apply` failing on a resource type that was fine a moment ago | Step 2 was skipped or did not finish. Run it, then `terraform apply` again: it is safe to re-run |
+| Anything mentioning a project you have never heard of | ADC's quota project. See "Before you start" |
 
 ## When it is done
 
@@ -417,7 +513,7 @@ They read `APP_URL` and `CRON_SECRET`, both set in step 10.
   owner until a sending domain is verified (NOS-12). A booking made for any other
   address will not get a confirmation.
 - **The access gate has no rate limit** (NOS-62). The password must be generated,
-  which is why step 8 says so.
+  which is why step 9 says so.
 - **The map basemap is down** for unrelated reasons (public Protomaps builds
   stopped allowing browser access), so map views will be blank.
 - **No error tracking or uptime alerting yet.** `payment.unresolved` still writes

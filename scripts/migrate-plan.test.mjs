@@ -8,6 +8,7 @@ import {
   describeError,
   describePlan,
   unreachableMigrations,
+  driverQuery,
   isMissingMigrationsTable,
   pendingMigrations,
   readAppliedAt,
@@ -288,4 +289,52 @@ test("the real journal in this repository is readable and has entries", () => {
   // is what every merge that touches no migration should look like.
   const allWhens = real.entries.map((e) => e.when);
   assert.deepEqual(pendingMigrations(real, allWhens), []);
+});
+// THE WIRING, which is what the first real deploy broke on. The integration
+// test injects its own query through drizzle, so neither it nor any unit test
+// touched the Neon driver's calling convention, and the plan job died with
+// "This function can now be called only as a tagged-template function" before
+// it read a single row. Same shape as the NOS-60 proxy defect: a well-tested
+// rule reached through untested wiring.
+test("runs a plain SQL string through sql.query, not by calling sql directly", async () => {
+  const calls = [];
+  // Callable, like the real driver, and it throws the same way the real one does
+  // when used as an ordinary function - so reverting this wiring fails here.
+  const sql = () => {
+    throw new Error("This function can now be called only as a tagged-template function");
+  };
+  sql.query = async (text) => {
+    calls.push(text);
+    return [{ created_at: "1" }];
+  };
+
+  const rows = await driverQuery(sql)("select created_at from x");
+  assert.deepEqual(calls, ["select created_at from x"]);
+  assert.deepEqual(rows, [{ created_at: "1" }]);
+});
+
+test("accepts either row shape the driver may return", async () => {
+  const bare = { query: async () => [{ created_at: "2" }] };
+  const wrapped = { query: async () => ({ rows: [{ created_at: "2" }] }) };
+  const empty = { query: async () => ({}) };
+  assert.deepEqual(await driverQuery(bare)("x"), [{ created_at: "2" }]);
+  assert.deepEqual(await driverQuery(wrapped)("x"), [{ created_at: "2" }]);
+  assert.deepEqual(await driverQuery(empty)("x"), []);
+});
+
+// Pins the REASON the adapter exists, against the real installed dependency and
+// with no network: if a future version accepts a plain string again, or renames
+// `query`, this is where it is noticed - not in a deploy.
+test("the real Neon driver refuses a plain string and offers sql.query", async () => {
+  const { neon } = await import("@neondatabase/serverless");
+  // Assembled at runtime, per the tests rule: a literal connection string here
+  // trips the commit guard, correctly, because this repository is public.
+  const host = ["example", "neon", "tech"].join(".");
+  const sql = neon(["postgres", "ql://u:p@", host, "/db"].join(""));
+  assert.throws(() => sql("select 1"), /tagged-template/);
+  assert.equal(typeof sql.query, "function");
+  // Returned promise is never awaited: awaiting it would attempt a real call.
+  const pending = sql.query("select 1");
+  assert.equal(typeof pending.then, "function");
+  pending.catch(() => {});
 });
