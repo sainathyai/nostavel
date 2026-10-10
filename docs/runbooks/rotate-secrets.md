@@ -41,10 +41,15 @@ That starts a new revision with the same image, which reads the new value.
 Check it:
 
 ```bash
-# --config reads the credential from a file descriptor, not an argument: an
-# argument is visible in the process table to every other process on the box.
-curl -s --config <(printf 'user = "owner:%s"\n' "$VALUE") \
-  -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
+# The credential goes in a file, never in an argument: an argument is visible
+# in the process table to every other process on the box. PROCESS SUBSTITUTION
+# (`--config <(...)`) DOES NOT WORK HERE - curl on Windows cannot open a
+# /dev/fd path and fails with "error encountered when reading a file".
+# Measured 2026-10-10, on the command this runbook used to prescribe.
+CFG="$(mktemp)"
+printf 'user = "owner:%s"\n' "$VALUE" > "$CFG"
+curl -s --config "$CFG" -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
+rm -f "$CFG"
 # 200
 ```
 
@@ -148,8 +153,10 @@ value was actually readable by the service:
 
 ```bash
 read -rsp "CRON_SECRET: " VALUE; echo
-curl -s -H @<(printf 'Authorization: Bearer %s\n' "$VALUE") \
-  "https://THE_SERVICE_URL/api/health?deep=1"
+HDR="$(mktemp)"
+printf 'Authorization: Bearer %s\n' "$VALUE" > "$HDR"
+curl -s -H @"$HDR" "https://THE_SERVICE_URL/api/health?deep=1"; echo
+rm -f "$HDR"
 unset VALUE
 ```
 

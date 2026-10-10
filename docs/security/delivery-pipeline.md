@@ -90,12 +90,35 @@ be overridden; opening the live-money gate is a separate, reviewed segment.
   is not evidence that there was nothing to apply. No image was built and no
   traffic moved.
 
-**Still not observed**, and therefore still assumption: that `--no-traffic --tag`
-creates an addressable target and `--remove-tags` removes it, that
-`gcloud run deploy --image` preserves secret references, that drizzle records
-`folderMillis` in `created_at` the way its source says, and that a rollback holds
-until the next merge rolls it forward. `docs/runbooks/rollback.md` flags its own
-unverified claim. The first green deploy is the test of all of these.
+**Observed on 2026-10-10, when the pipeline ran green end to end** for the first
+time, and checked independently of the run's own green ticks:
+
+- The approval gate held a real migration and waited for the owner.
+- `--no-traffic --tag` created an addressable target, the check read it back, and
+  `--remove-tags` removed it: the promoted service has **no tag targets left**,
+  which is the H4 fix working rather than asserted.
+- Traffic sits at 100% on the revision that was checked, named, not `latest`.
+- The deployed copy answers `{"ok":true,"env":"uat","sha":"0031fd9"}` with
+  `cache-control: no-store`, and `/` answers 401. The NOS-60 refusals hold in a
+  real deployment, not only under vitest.
+- Three earlier runs failed, and in all three the deploy **refused to proceed
+  without a plan**. The gate has been exercised harder by accident than by any
+  test.
+
+**Still not observed:** that `gcloud run deploy --image` preserves secret
+references across a later deploy, that drizzle records `folderMillis` in
+`created_at` the way its source says (the first migration succeeded, but nothing
+read the row back), and that a rollback holds until the next merge rolls it
+forward. `docs/runbooks/rollback.md` flags its own unverified claim.
+
+**A new one, found by the first green run:** a Neon branch is a copy of its
+parent, including data and migration bookkeeping. The plan reported one pending
+migration where the runbook predicted five, which means the environment also
+started with copies of development's bookings. The sweeper acts on any row in
+`prebooked`, `payment_pending` or `confirming`, and for the last two by asking
+the supplier - so two environments can finalize one supplier transaction. That is
+the mixing D-5.3 exists to prevent, arriving by a route the decision did not
+anticipate.
 
 The one thing measured on this account (2026-10-07): four scale-to-zero Cloud Run
 services cost $0.0007 for a month, and container image storage was the entire

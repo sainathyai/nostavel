@@ -37,6 +37,13 @@ Source of truth: `docs/conventions.md` §1 and §8. Stack: Neon Postgres over HT
 
 ## Data safety
 - Never connect an agent session to a production database. Development uses a Neon branch.
+- **A Neon branch is a copy of its parent, not an empty database.** It inherits
+  the rows AND the migration bookkeeping, so a new environment can start with
+  fewer migrations pending than the repository has, and with another
+  environment's in-flight bookings. Two environments holding the same
+  `payment_pending` row will both ask the supplier about it, and the sweeper can
+  finalize. Measured 2026-10-10 on the first real deploy, which reported one
+  pending migration where five were predicted.
 - Guest personal data (names, emails, phone numbers) never goes into logs, fixtures committed to the repo, or analysis outputs.
 
 ## Done
