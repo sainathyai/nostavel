@@ -15,7 +15,20 @@ on:
     # and none at all if the tick landed in the first two minutes, or if GitHub
     # delayed the run, which it routinely does under load. Raised by the NOS-5
     # security review.
-    - cron: "*/3 * * * *"
+    # FIVE, NOT THREE. GitHub: "The shortest interval you can run scheduled
+    # workflows is once every 5 minutes." A `*/3` schedule is not honoured, so
+    # the file was claiming a cadence that never happened. Verified against the
+    # Actions documentation, 2026-10-10.
+    #
+    # THIS TRIGGER IS NOT GOOD ENOUGH FOR THIS JOB, and NOS-65 is the fix.
+    # Also from the same page: the schedule event "can be delayed during periods
+    # of high loads" and "some queued jobs may be dropped" - against a supplier
+    # hold of 15 minutes. And, worst: "In a public repository, scheduled
+    # workflows are automatically disabled when no repository activity has
+    # occurred in 60 days." This repository is public, so the only thing that
+    # rescues a guest who was charged switches itself off after 60 quiet days,
+    # with no notification. Cloud Scheduler is the right home for both jobs.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

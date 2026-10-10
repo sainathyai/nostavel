@@ -65,6 +65,7 @@ These exist in the code today, each with a ticket. Don't treat them as precedent
 | Nothing enforces additive-only migrations. No check reads the SQL, so a destructive migration would be planned, approved and applied like any other; the owner's approval is the only place it is caught | `scripts/migrate-plan.mjs` | — |
 | The delivery pipeline has now run green once (2026-10-10). Still unobserved: that a later deploy preserves secret references, and that a rollback holds until the next merge | `.github/workflows/deploy-uat.yml`, `infra/envs/uat/` | — |
 | The nightly reconciler **cannot see a confirmed booking whose `amountSupplierMinor` is null**: `isNotNull` excludes it permanently, and a confirmed booking with no recorded supplier cost is exactly the row most worth reconciling. Found by running it against the test environment, where 2 of 3 candidate rows were excluded this way | `src/app/api/cron/reconcile/route.ts` | NOS-64 |
+| Both money-safety jobs run on GitHub's `schedule` event, which has a 5-minute floor, may be delayed or dropped under load, and **is automatically disabled on a public repository after 60 days of no activity**. The sweeper is the only thing that rescues a guest who was charged | `.github/workflows/cron-sweep.yml`, `cron-reconcile.yml` | NOS-65 |
 
 The full list of pre-production gaps is in `docs/production-readiness.md` §4.
 
