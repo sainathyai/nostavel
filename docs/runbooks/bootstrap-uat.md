@@ -273,7 +273,39 @@ development bookings must not mix, and the hold sweeper runs every three minutes
 1. In the Neon console, create a branch of the Nostavel project called `uat`.
 2. Copy its pooled connection string.
 
-Nothing is migrated yet. The first deploy will ask you to approve that.
+**A Neon branch is a copy of its parent, including the data and the migration
+history.** It is not an empty database, and this runbook said it was. Measured on
+the first real deploy (2026-10-10): the plan reported **one** pending migration,
+not five, because four were already recorded in the branch's own
+`drizzle.__drizzle_migrations` - inherited from development.
+
+Two things follow, and the second is the one that matters:
+
+- Do not predict what the plan will say. Read it. The approval summary is the
+  only honest account of what is about to happen.
+- **The environment starts with copies of development's bookings**, and the
+  sweeper acts on any row in `prebooked`, `payment_pending` or `confirming` - for
+  the last two by *asking the supplier*, which can finalize a booking. Two
+  environments finalizing the same supplier transaction is exactly the mixing
+  decision D-5.3 exists to prevent, so check before switching the scheduled jobs
+  on in step 14:
+
+```bash
+U=$(gcloud secrets versions access latest --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT")
+DATABASE_URL="$U" node -e "
+import('@neondatabase/serverless').then(async ({ neon }) => {
+  const sql = neon(process.env.DATABASE_URL);
+  console.log(JSON.stringify(await sql.query(
+    \"select count(*)::int as n from bookings where status in ('prebooked','payment_pending','confirming')\")));
+});"
+unset U
+```
+
+Zero means nothing inherited is reachable by the sweeper. Anything else is a
+decision for the owner before step 14, not after.
+
+To avoid this entirely, create the branch from the project's **initial** point in
+time rather than its current head, so it carries the schema but no rows.
 
 ## 8. Create the Google sign-in client
 

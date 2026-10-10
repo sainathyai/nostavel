@@ -144,6 +144,25 @@ it will become that by growing.
   accounted for 85% of the bill. Keep the last ten, so a rollback target still
   exists, and delete the rest after a week.
 
+## The scheduled jobs are on the wrong trigger (NOS-65)
+
+Both money-safety jobs run from GitHub's `schedule` event today, and three facts
+from the Actions documentation (checked 2026-10-10) say that is a stopgap:
+
+- **Five minutes is the floor.** "The shortest interval you can run scheduled
+  workflows is once every 5 minutes", so the sweeper's old `*/3` never happened.
+- **Runs are best-effort.** The event "can be delayed during periods of high
+  loads" and "some queued jobs may be dropped" - against a supplier hold that
+  expires in 15 minutes.
+- **A public repository switches them off.** "In a public repository, scheduled
+  workflows are automatically disabled when no repository activity has occurred
+  in 60 days." This repository is public, so the only thing that rescues a guest
+  who was charged and whose browser never came back turns itself off after 60
+  quiet days, silently. A prototype can easily be quiet for 60 days.
+
+Do not treat a green manual run as evidence the schedule works. They are
+different claims, and only the second one matters at 3am.
+
 ## Changing a workflow
 
 - Least privilege in `permissions:`, and no secret reachable from a fork-triggered
