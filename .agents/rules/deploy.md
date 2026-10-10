@@ -149,8 +149,15 @@ it will become that by growing.
 Both money-safety jobs run from GitHub's `schedule` event today, and three facts
 from the Actions documentation (checked 2026-10-10) say that is a stopgap:
 
-- **Five minutes is the floor.** "The shortest interval you can run scheduled
-  workflows is once every 5 minutes", so the sweeper's old `*/3` never happened.
+- **Five minutes is the floor, and below it nothing runs at all.** "The shortest
+  interval you can run scheduled workflows is once every 5 minutes." The
+  documentation does not say what happens to a shorter interval, so it was
+  measured: with `*/3` on `main`, the workflow `active` and the repository pushed
+  to minutes earlier, **no scheduled run fired in 45 minutes, and the repository
+  had never had a single `schedule`-triggered run in its life.** That is
+  consistent with a sub-floor interval being rejected rather than rounded up. So
+  the sweeper had never once run on its own, and `*/5` is not a tidy-up - it is
+  what switches the job on.
 - **Runs are best-effort.** The event "can be delayed during periods of high
   loads" and "some queued jobs may be dropped" - against a supplier hold that
   expires in 15 minutes.
