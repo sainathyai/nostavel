@@ -93,6 +93,26 @@ it will become that by growing.
 
 ## The environment's shape
 
+- **A Terraform change to the service does NOT serve until traffic moves.** The
+  pipeline promotes by revision name, which pins traffic, and `infra/` ignores
+  the traffic split on purpose - so an `apply` creates a new revision that gets
+  **zero traffic**, and the change is inert. `terraform apply` reports success,
+  the revision reports ready, and nothing a visitor touches has changed. Measured
+  2026-10-11: AUTH_URL was added, applied cleanly, and sign-in links still came
+  from the old revision until traffic was moved by hand. After any apply that
+  touches the service template:
+
+  ```bash
+  gcloud run revisions list --project=nostavel --region=us-central1 --service=nostavel-uat
+  gcloud run services update-traffic nostavel-uat --project=nostavel \
+    --region=us-central1 --to-revisions=<THE NEW REVISION>=100
+  ```
+
+  Check the image digest on the new revision matches the one serving first:
+  Terraform ignores the image, so it carries whatever was live, but checking
+  costs nothing and promoting a placeholder costs an outage. Do NOT "fix" this by
+  letting Terraform own the traffic split - that block is what stops an apply
+  undoing a rollback during an incident.
 - `infra/` owns the shape; the pipeline owns the image. `main.tf` ignores changes
   to the container image and the traffic split, so an `apply` cannot roll back a
   deploy or undo a rollback done during an incident. Do not remove that

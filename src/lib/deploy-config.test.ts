@@ -28,6 +28,7 @@ function healthyShared(overrides: Env = {}): Env {
     AUTH_SECRET: "present",
     CRON_SECRET: "present",
     APP_URL: "https://example.invalid",
+    AUTH_URL: "https://example.invalid",
     ACCESS_PASSWORD: PASSWORD,
     ANTHROPIC_API_KEY: "present",
     RESEND_API_KEY: "present",
@@ -182,6 +183,7 @@ describe("configProblems in a shared environment", () => {
     ["AUTH_SECRET", "auth-secret-missing"],
     ["CRON_SECRET", "cron-secret-missing"],
     ["APP_URL", "app-url-missing"],
+    ["AUTH_URL", "auth-url-missing"],
   ])("refuses to serve when %s is missing", (name, code) => {
     expect(codes(healthyShared({ [name]: undefined }))).toEqual([code]);
   });
@@ -246,6 +248,7 @@ describe("configProblems in a shared environment", () => {
       AUTH_SECRET: "sentinel-auth-value",
       CRON_SECRET: "sentinel-cron-value",
       APP_URL: "sentinel-appurl-value",
+    AUTH_URL: "sentinel-authurl-value",
       ACCESS_PASSWORD: "sentinel-pw",
       ANTHROPIC_API_KEY: "sentinel-ai-value",
       RESEND_API_KEY: "sentinel-email-value",

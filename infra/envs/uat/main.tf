@@ -236,6 +236,20 @@ resource "google_cloud_run_v2_service" "app" {
         value = var.app_url
       }
 
+      # THE SAME URL AGAIN, UNDER THE NAME Auth.js READS. It does not read
+      # APP_URL, and with AUTH_URL unset it built sign-in links from the
+      # container's own bind address - the first magic link the owner requested
+      # pointed at `https://0.0.0.0:8080/`, because the image sets
+      # HOSTNAME=0.0.0.0 and PORT=8080 as Cloud Run requires. `trustHost: true`
+      # in src/auth.ts was not enough on its own.
+      #
+      # Both come from one variable deliberately: two copies of a URL drift, and
+      # a drifted sign-in URL is invisible until someone tries to sign in.
+      env {
+        name  = "AUTH_URL"
+        value = var.app_url
+      }
+
       dynamic "env" {
         for_each = google_secret_manager_secret.app
         content {

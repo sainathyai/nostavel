@@ -121,6 +121,15 @@ const REQUIRED_IN_SHARED: Array<{ name: string; code: string; why: string }> = [
   { name: "AUTH_SECRET", code: "auth-secret-missing", why: "signing in, quote tokens and guest verification" },
   { name: "CRON_SECRET", code: "cron-secret-missing", why: "the sweeper and the reconciler, which protect guest money" },
   { name: "APP_URL", code: "app-url-missing", why: "links in guest email, which would otherwise point at localhost" },
+  // SAME FAILURE AS APP_URL, AND IT HAPPENED. Auth.js reads AUTH_URL, not
+  // APP_URL, and with neither set it built sign-in links from the container's
+  // own bind address: the first guest to request a magic link got
+  // `https://0.0.0.0:8080/`, because the image sets HOSTNAME=0.0.0.0 and
+  // PORT=8080 as Cloud Run requires. `trustHost: true` in src/auth.ts was not
+  // enough. Fatal rather than a warning for the same reason APP_URL is: a
+  // deployed copy that mails dead links is not fit to serve, and a copy that
+  // reports itself healthy while doing so is worse.
+  { name: "AUTH_URL", code: "auth-url-missing", why: "the links in sign-in email, which would otherwise point at the container's own address" },
 ];
 
 const DEGRADED_IN_SHARED: Array<{ name: string; code: string; effect: string }> = [

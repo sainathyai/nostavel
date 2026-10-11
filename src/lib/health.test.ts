@@ -14,6 +14,7 @@ function shared(overrides: Env = {}): Env {
     AUTH_SECRET: "present",
     CRON_SECRET: "present",
     APP_URL: "https://example.invalid",
+    AUTH_URL: "https://example.invalid",
     ACCESS_PASSWORD: "p".repeat(20),
     ANTHROPIC_API_KEY: "present",
     RESEND_API_KEY: "present",

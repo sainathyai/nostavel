@@ -45,6 +45,7 @@ function shared(overrides: Record<string, string> = {}): void {
     AUTH_SECRET: "present",
     CRON_SECRET: OPS_SECRET,
     APP_URL: "https://example.invalid",
+    AUTH_URL: "https://example.invalid",
     ACCESS_PASSWORD: GATE_PASSWORD,
     ...overrides,
   });
