@@ -212,18 +212,82 @@ export type FinalizeIntent =
   | "wait"
   /** Done. Render the confirmation. */
   | "done"
+  /**
+   * The room is still held, but nothing says a payment was ever started. Send
+   * the guest back to the card step. Spend nothing (NOS-51).
+   */
+  | "resume"
   /** This booking cannot be completed, and no payment was ever started for it. */
   | "dead";
 
-export function confirmationPageIntent(status: TransitionStatus): FinalizeIntent {
-  switch (status) {
+/**
+ * What the confirmation page knows about how this request arrived.
+ *
+ * `providerReturn` is the answer to "did the payment provider send this browser
+ * here after a charge attempt", and it is the reason this is an object rather
+ * than a bare status - see the NOS-51 note on the function below.
+ */
+export type ConfirmationArrival = {
+  status: TransitionStatus;
+  providerReturn: boolean;
+};
+
+/**
+ * NOS-51: A GET MUST NOT SPEND MONEY UNLESS A CHARGE WAS ACTUALLY STARTED.
+ *
+ * This page is the payment provider's return URL, and it used to finalize from
+ * `prebooked` as well as `payment_pending` - which means a prefetch, a restored
+ * tab, or a link opened from history could call the supplier's `book()` without
+ * the guest deciding anything. That is the whole ticket (D-7.1 A).
+ *
+ * So the question becomes: what counts as evidence that a charge was started?
+ *
+ * `payment_pending` is our own breadcrumb, written by the browser just before it
+ * charges the card. It is the normal arrival state and the strongest signal we
+ * own - but it is written on a best-effort basis and `CheckoutClient` swallows
+ * its failure on purpose, because the charge matters more than the breadcrumb.
+ * So `prebooked` does NOT mean "never charged". The test for the old behaviour
+ * said so in as many words: "still accepted: a browser that failed to send the
+ * heads-up charged anyway."
+ *
+ * Dropping `prebooked` on its own would therefore have told a guest who had just
+ * paid to go and pay again. The fix is not to keep guessing from the status, it
+ * is to ask the only party that knows: `providerReturn` is true when the payment
+ * provider redirected this browser here, which it does only after a charge
+ * attempt. That is better evidence than our own breadcrumb, not worse.
+ *
+ * The two together give four cases that matter:
+ *
+ *   payment_pending, however it arrived  -> finalize. We said a charge started.
+ *   prebooked + provider redirect        -> finalize. The provider says one did.
+ *   prebooked, no redirect               -> RESUME. Nobody says a charge started,
+ *                                          so spend nothing and offer the card
+ *                                          step again.
+ *   anything else                        -> as before.
+ *
+ * `providerReturn` comes from a URL the browser controls, so it is forgeable.
+ * That is acceptable and worth being explicit about: the holder of a booking id
+ * who passes the ownership check could already finalize it before this change.
+ * The worst a forged parameter buys is one supplier call, which comes back 2014
+ * "payment not completed" for an unpaid transaction and leaves the row exactly
+ * where it was (see statusAfterFailedBook). It can cost a call; it cannot
+ * confirm an unpaid booking.
+ */
+export function confirmationPageIntent(arrival: ConfirmationArrival): FinalizeIntent {
+  switch (arrival.status) {
     case "confirmed":
       return "done";
-    // Both pre-payment states. `payment_pending` is the NORMAL arrival state on
-    // the happy path, because the browser announces the charge before making it.
-    case "prebooked":
+
+    // Our own breadcrumb: the browser told us it was about to charge. This is
+    // the NORMAL arrival state on the happy path.
     case "payment_pending":
       return "finalize";
+
+    // The room is held and we have no breadcrumb. Only the provider's own
+    // redirect may turn this into a supplier call.
+    case "prebooked":
+      return arrival.providerReturn ? "finalize" : "resume";
+
     case "confirming":
       return "wait";
     case "draft":
@@ -232,6 +296,37 @@ export function confirmationPageIntent(status: TransitionStatus): FinalizeIntent
     case "expired":
       return "dead";
   }
+}
+
+/**
+ * Did the payment provider redirect this browser here?
+ *
+ * Stripe appends its own parameters to the `return_url` it was given
+ * (`src/app/book/[bookingId]/CheckoutClient.tsx` sets that URL): a
+ * `payment_intent`, its client secret, and a `redirect_status`. Their PRESENCE
+ * is the signal - a browser that simply navigated to this page carries none of
+ * them.
+ *
+ * `redirect_status=failed` is the one value that argues against a charge rather
+ * than for one: the provider is saying this attempt did not succeed. Treated as
+ * "no charge started", so a declined card leads back to the card step instead of
+ * spending a supplier call to be told 2014.
+ *
+ * Nothing here is trusted as PROOF of payment. It decides one thing only:
+ * whether asking the supplier is warranted. The supplier remains the only party
+ * that can say whether money moved.
+ */
+export function isPaymentProviderReturn(params: {
+  payment_intent?: string | string[];
+  redirect_status?: string | string[];
+}): boolean {
+  const first = (v: string | string[] | undefined): string =>
+    (Array.isArray(v) ? v[0] : v)?.trim() ?? "";
+
+  const status = first(params.redirect_status).toLowerCase();
+  if (status === "failed") return false;
+
+  return Boolean(first(params.payment_intent)) || Boolean(status);
 }
 
 /** The supplier's rate limit. Silence dressed as an answer. */

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAIM_STALE_AFTER_MINUTES,
   confirmationPageIntent,
+  isPaymentProviderReturn,
   PREBOOK_HOLD_MINUTES,
   RECOVER_AFTER_MINUTES,
   holdLapsed,
@@ -263,30 +264,64 @@ describe("reading the real supplier error, not a test fiction", () => {
 });
 
 describe("what the confirmation page does with each state", () => {
+  // The page's two inputs: the row's status, and whether the payment provider
+  // sent this browser here. Named helpers so each test reads as the situation
+  // it describes.
+  const arrived = (status: TransitionStatus) =>
+    confirmationPageIntent({ status, providerReturn: true });
+  const opened = (status: TransitionStatus) =>
+    confirmationPageIntent({ status, providerReturn: false });
+
   it("finalizes from the state the happy path actually arrives in", () => {
     // THE CRITICAL BUG BOTH REVIEWS FOUND. The browser marks `payment_pending`
     // before charging, so that - not `prebooked` - is how a paying guest
     // arrives. A page that finalized only from `prebooked` showed every
     // successful payment a failure.
-    expect(confirmationPageIntent("payment_pending")).toBe("finalize");
-    // Still accepted: a browser that failed to send the heads-up charged anyway.
-    expect(confirmationPageIntent("prebooked")).toBe("finalize");
+    expect(arrived("payment_pending")).toBe("finalize");
+    // And it does not matter how that request reached the page: our own
+    // breadcrumb already says a charge was started.
+    expect(opened("payment_pending")).toBe("finalize");
+  });
+
+  it("still finalizes a prebooked row the provider redirected here", () => {
+    // The breadcrumb is written best-effort and CheckoutClient swallows its
+    // failure on purpose, so `prebooked` does NOT mean "never charged". Without
+    // this case, NOS-51 would tell a guest who had just paid to pay again.
+    expect(arrived("prebooked")).toBe("finalize");
+  });
+
+  it("spends nothing on a prebooked row nobody says was charged (NOS-51)", () => {
+    // A prefetch, a restored tab, a tap in history. This is the whole ticket:
+    // a GET must not call the supplier because someone opened a URL.
+    expect(opened("prebooked")).toBe("resume");
   });
 
   it("waits rather than failing when another caller holds the claim", () => {
-    expect(confirmationPageIntent("confirming")).toBe("wait");
+    expect(arrived("confirming")).toBe("wait");
+    expect(opened("confirming")).toBe("wait");
   });
 
   it("shows the confirmation when it is done", () => {
-    expect(confirmationPageIntent("confirmed")).toBe("done");
+    expect(arrived("confirmed")).toBe("done");
+    expect(opened("confirmed")).toBe("done");
   });
 
   it("only calls a booking dead where no payment was ever started", () => {
     // The states that may say "this could not be completed" to a guest. If a
     // payment-bearing state ever appears here, a paying guest is being told
-    // their booking failed - so this list is the assertion.
+    // their booking failed - so this list is the assertion. `prebooked` is NOT
+    // on it: an unpaid hold is not a dead booking, it is an unfinished one.
     for (const status of ["draft", "failed", "cancelled", "expired"] as const) {
-      expect(confirmationPageIntent(status)).toBe("dead");
+      expect(arrived(status)).toBe("dead");
+      expect(opened(status)).toBe("dead");
+    }
+  });
+
+  it("never resumes a state that cannot be paid for", () => {
+    // "resume" sends the guest back to the card step, so it must only ever be
+    // reached for a row the card step can still complete.
+    for (const status of ["draft", "failed", "cancelled", "expired", "confirmed", "confirming"] as const) {
+      expect(opened(status)).not.toBe("resume");
     }
   });
 
@@ -302,7 +337,46 @@ describe("what the confirmation page does with each state", () => {
       "expired",
     ];
     for (const status of all) {
-      expect(["finalize", "wait", "done", "dead"]).toContain(confirmationPageIntent(status));
+      for (const providerReturn of [true, false]) {
+        expect(["finalize", "wait", "done", "resume", "dead"]).toContain(
+          confirmationPageIntent({ status, providerReturn }),
+        );
+      }
     }
+  });
+});
+
+describe("reading the payment provider's redirect", () => {
+  it("sees a redirect by the parameters the provider appends", () => {
+    expect(isPaymentProviderReturn({ payment_intent: "pi_123", redirect_status: "succeeded" })).toBe(true);
+  });
+
+  it("treats a bare navigation to the page as no redirect at all", () => {
+    expect(isPaymentProviderReturn({})).toBe(false);
+  });
+
+  it("does not call a declined attempt a charge", () => {
+    // The provider is saying this attempt did not succeed, so the useful next
+    // step is the card step - not a supplier call that comes back 2014.
+    expect(isPaymentProviderReturn({ payment_intent: "pi_123", redirect_status: "failed" })).toBe(false);
+    expect(isPaymentProviderReturn({ redirect_status: "FAILED" })).toBe(false);
+  });
+
+  it("accepts a status the provider may send that is neither success nor failure", () => {
+    // Stripe can redirect while an attempt is still settling. That is a charge
+    // in flight, and the supplier is the only party who can resolve it.
+    expect(isPaymentProviderReturn({ redirect_status: "processing" })).toBe(true);
+    expect(isPaymentProviderReturn({ redirect_status: "pending" })).toBe(true);
+  });
+
+  it("reads a repeated parameter without throwing", () => {
+    // Next gives a repeated query parameter as an array. Worth a case because
+    // this value decides whether a GET may spend money.
+    expect(isPaymentProviderReturn({ payment_intent: ["pi_123", "pi_456"] })).toBe(true);
+    expect(isPaymentProviderReturn({ redirect_status: ["failed", "succeeded"] })).toBe(false);
+  });
+
+  it("ignores whitespace and empty values rather than reading them as a redirect", () => {
+    expect(isPaymentProviderReturn({ payment_intent: "   ", redirect_status: "  " })).toBe(false);
   });
 });

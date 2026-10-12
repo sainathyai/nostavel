@@ -351,10 +351,19 @@ export default function CheckoutClient({
     //
     // Awaited, so the row has moved before any money does. NOT a gate: its
     // failure is swallowed, because refusing to let a guest pay because a
-    // bookkeeping write failed would be worse than the bug it prevents. A
-    // payment that happens anyway is still recoverable - the booking can be
-    // finalized from either state, and the sweeper resolves an unmarked row by
-    // asking the supplier rather than by guessing.
+    // bookkeeping write failed would be worse than the bug it prevents.
+    //
+    // WHAT CATCHES A CHARGE THAT HAPPENS WITHOUT THIS WRITE. The confirmation
+    // page still finalizes a `prebooked` row when the payment provider
+    // redirected the browser there, because the provider's own redirect is
+    // better evidence of a charge attempt than this breadcrumb (NOS-51,
+    // `confirmationPageIntent`). An earlier version of this comment said the
+    // sweeper "resolves an unmarked row by asking the supplier", and that is
+    // NOT what it does: `sweepDecision` EXPIRES a lapsed `prebooked` row, on
+    // the premise that no payment was started. So the provider's redirect is
+    // the only thing standing between this swallowed failure and a charged
+    // guest with no booking - see the known gap recorded in
+    // .agents/rules/security.md.
     try {
       await markPaymentStartingAction(bookingId);
     } catch {
