@@ -31,8 +31,27 @@
  * below. The `/data/places` calls cost $0.01 each and are limited to three.
  *
  * Run: npx tsx analysis/2026-10-11/probe-search-entry.mts
+ *
+ * WHAT IT SHOWED, 2026-10-11:
+ *   hotelName + countryCode=US     200, one result, the target, with id and coordinates
+ *   hotelName with no country      400 "you must search by either country code,
+ *                                  latitude and longitude, placeId, lastUpdatedAt, IATA
+ *                                  code, or hotelIds" - a country is REQUIRED here
+ *   hotelName partial, lower case  200, the target again: the match is genuinely loose
+ *   hotelName "holiday inn"        200, 20 hotels in four states, in no useful order
+ *   cityName=Waikiki               200 and **0 results** - the supplier has no such city
+ *   places textQuery=Waikiki       2 of 3 calls HTTP 429; the one that answered put
+ *                                  **Waikiki, Western Australia** first and never offered
+ *                                  Honolulu's Waikiki at all
+ *
+ * Conclusion, recorded in docs/adr/0006-search-entry-point.md: /data/hotels?hotelName for
+ * the hotel tier, curated perimeters for the locality tier (measured in
+ * probe-localities.mts), /data/places for neither. The placeId leg at the end never ran:
+ * the 429 left no placeId to follow, and by then /data/places was ruled out on price
+ * anyway. It used require() in an ESM module and would have thrown even with one - fixed
+ * here rather than left as a trap for whoever re-runs this.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -151,7 +170,7 @@ async function main() {
   const localityPlaces = JSON.parse(
     // re-read what we just wrote rather than keeping it in memory, so the file
     // on disk is what this conclusion rests on
-    require("node:fs").readFileSync(join(OUT, "06-places-waikiki-locality.json"), "utf8"),
+    readFileSync(join(OUT, "06-places-waikiki-locality.json"), "utf8"),
   );
   const firstPlaceId: string | undefined = localityPlaces?.body?.data?.[0]?.placeId;
   if (firstPlaceId) {
