@@ -40,6 +40,13 @@ Source of truth: `docs/conventions.md` §1, §2, §5 and §10. This file is a di
 ## Supplier (LiteAPI)
 - All supplier calls go through `lib/liteapi.ts`. Don't call `fetch` against the supplier anywhere else.
 - Prices from the supplier are floats. Convert to integer minor units at the edge (see the money-and-claims rule).
+- **A supplier call driven by TYPING needs four things, not one.** The typeahead's hotel tier
+  (`/api/cities` -> `listHotelsByName`) is the only place in the app where a keystroke can
+  reach the supplier, and it is allowed to because it has: a **gate** deciding the query is
+  worth a call (`lib/hotel-name-search.ts`, pure and tested), a **cache** so retyping is
+  free, a **deadline** so a retrying client never holds up a dropdown, and a **silent
+  failure** that returns local results instead of an error. Any second one of these copies
+  all four, or explains in its PR why it does not. See ADR 0006.
 
 ## Constants and comments (§5, §10)
 - Every non-obvious constant has a comment saying what was measured, when, and which `analysis/<date>/` script measured it.

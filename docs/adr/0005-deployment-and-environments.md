@@ -177,6 +177,36 @@ client does not.
 - **Follow-up work:** NOS-61 (the pipeline, the account setup, the runbooks, switching the
   scheduled jobs back on).
 
+## Reconsidered 2026-10-11: the browser's password prompt (D-6.1)
+
+The "Revisit when" condition below was met almost immediately, and not by a schedule. The
+owner opened the environment for the first time and asked, unprompted: "Whats that weird
+username and password asking. It has to be like a login page instead I am getting a browser
+prompt."
+
+That is the right instinct about a product and the wrong conclusion about this environment,
+so it is worth writing down which one this is. What the owner saw is exactly what this ADR
+chose: an unstyled browser dialog asking for a username this app does not have and a
+password it does not store against any account. It looks like a mistake and it is not one.
+It also happens to be the most honest signal available that this copy is not the product:
+nobody mistakes a browser credential dialog for a sign-in experience.
+
+**Decision: keep it (D-6.1 = A).** The reasoning above is unchanged - no page, no form, no
+cookie, no session and no CSRF question in front of the money path - and one piece of
+evidence has been added since: the app's **real** sign-in, the thing a styled page would
+have been confused with, shipped a defect on this same deployment that mailed the owner a
+link pointing at `https://0.0.0.0:8080/` (NOS-67). A second credential surface built the
+same week, in front of the same money path, would have been a second place for that class
+of error to hide.
+
+The alternative considered and rejected was a styled password page sharing the sign-in
+layout. Rejected on cost and on confusion: it would teach the owner's eye that this lock is
+part of the product.
+
+What this does change is the documentation, not the code. `docs/runbooks/bootstrap-uat.md`
+now says what the prompt looks like and that any username works, because an owner who
+cannot tell a deliberate lock from a broken page is one who eventually works around it.
+
 ## Revisit when
 
 - The live-money gate is ready to be considered, which is when the production environment and
@@ -185,4 +215,6 @@ client does not.
 - The monthly bill leaves the $2-5 band, or the environment's AI and supplier usage stops
   being incidental.
 - A second person needs to use the environment regularly, at which point a shared password
-  stops being accountable and sign-in should carry the access decision instead.
+  stops being accountable and sign-in should carry the access decision instead. (Re-asked
+  and answered once already, on 2026-10-11 - see above. Asking again needs a new reason, not
+  the same discomfort.)

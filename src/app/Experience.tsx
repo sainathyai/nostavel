@@ -16,6 +16,7 @@ import {
 } from "react";
 import type { AmenityKey, Category, HotelStay, ReviewSnippet, SearchResult } from "@/lib/liteapi";
 import type { SeasonalSection } from "@/lib/seasonal";
+import type { Suggestion } from "@/lib/hotel-name-search";
 import { themeAtmosphere, isHolidayWindow } from "@/lib/seasonal";
 import { SeasonalAtmosphere } from "@/components/SeasonalAtmosphere";
 import { ForestBackdrop } from "@/components/ForestBackdrop";
@@ -745,7 +746,20 @@ function BookingForm({ query, compact = false }: { query: Query; compact?: boole
         (compact ? "p-1.5" : "mt-5 p-2.5")
       }
     >
-      <DestinationField value={dest} onChange={setDest} compact={compact} />
+      <DestinationField
+        value={dest}
+        onChange={setDest}
+        compact={compact}
+        /* A hotel suggestion is not a destination: it opens that hotel, with
+           the dates already in this form. The hotel page accepts arriving
+           cold, so nothing else has to be resolved first (ADR 0006). */
+        onPickHotel={(hotelId) =>
+          startTransition(() => {
+            const qs = new URLSearchParams({ checkin, nights: String(nights) });
+            router.push(`/stay/${encodeURIComponent(hotelId)}?${qs.toString()}`);
+          })
+        }
+      />
       <Divider />
       <Field label="Check-in" className="sm:flex-1" compact={compact}>
         <input
@@ -802,22 +816,22 @@ function BookingForm({ query, compact = false }: { query: Query; compact?: boole
   );
 }
 
-type CitySuggestion = { dest: string; name: string; sub: string };
-
 function DestinationField({
   value,
   onChange,
+  onPickHotel,
   compact = false,
 }: {
   value: string;
   onChange: (dest: string) => void;
+  onPickHotel: (hotelId: string) => void;
   compact?: boolean;
 }) {
   const initial = DESTINATIONS.find((d) => d.key === value)?.name ?? value;
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
-  const [results, setResults] = useState<CitySuggestion[]>([]);
+  const [results, setResults] = useState<Suggestion[]>([]);
   const justPicked = useRef(false);
 
   // debounced autocomplete over curated hotspots + all US cities
@@ -839,11 +853,15 @@ function DestinationField({
     return () => clearTimeout(id);
   }, [text]);
 
-  function pick(s: CitySuggestion) {
+  function pick(s: Suggestion) {
     justPicked.current = true;
-    onChange(s.dest);
     setText(s.name);
     setOpen(false);
+    if (s.kind === "hotel") {
+      onPickHotel(s.hotelId);
+      return;
+    }
+    onChange(s.dest);
   }
 
   return (
@@ -860,7 +878,7 @@ function DestinationField({
         </span>
         <input
           value={text}
-          placeholder="Search any US city…"
+          placeholder="City, neighbourhood or hotel name…"
           onChange={(e) => {
             setText(e.target.value);
             setOpen(true);
@@ -889,7 +907,7 @@ function DestinationField({
       {open && results.length > 0 && (
         <ul className="no-scrollbar absolute left-0 top-full z-30 mt-1 max-h-72 w-[min(360px,88vw)] overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-[0_24px_60px_-30px_rgba(24,18,10,0.6)]">
           {results.map((s, i) => (
-            <li key={s.dest}>
+            <li key={s.kind === "hotel" ? `hotel:${s.hotelId}` : `place:${s.dest}`}>
               <button
                 type="button"
                 onMouseDown={(e) => {
@@ -902,9 +920,32 @@ function DestinationField({
                   (i === hi ? "bg-parchment2" : "")
                 }
               >
-                <span className="text-brass">◍</span>
-                <span className="font-medium text-ink">{s.name}</span>
-                <span className="ml-auto text-[12px] text-soft">{s.sub}</span>
+                {/* Two different actions behind one list, so the row says which
+                    it is: a place runs a search, a hotel opens that hotel. The
+                    glyph is decorative; the word carries it for a screen reader
+                    and for anyone who cannot tell the two shapes apart. */}
+                <span className="text-brass" aria-hidden>
+                  {s.kind === "hotel" ? "▣" : "◍"}
+                </span>
+                {s.kind === "hotel" ? (
+                  <>
+                    {/* A hotel's second line is a street address, which does not
+                        fit beside the name the way "HI, US" does - so hotels
+                        stack and places keep the single-line row they had. */}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-ink">{s.name}</span>
+                      {s.sub && <span className="block truncate text-[12px] text-soft">{s.sub}</span>}
+                    </span>
+                    <span className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10.5px] uppercase tracking-[0.08em] text-soft">
+                      Hotel
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="min-w-0 truncate font-medium text-ink">{s.name}</span>
+                    <span className="ml-auto shrink-0 text-[12px] text-soft">{s.sub}</span>
+                  </>
+                )}
               </button>
             </li>
           ))}
