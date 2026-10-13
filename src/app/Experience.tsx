@@ -10,12 +10,20 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useTransition,
 } from "react";
 import type { AmenityKey, Category, HotelStay, ReviewSnippet, SearchResult } from "@/lib/liteapi";
 import type { SeasonalSection } from "@/lib/seasonal";
+import {
+  MIN_HOTEL_QUERY_LENGTH,
+  suggestionHref,
+  type HotelLookupAdvice,
+  type HotelSuggestion,
+  type PlaceSuggestion,
+} from "@/lib/search-suggestions";
 import { themeAtmosphere, isHolidayWindow } from "@/lib/seasonal";
 import { SeasonalAtmosphere } from "@/components/SeasonalAtmosphere";
 import { ForestBackdrop } from "@/components/ForestBackdrop";
@@ -745,7 +753,21 @@ function BookingForm({ query, compact = false }: { query: Query; compact?: boole
         (compact ? "p-1.5" : "mt-5 p-2.5")
       }
     >
-      <DestinationField value={dest} onChange={setDest} compact={compact} />
+      <DestinationField
+        value={dest}
+        onChange={setDest}
+        compact={compact}
+        /* A hotel suggestion is not a destination: it opens that hotel, with
+           the dates already in this form. The hotel page accepts arriving
+           cold, so nothing else has to be resolved first (ADR 0006).
+           `dest` and `notes` are carried so that page can offer the way back to
+           the search the guest came from - the first version dropped them and
+           the "back to results" link fell through to the home page. The URL is
+           built by `suggestionHref` in lib, not here: it is a decision, and a
+           decision in a client component is one nothing in CI can check. */
+        hotelContext={{ checkin, nights, dest, notes }}
+        onNavigate={(href) => startTransition(() => router.push(href))}
+      />
       <Divider />
       <Field label="Check-in" className="sm:flex-1" compact={compact}>
         <input
@@ -802,49 +824,164 @@ function BookingForm({ query, compact = false }: { query: Query; compact?: boole
   );
 }
 
-type CitySuggestion = { dest: string; name: string; sub: string };
-
+/**
+ * The destination field: one input, one dropdown, two kinds of answer.
+ *
+ * REBUILT after the ux-designer and architecture reviews of NOS-66, which
+ * between them found four things wrong with the first version:
+ *
+ *  - **It rendered nothing when there was nothing.** `results.length > 0` meant
+ *    a query that matched no place and found no hotel produced an empty, silent
+ *    dropdown - a dead end with no message, which is exactly what the owner met
+ *    when typing "holiday inn" before the hotel tier existed.
+ *  - **It held answers it already had.** Both tiers came from one request, and
+ *    that request awaited the supplier before returning, so local rows waited
+ *    behind a network call for up to 2.5 seconds. Now `/api/cities` answers from
+ *    memory and `/api/hotels` is a second request, so places appear at once and
+ *    hotels land when they land.
+ *  - **It offered no way to search hotels for a brand that is also a town.**
+ *    `hilton` and `waldorf` name real places, so the automatic lookup correctly
+ *    stays quiet - and the dropdown now offers a row to press instead, which is
+ *    what keeps every brand reachable. A press, not a keystroke.
+ *  - **It had no combobox semantics at all**, which mattered more once the list
+ *    carried rows with two different consequences: one sets a form field, the
+ *    other navigates away. A screen-reader user arrowing through it had nothing
+ *    announced before Enter did either.
+ */
 function DestinationField({
   value,
   onChange,
+  onNavigate,
+  hotelContext,
   compact = false,
 }: {
   value: string;
   onChange: (dest: string) => void;
+  /** Called with the href a hotel row resolves to. The parent owns navigation. */
+  onNavigate: (href: string) => void;
+  /** What a hotel row needs to build its link: the dates, and the search to return to. */
+  hotelContext: { checkin: string; nights: number; dest?: string; notes?: string };
   compact?: boolean;
 }) {
   const initial = DESTINATIONS.find((d) => d.key === value)?.name ?? value;
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
-  const [results, setResults] = useState<CitySuggestion[]>([]);
+  const [places, setPlaces] = useState<PlaceSuggestion[]>([]);
+  const [hotels, setHotels] = useState<HotelSuggestion[]>([]);
+  const [advice, setAdvice] = useState<HotelLookupAdvice>("none");
+  /** Only about the hotel tier: the place tier is never pending long enough to matter. */
+  const [hotelState, setHotelState] = useState<"idle" | "loading" | "done" | "limited">("idle");
   const justPicked = useRef(false);
+  const listId = useId();
 
-  // debounced autocomplete over curated hotspots + all US cities
+  const query = text.trim();
+
+  /** Fetch the hotel tier for a query. Used by the automatic path and by the offer row. */
+  const loadHotels = useCallback(async (q: string) => {
+    setHotelState("loading");
+    try {
+      const r = await fetch(`/api/hotels?q=${encodeURIComponent(q)}`);
+      if (r.status === 429) {
+        // Said out loud rather than shown as "no matches": a rate limit that
+        // renders as an empty list is how it turns into "this hotel does not exist".
+        setHotels([]);
+        setHotelState("limited");
+        return;
+      }
+      const d = await r.json();
+      setHotels(d.results ?? []);
+      setHotelState("done");
+    } catch {
+      setHotels([]);
+      setHotelState("done");
+    }
+  }, []);
+
+  // The place tier, debounced. Local data, so this returns in a millisecond and
+  // the dropdown is never waiting on a network call it did not need.
   useEffect(() => {
     if (justPicked.current) {
       justPicked.current = false;
       return;
     }
+    let cancelled = false;
     const id = setTimeout(async () => {
+      const q = text.trim();
       try {
         const r = await fetch(`/api/cities?q=${encodeURIComponent(text)}`);
         const d = await r.json();
-        setResults(d.results || []);
+        if (cancelled) return;
+        setPlaces(d.results ?? []);
+        setAdvice(d.hotels ?? "none");
+        setHotels([]);
         setHi(0);
+        // Places are already on screen by the time this runs: the state above is
+        // committed before the await below.
+        if (d.hotels === "ask") await loadHotels(q);
+        else setHotelState("idle");
       } catch {
-        setResults([]);
+        if (cancelled) return;
+        setPlaces([]);
+        setHotels([]);
+        setAdvice("none");
+        setHotelState("idle");
       }
     }, 150);
-    return () => clearTimeout(id);
-  }, [text]);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [text, loadHotels]);
 
-  function pick(s: CitySuggestion) {
+  // Hotels first when they exist: the automatic lookup only fires for a query
+  // that named no place, so the place rows beneath them are typo guesses.
+  // `offer` becomes a real row, because the keyboard has to be able to reach it.
+  type Row =
+    | { kind: "place"; place: PlaceSuggestion }
+    | { kind: "hotel"; hotel: HotelSuggestion }
+    | { kind: "offer" };
+  const rows: Row[] = [
+    ...hotels.map((hotel) => ({ kind: "hotel" as const, hotel })),
+    ...places.map((place) => ({ kind: "place" as const, place })),
+    ...(advice === "offer" && hotelState === "idle" ? [{ kind: "offer" as const }] : []),
+  ];
+
+  function activate(row: Row) {
+    if (row.kind === "offer") {
+      // Deliberately does NOT close the dropdown: the guest asked for more rows,
+      // so the answer belongs in the list they are already reading.
+      void loadHotels(query);
+      return;
+    }
     justPicked.current = true;
-    onChange(s.dest);
-    setText(s.name);
     setOpen(false);
+    if (row.kind === "hotel") {
+      setText(row.hotel.name);
+      const href = suggestionHref(row.hotel, hotelContext);
+      if (href) onNavigate(href);
+      return;
+    }
+    setText(row.place.name);
+    onChange(row.place.dest);
   }
+
+  // Said once, in one place, so the two reasons a dropdown can be empty do not
+  // read the same. Null when there is nothing to say.
+  const statusLine: string | null =
+    hotelState === "loading"
+      ? "Searching hotels…"
+      : hotelState === "limited"
+        ? "Too many searches just now. Wait a moment and try again."
+        : rows.length > 0
+          ? null
+          : !query
+            ? null
+            : query.length < MIN_HOTEL_QUERY_LENGTH
+              ? "Keep typing: try a city, neighbourhood or hotel name."
+              : `No matches for "${query}". Check the spelling, or try the city it is in.`;
+
+  const activeId = open && rows[hi] ? `${listId}-row-${hi}` : undefined;
 
   return (
     <div className="relative sm:flex-[2]">
@@ -854,13 +991,24 @@ function DestinationField({
         }
       >
         <span
+          id={`${listId}-label`}
           className={"uppercase tracking-[0.1em] text-soft " + (compact ? "text-[9.5px]" : "text-[11px]")}
         >
           Destination
         </span>
         <input
           value={text}
-          placeholder="Search any US city…"
+          placeholder="City, neighbourhood or hotel name…"
+          /* Combobox semantics, which this field never had. They matter more now
+             that one list holds rows with two different consequences: a place
+             sets this field, a hotel leaves the page. */
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-labelledby={`${listId}-label`}
+          aria-activedescendant={activeId}
+          autoComplete="off"
           onChange={(e) => {
             setText(e.target.value);
             setOpen(true);
@@ -871,13 +1019,13 @@ function DestinationField({
             if (e.key === "ArrowDown") {
               e.preventDefault();
               setOpen(true);
-              setHi((h) => Math.min(h + 1, results.length - 1));
+              setHi((h) => Math.min(h + 1, rows.length - 1));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setHi((h) => Math.max(h - 1, 0));
-            } else if (e.key === "Enter" && open && results[hi]) {
+            } else if (e.key === "Enter" && open && rows[hi]) {
               e.preventDefault();
-              pick(results[hi]);
+              activate(rows[hi]);
             } else if (e.key === "Escape") {
               setOpen(false);
             }
@@ -886,29 +1034,75 @@ function DestinationField({
         />
       </div>
 
-      {open && results.length > 0 && (
-        <ul className="no-scrollbar absolute left-0 top-full z-30 mt-1 max-h-72 w-[min(360px,88vw)] overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-[0_24px_60px_-30px_rgba(24,18,10,0.6)]">
-          {results.map((s, i) => (
-            <li key={s.dest}>
-              <button
-                type="button"
+      {open && (rows.length > 0 || statusLine) && (
+        <div className="no-scrollbar absolute left-0 top-full z-30 mt-1 max-h-72 w-[min(360px,88vw)] overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-[0_24px_60px_-30px_rgba(24,18,10,0.6)]">
+          <ul id={listId} role="listbox" aria-labelledby={`${listId}-label`}>
+            {rows.map((row, i) => (
+              <li
+                key={
+                  row.kind === "hotel"
+                    ? `hotel:${row.hotel.hotelId}`
+                    : row.kind === "place"
+                      ? `place:${row.place.dest}`
+                      : "offer"
+                }
+                id={`${listId}-row-${i}`}
+                role="option"
+                aria-selected={i === hi}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  pick(s);
+                  activate(row);
                 }}
                 onMouseEnter={() => setHi(i)}
                 className={
-                  "flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-[14px] " +
+                  "flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left text-[14px] " +
                   (i === hi ? "bg-parchment2" : "")
                 }
               >
-                <span className="text-brass">◍</span>
-                <span className="font-medium text-ink">{s.name}</span>
-                <span className="ml-auto text-[12px] text-soft">{s.sub}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+                {/* The glyph is decorative. What a row does is carried by its
+                    text and, for a hotel, by the tag on the right. */}
+                <span className="text-brass" aria-hidden>
+                  {row.kind === "place" ? "◍" : row.kind === "hotel" ? "▣" : "⌕"}
+                </span>
+                {row.kind === "hotel" ? (
+                  <>
+                    {/* A hotel's second line is a street address, which does not
+                        fit beside the name the way "HI, US" does - so hotels
+                        stack and places keep the single-line row they had. */}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-ink">{row.hotel.name}</span>
+                      {row.hotel.sub && (
+                        <span className="block truncate text-[12px] text-soft">{row.hotel.sub}</span>
+                      )}
+                    </span>
+                    <span className="shrink-0 rounded border border-line px-1.5 py-0.5 text-[10.5px] uppercase tracking-[0.08em] text-soft">
+                      Hotel
+                    </span>
+                  </>
+                ) : row.kind === "place" ? (
+                  <>
+                    <span className="min-w-0 truncate font-medium text-ink">{row.place.name}</span>
+                    <span className="ml-auto shrink-0 text-[12px] text-soft">{row.place.sub}</span>
+                  </>
+                ) : (
+                  // The press that reaches the supplier. Offered when the typed
+                  // string IS the name of a place we hold, so the automatic
+                  // lookup stayed quiet - "hilton", "waldorf", "austin".
+                  <span className="min-w-0 flex-1 truncate text-ink">
+                    Search hotels named <span className="font-medium">{query}</span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {statusLine && (
+            /* Polite, so a screen reader hears "searching hotels" and "no
+               matches" without either interrupting typing. */
+            <p aria-live="polite" className="px-3.5 py-2.5 text-[13px] text-soft">
+              {statusLine}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

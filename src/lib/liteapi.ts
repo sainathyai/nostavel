@@ -208,6 +208,32 @@ async function listHotelsByRadius(lat: number, lng: number, radius: number, limi
   return (d.data ?? d) as any[];
 }
 
+/**
+ * Find hotels by NAME, for the typeahead's hotel tier (NOS-66, ADR 0006).
+ *
+ * `countryCode` is not optional at this endpoint, whatever it looks like.
+ * Measured 2026-10-11: `hotelName` alone returns HTTP 400 and the supplier's
+ * own error names the alternatives - "you must search by either country code,
+ * latitude and longitude, placeId, lastUpdatedAt, IATA code, or hotelIds". The
+ * typeahead has no location at the moment someone is typing, so a country is
+ * the only one of those it can supply.
+ *
+ * The match is loose and case-insensitive and does NOT rank: "holiday inn"
+ * returns 20 hotels in four states in no useful order. Ordering is
+ * hotel-name-search.ts's job, deliberately kept out of here so it can be tested
+ * without a network.
+ *
+ * `limit` is small on purpose. This is the only supplier call in the app that a
+ * person can trigger by typing, so it asks for a dropdown's worth of rows, not
+ * a search page's worth.
+ */
+export async function listHotelsByName(hotelName: string, countryCode: string, limit = 20) {
+  const d = await api("GET", "/data/hotels", {
+    params: { countryCode, hotelName, limit },
+  });
+  return (d.data ?? d) as any[];
+}
+
 async function listHotelsByCity(cityName: string, countryCode: string, limit = HOTEL_LIMIT) {
   const d = await api("GET", "/data/hotels", {
     params: { countryCode, cityName, limit },
