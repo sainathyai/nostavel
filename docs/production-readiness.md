@@ -428,6 +428,38 @@ Still genuinely open, and none of it blocks Phase 1 or 2:
 - Whether to own the basemap tiles (~$2/month) or keep date-walking Protomaps.
 - Error tracking vendor.
 
+## 8. Open questions to answer during production testing
+
+Deliberately not tickets. Each one is a question about how a third party behaves
+that cannot be settled by reading our own code, and guessing an answer would put
+a wrong assumption into the money path. The owner answers each from the relevant
+provider's own dashboard or contract when production testing begins.
+
+### 8.1 Does a failed `confirmPayment` ever leave a real charge? (D-10.2, open 2026-10-13)
+
+`markPaymentFailedAction` reverts a booking out of `payment_pending` whenever the
+browser reports a client-side payment error. That is correct if and only if every
+such error means no money moved.
+
+It is not obvious that it does. Stripe surfaces network failures, timeouts and
+3DS abandonment through the same client-side error path as an outright decline,
+and at least some of those can race a charge that did in fact succeed. If that
+happens, we revert a booking the guest has paid for, and the sweeper then treats
+the reverted row as unpaid.
+
+**What would settle it:** what Stripe's dashboard shows for a payment intent whose
+`confirmPayment` call failed client-side. If any such intent can appear as
+`succeeded` or `requires_capture`, this action must stop reverting on the client's
+word alone and ask the provider instead.
+
+**Why it is not a ticket yet:** the answer determines whether the fix is a one-line
+guard or a provider round-trip, and nobody can write acceptance criteria without
+it. Decided with the owner on 2026-10-13 to hold it here until production testing
+rather than file a ticket nobody can start.
+
+**Where the code is:** `src/app/actions/booking.ts` (`markPaymentFailedAction`),
+called from `src/app/book/[bookingId]/CheckoutClient.tsx`.
+
 ## Sources
 
 - <https://docs.liteapi.travel/llms.txt>
