@@ -54,6 +54,29 @@ run as the runtime identity can read whatever that identity can read, which is
 all ten secrets. That is what deploying means. The control is not the role, it is
 the federated identity, restricted to one workflow file on one branch.
 
+## An apply that changes the service does not reach anyone by itself
+
+The pipeline promotes by revision **name**, which pins traffic. This
+configuration ignores the traffic split so an apply cannot undo a rollback. Put
+those together and a `terraform apply` that changes the service template creates
+a revision with **zero traffic**: the apply succeeds, the revision goes ready,
+and every visitor is still served by the old one.
+
+Hit on the first real change, 2026-10-11. `AUTH_URL` was added, applied cleanly,
+and sign-in links kept coming from the previous revision.
+
+So after any apply that touches the service:
+
+```bash
+gcloud run revisions list --project=nostavel --region=us-central1 --service=nostavel-uat
+# confirm the new revision's image digest matches the one serving, then:
+gcloud run services update-traffic nostavel-uat --project=nostavel \
+  --region=us-central1 --to-revisions=<THE NEW REVISION>=100
+```
+
+The next merge re-pins traffic to whatever it deploys, so this is not a state you
+have to maintain - only one you have to notice.
+
 ## `terraform plan` should be quiet, with one exception
 
 A clean `terraform plan` after an apply should report no changes, even if the

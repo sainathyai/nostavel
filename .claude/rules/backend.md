@@ -40,6 +40,21 @@ Source of truth: `docs/conventions.md` §1, §2, §5 and §10. This file is a di
 ## Supplier (LiteAPI)
 - All supplier calls go through `lib/liteapi.ts`. Don't call `fetch` against the supplier anywhere else.
 - Prices from the supplier are floats. Convert to integer minor units at the edge (see the money-and-claims rule).
+- **A supplier call driven by TYPING needs all of this, and the rate limit above is not
+  optional for it.** The typeahead's hotel tier (`/api/hotels` -> `listHotelsByName`) is the
+  only place in the app where a keystroke can reach the supplier. It is allowed to because
+  it has: its **own route**, so no other tier waits on it and the rate limit has somewhere
+  to live; the **rate limit** every supplier route here has; a **gate** deciding the query
+  is worth a call (`lib/search-suggestions.ts` + `exactPlaceMatchCount`, pure and tested);
+  a **cache** so retyping is free; and a **silent failure** that leaves the local rows
+  alone. Any second one of these copies all of it, or explains in its PR why not.
+  See ADR 0006.
+- **A rule is not a description of what was built.** The first version of the bullet above
+  listed four properties the implementation happened to have and omitted the rate limit it
+  did not - while `/api/stays-in-area`, one directory away, had one. The architecture review
+  of NOS-66 caught it: a rule edited to fit the code stops being a constraint. If a change
+  cannot meet a rule, the PR says so and the ADR records the exception; it does not reword
+  the rule.
 
 ## Constants and comments (§5, §10)
 - Every non-obvious constant has a comment saying what was measured, when, and which `analysis/<date>/` script measured it.

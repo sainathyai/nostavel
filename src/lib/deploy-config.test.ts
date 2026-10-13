@@ -8,6 +8,7 @@ import {
   isSharedEnvironment,
   MIN_ACCESS_PASSWORD_LENGTH,
   supplierMode,
+  unusableOriginReason,
   type Env,
 } from "./deploy-config";
 
@@ -27,7 +28,8 @@ function healthyShared(overrides: Env = {}): Env {
     DATABASE_URL: "present",
     AUTH_SECRET: "present",
     CRON_SECRET: "present",
-    APP_URL: "https://example.invalid",
+    APP_URL: "https://nostavel-uat.example.com",
+    AUTH_URL: "https://nostavel-uat.example.com",
     ACCESS_PASSWORD: PASSWORD,
     ANTHROPIC_API_KEY: "present",
     RESEND_API_KEY: "present",
@@ -182,6 +184,7 @@ describe("configProblems in a shared environment", () => {
     ["AUTH_SECRET", "auth-secret-missing"],
     ["CRON_SECRET", "cron-secret-missing"],
     ["APP_URL", "app-url-missing"],
+    ["AUTH_URL", "auth-url-missing"],
   ])("refuses to serve when %s is missing", (name, code) => {
     expect(codes(healthyShared({ [name]: undefined }))).toEqual([code]);
   });
@@ -246,6 +249,7 @@ describe("configProblems in a shared environment", () => {
       AUTH_SECRET: "sentinel-auth-value",
       CRON_SECRET: "sentinel-cron-value",
       APP_URL: "sentinel-appurl-value",
+    AUTH_URL: "sentinel-authurl-value",
       ACCESS_PASSWORD: "sentinel-pw",
       ANTHROPIC_API_KEY: "sentinel-ai-value",
       RESEND_API_KEY: "sentinel-email-value",
@@ -282,5 +286,75 @@ describe("configProblems in a shared environment", () => {
     // here and then fail at the gate. Both read it through `accessPassword`.
     expect(configProblems(healthyShared({ ACCESS_PASSWORD: "  " + PASSWORD + "\n" }))).toEqual([]);
     expect(accessPassword({ ACCESS_PASSWORD: "  " + PASSWORD + "\n" })).toBe(PASSWORD);
+  });
+});
+
+describe("a URL that is present but unusable", () => {
+  // THE DEFECT A PRESENCE CHECK COULD NOT CATCH. infra/envs/uat/variables.tf
+  // defaults app_url to https://example.invalid and the bootstrap runbook
+  // documents leaving it there through the first apply. Before this rule that
+  // value was present, non-empty, passed every check and reported ok: true,
+  // while every link mailed to a guest was dead. Found by the architecture
+  // review of NOS-67, which pointed out that making AUTH_URL fatal-when-missing
+  // fixed the 0.0.0.0 case and nothing else.
+  it("rejects the bootstrap placeholder the runbook tells you to leave set", () => {
+    expect(unusableOriginReason("https://example.invalid")).toMatch(/placeholder/);
+    expect(unusableOriginReason("https://anything.invalid")).toMatch(/placeholder/);
+    // The bare reserved name, not only a subdomain of it.
+    expect(unusableOriginReason("https://invalid")).toMatch(/placeholder/);
+  });
+
+  it("rejects the container's own address, which is the original bug", () => {
+    // The sign-in link a real guest received: https://0.0.0.0:8080/
+    expect(unusableOriginReason("https://0.0.0.0:8080/")).toMatch(/own address/);
+    expect(unusableOriginReason("https://localhost:3000")).toMatch(/own address/);
+    expect(unusableOriginReason("https://127.0.0.1")).toMatch(/own address/);
+  });
+
+  it("rejects plain http in a shared environment", () => {
+    expect(unusableOriginReason("http://nostavel-uat.example.com")).toMatch(/not https/);
+  });
+
+  it("rejects a value that is not a URL at all", () => {
+    expect(unusableOriginReason("nostavel-uat.example.com")).toBe("is not a URL");
+    expect(unusableOriginReason("THE-URL-FROM-ABOVE")).toBe("is not a URL");
+  });
+
+  it("accepts a real origin, with or without a trailing slash", () => {
+    expect(unusableOriginReason("https://nostavel-uat.example.com")).toBeNull();
+    expect(unusableOriginReason("https://nostavel-uat.example.com/")).toBeNull();
+    expect(unusableOriginReason("  https://nostavel-uat.example.com  ")).toBeNull();
+  });
+
+  it("reports a missing value as missing rather than as malformed", () => {
+    // configProblems reports a missing variable once, through the required
+    // list; this function is only asked about values that are set.
+    expect(unusableOriginReason("")).toBe("is not set");
+    expect(unusableOriginReason("   ")).toBe("is not set");
+  });
+
+  it("is fatal in configProblems, so a placeholder cannot report itself healthy", () => {
+    const problems = configProblems(healthyShared({ APP_URL: "https://example.invalid" }));
+    const codes = problems.map((p) => p.code);
+    expect(codes).toContain("app-url-unusable");
+    expect(problems.find((p) => p.code === "app-url-unusable")?.severity).toBe("fatal");
+  });
+
+  it("reports a drifted pair, because Terraform discipline is not a check", () => {
+    // Both are fed from one Terraform variable precisely because two copies of a
+    // URL drift - but a `gcloud run services update` can set either alone, and
+    // nothing noticed. Raised by the security review of NOS-67.
+    const problems = configProblems(
+      healthyShared({ APP_URL: "https://nostavel-uat.example.com", AUTH_URL: "https://nostavel.example.com" }),
+    );
+    expect(problems.map((p) => p.code)).toContain("app-auth-url-disagree");
+  });
+
+  it("does not report a pair that differs only by a trailing slash", () => {
+    // Compared by origin, not by string: a trailing slash is not a drift.
+    const problems = configProblems(
+      healthyShared({ APP_URL: "https://nostavel-uat.example.com", AUTH_URL: "https://nostavel-uat.example.com/" }),
+    );
+    expect(problems.map((p) => p.code)).not.toContain("app-auth-url-disagree");
   });
 });

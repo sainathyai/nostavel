@@ -1,7 +1,23 @@
 // US destinations, searched by perimeter (lat/lng + radius in metres) so nearby
-// towns fall inside the search area. Curated: major cities, tourist towns, and
-// national-park gateways. Plain data, importable by server and client.
-export type DestType = "city" | "town" | "park";
+// towns fall inside the search area. Curated: major cities, tourist towns,
+// national-park gateways, and a few neighbourhoods the supplier's own city list
+// gets wrong or misses. Plain data, importable by server and client.
+export type DestType = "city" | "town" | "park" | "locality";
+/**
+ * Why a row is here, which decides whether it can ever be removed.
+ *
+ * `curated` is a product choice: we feature this place. `correction` is a repair
+ * to the supplier's own city list, and it stops being needed the day the
+ * supplier fixes its data - so it carries the reason and the date the perimeter
+ * was last measured, which is what an annual re-probe needs.
+ */
+export type DestProvenance = {
+  source: "curated" | "correction";
+  reason: string;
+  /** ISO date the perimeter was last confirmed against the supplier. */
+  measuredOn: string;
+};
+
 export type Destination = {
   key: string;
   name: string;
@@ -11,6 +27,8 @@ export type Destination = {
   lng: number;
   radius: number; // metres
   type: DestType;
+  /** Absent means an ordinary curated destination. Present on corrections. */
+  provenance?: DestProvenance;
 };
 
 function d(
@@ -21,8 +39,19 @@ function d(
   lng: number,
   radius: number,
   type: DestType,
+  provenance?: DestProvenance,
 ): Destination {
-  return { key, name, region, label: `${name}, ${region}`, lat, lng, radius, type };
+  return {
+    key,
+    name,
+    region,
+    label: `${name}, ${region}`,
+    lat,
+    lng,
+    radius,
+    type,
+    ...(provenance ? { provenance } : {}),
+  };
 }
 
 export const DESTINATIONS: Destination[] = [
@@ -84,6 +113,61 @@ export const DESTINATIONS: Destination[] = [
   d("destin", "Destin", "FL", 30.3935, -86.4958, 11000, "town"),
   d("naples", "Naples", "FL", 26.142, -81.7948, 11000, "town"),
   d("bigsur", "Big Sur", "CA", 36.2704, -121.8081, 16000, "town"),
+
+  // --- neighbourhoods & localities (NOS-66, ADR 0006) ---
+  // These exist because a name a guest types is not always a name the supplier
+  // knows. src/data/us-cities.json is harvested from LiteAPI's own
+  // /data/cities?countryCode=US, and most famous lodging areas are already in
+  // it as cities (Hollywood CA, La Jolla, Lahaina, Wailea, Kihei, Pigeon Forge,
+  // Sunny Isles Beach, Clearwater Beach, Lake Buena Vista). Only these three
+  // are broken, and in two different ways:
+  //
+  //   Waikiki, French Quarter   absent from the city list entirely, and absent
+  //                             from the supplier too - measured 2026-10-11,
+  //                             /data/hotels?cityName=Waikiki&countryCode=US
+  //                             returns 0 results
+  //   South Beach               present, but as South Beach **NY** (Staten
+  //                             Island). A name that resolves to the wrong
+  //                             coast is worse than one that does not resolve,
+  //                             because nothing looks like a failure
+  //
+  // A curated entry fixes both shapes, because /api/cities prepends curated
+  // matches and so outranks the wrong city as well as filling a gap.
+  //
+  // EVERY NUMBER BELOW WAS MEASURED, not estimated:
+  // analysis/2026-10-11/probe-localities.mts asks the supplier which hotels
+  // fall inside each perimeter and prints their street addresses and distance
+  // from the centre. Re-run it before changing a radius. A radius that is too
+  // small misses the strip; too large and the locality quietly becomes its
+  // parent city, which defeats the point of typing the neighbourhood.
+  // Each of these is a CORRECTION to supplier data, not a product choice, and
+  // that distinction has a lifecycle attached: a curated city is here because we
+  // feature it, while these are here because LiteAPI's city list is wrong or
+  // short. When the supplier adds Waikiki, this row becomes removable - and
+  // nobody would know without the date to re-probe from (architecture review of
+  // NOS-66, F8). `measuredOn` is the date analysis/2026-10-11/probe-localities.mts
+  // last confirmed the perimeter.
+  d("waikiki", "Waikiki", "HI", 21.2793, -157.8292, 2200, "locality", {
+    source: "correction",
+    reason: "absent from the supplier's city list; cityName=Waikiki returns 0 results",
+    measuredOn: "2026-10-11",
+  }),
+  d("frenchquarter", "French Quarter", "LA", 29.9584, -90.0644, 1500, "locality", {
+    source: "correction",
+    reason: "absent from the supplier's city list",
+    measuredOn: "2026-10-11",
+  }),
+  d("southbeach", "South Beach", "FL", 25.7823, -80.1322, 2000, "locality", {
+    source: "correction",
+    reason: "present in the supplier's city list, but as South Beach NY (Staten Island)",
+    measuredOn: "2026-10-11",
+  }),
+  // Waikiki shares a centre with the "honolulu" entry above, which is not a
+  // mistake in either: that perimeter is hotel-centric too, and at 9000 m it
+  // returns 200+ hotels across the whole south shore. The 2200 m version is
+  // the strip on its own (50 of 50 returned hotels on Kalakaua, Kuhio, Lewers
+  // and Seaside; furthest 2038 m, the Diamond Head end). A guest who types
+  // "Waikiki" is excluding the airport and downtown on purpose.
 
   // --- national-park gateways ---
   d("grandcanyon", "Grand Canyon", "AZ", 36.0544, -112.1401, 22000, "park"),

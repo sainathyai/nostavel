@@ -93,6 +93,26 @@ it will become that by growing.
 
 ## The environment's shape
 
+- **A Terraform change to the service does NOT serve until traffic moves.** The
+  pipeline promotes by revision name, which pins traffic, and `infra/` ignores
+  the traffic split on purpose - so an `apply` creates a new revision that gets
+  **zero traffic**, and the change is inert. `terraform apply` reports success,
+  the revision reports ready, and nothing a visitor touches has changed. Measured
+  2026-10-11: AUTH_URL was added, applied cleanly, and sign-in links still came
+  from the old revision until traffic was moved by hand. After any apply that
+  touches the service template:
+
+  ```bash
+  gcloud run revisions list --project=nostavel --region=us-central1 --service=nostavel-uat
+  gcloud run services update-traffic nostavel-uat --project=nostavel \
+    --region=us-central1 --to-revisions=<THE NEW REVISION>=100
+  ```
+
+  Check the image digest on the new revision matches the one serving first:
+  Terraform ignores the image, so it carries whatever was live, but checking
+  costs nothing and promoting a placeholder costs an outage. Do NOT "fix" this by
+  letting Terraform own the traffic split - that block is what stops an apply
+  undoing a rollback during an incident.
 - `infra/` owns the shape; the pipeline owns the image. `main.tf` ignores changes
   to the container image and the traffic split, so an `apply` cannot roll back a
   deploy or undo a rollback done during an incident. Do not remove that
@@ -143,6 +163,32 @@ it will become that by growing.
   merge, forever. One older project in this same account reached 2 GB and
   accounted for 85% of the bill. Keep the last ten, so a rollback target still
   exists, and delete the rest after a week.
+
+## The scheduled jobs are on the wrong trigger (NOS-65)
+
+Both money-safety jobs run from GitHub's `schedule` event today, and three facts
+from the Actions documentation (checked 2026-10-10) say that is a stopgap:
+
+- **Five minutes is the floor, and below it nothing runs at all.** "The shortest
+  interval you can run scheduled workflows is once every 5 minutes." The
+  documentation does not say what happens to a shorter interval, so it was
+  measured: with `*/3` on `main`, the workflow `active` and the repository pushed
+  to minutes earlier, **no scheduled run fired in 45 minutes, and the repository
+  had never had a single `schedule`-triggered run in its life.** That is
+  consistent with a sub-floor interval being rejected rather than rounded up. So
+  the sweeper had never once run on its own, and `*/5` is not a tidy-up - it is
+  what switches the job on.
+- **Runs are best-effort.** The event "can be delayed during periods of high
+  loads" and "some queued jobs may be dropped" - against a supplier hold that
+  expires in 15 minutes.
+- **A public repository switches them off.** "In a public repository, scheduled
+  workflows are automatically disabled when no repository activity has occurred
+  in 60 days." This repository is public, so the only thing that rescues a guest
+  who was charged and whose browser never came back turns itself off after 60
+  quiet days, silently. A prototype can easily be quiet for 60 days.
+
+Do not treat a green manual run as evidence the schedule works. They are
+different claims, and only the second one matters at 3am.
 
 ## Changing a workflow
 
