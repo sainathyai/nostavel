@@ -41,10 +41,15 @@ That starts a new revision with the same image, which reads the new value.
 Check it:
 
 ```bash
-# --config reads the credential from a file descriptor, not an argument: an
-# argument is visible in the process table to every other process on the box.
-curl -s --config <(printf 'user = "owner:%s"\n' "$VALUE") \
-  -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
+# The credential goes in a file, never in an argument: an argument is visible
+# in the process table to every other process on the box. PROCESS SUBSTITUTION
+# (`--config <(...)`) DOES NOT WORK HERE - curl on Windows cannot open a
+# /dev/fd path and fails with "error encountered when reading a file".
+# Measured 2026-10-10, on the command this runbook used to prescribe.
+CFG="$(mktemp)"
+printf 'user = "owner:%s"\n' "$VALUE" > "$CFG"
+curl -s --config "$CFG" -o /dev/null -w '%{http_code}\n' "https://THE_SERVICE_URL/"
+rm -f "$CFG"
 # 200
 ```
 
@@ -67,7 +72,7 @@ Changing one copy alone breaks something quietly.
 | Secret | Second home | What breaks if they drift |
 |---|---|---|
 | `CRON_SECRET` | GitHub Actions secret of the same name | The deploy's health check fails with "the detailed health route did not return an object", and the sweeper and reconciler answer 401 - which silently switches off guest-money recovery |
-| `DATABASE_URL` | GitHub Actions secret `UAT_DATABASE_URL` | The pipeline plans and applies migrations against a different database than the app reads |
+| `DATABASE_URL` | GitHub Actions secret `UAT_DATABASE_URL` | The pipeline plans and applies migrations against a different database than the app reads. **They are not the same string:** the app gets Neon's POOLED host, the pipeline gets the DIRECT one (the same URL with `-pooler` removed), because `drizzle-kit migrate` connects over TCP and runs every pending migration in one transaction |
 | `APP_URL` (not secret, but it drifts the same way) | Terraform `app_url`, the GitHub `APP_URL` variable, and the Google OAuth redirect URI | Dead links in guest email, a scheduled job calling nothing, and sign-in failing - all three silent |
 
 Change both in the same sitting:
@@ -80,6 +85,47 @@ printf '%s' "$VALUE" | \
 gh secret set CRON_SECRET --repo sainathyai/nostavel
 unset VALUE
 ```
+
+## Resetting the database password invalidates BOTH copies
+
+Neon's "reset password" changes the role's password, so every connection string
+holding the old one stops working at once - the app's and the pipeline's. The
+first symptom is a deploy failing in the plan job with `password authentication
+failed for user 'neondb_owner'`, which reads like a pipeline fault rather than
+something you did in another tab twenty minutes earlier. Seen on the first real
+deploy, 2026-10-10.
+
+Both copies, from one new value:
+
+```bash
+# Neon console -> branch `uat` -> Roles -> reset -> copy the POOLED string
+bash scripts/seed-uat-secrets.sh DATABASE_URL
+
+U=$(gcloud secrets versions access latest --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT")
+printf '%s' "${U/-pooler/}" | gh secret set UAT_DATABASE_URL --repo sainathyai/nostavel
+unset U
+```
+
+### Prove both are live before spending a deploy on it
+
+A deploy is a slow way to find out a credential is wrong, and the failure lands
+in the job that reports what is pending - so it looks like the plan is broken.
+
+```bash
+U=$(gcloud secrets versions access latest --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT")
+for V in "$U" "${U/-pooler/}"; do
+  DATABASE_URL="$V" node -e "
+  import('@neondatabase/serverless').then(async ({ neon }) => {
+    try { await neon(process.env.DATABASE_URL).query('select 1'); console.log('OK'); }
+    catch (e) { console.log('FAILED -', e.message); }
+  });"
+done
+unset U
+```
+
+Two `OK` lines. Both failing means the password was reset and neither copy was
+updated. One failing means only that copy is wrong - and if it is the unpooled
+one, take the direct string from Neon's console rather than deriving it.
 
 ## The supplier key
 
@@ -107,8 +153,10 @@ value was actually readable by the service:
 
 ```bash
 read -rsp "CRON_SECRET: " VALUE; echo
-curl -s -H @<(printf 'Authorization: Bearer %s\n' "$VALUE") \
-  "https://THE_SERVICE_URL/api/health?deep=1"
+HDR="$(mktemp)"
+printf 'Authorization: Bearer %s\n' "$VALUE" > "$HDR"
+curl -s -H @"$HDR" "https://THE_SERVICE_URL/api/health?deep=1"; echo
+rm -f "$HDR"
 unset VALUE
 ```
 
