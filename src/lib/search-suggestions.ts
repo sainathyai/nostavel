@@ -1,8 +1,17 @@
-// The rule for the typeahead's hotel tier: when to ask the supplier about a
-// hotel name at all, and how to order what comes back. Pure - no fetch, no
-// clock, no secrets - because the decision worth testing here is "does typing
-// this cost a supplier call", and that must be checkable without a network.
-// The call itself lives in liteapi.ts; the wiring in src/app/api/cities.
+// THE TYPEAHEAD'S WHOLE CONTRACT: what a suggestion is, what picking one does,
+// when asking the supplier about a hotel name is warranted, and how to order
+// what comes back.
+//
+// Pure - no fetch, no clock, no secrets, and no city dataset - because two
+// different callers need it and one of them is a client component. The
+// datasets and the matchers over them live in `place-search.ts`, which the
+// browser must never import; the supplier call lives in `liteapi.ts`.
+//
+// RENAMED from `hotel-name-search.ts`, because that name was honest about one
+// tier while the file held the contract for both, and a client component was
+// importing it for the *place* type. Named for what it holds (the architecture
+// review of NOS-66, F7).
+//
 // See docs/adr/0006-search-entry-point.md.
 
 /** A hotel row as the typeahead needs it, narrowed from the supplier's shape. */
@@ -54,22 +63,83 @@ export function normaliseHotelQuery(q: string): string {
 }
 
 /**
- * Should this query cost a supplier call?
+ * What should happen about hotels for this query: nothing, ask now, or offer.
  *
- * `placeMatchCount` must count only the local tiers that matched by EXACT,
- * PREFIX or SUBSTRING - never a fuzzy match. A fuzzy match is a guess, and a
- * guess is not a reason to withhold a real hotel: the query that opened
- * NOS-66 was "holiday inn", which names no city but is one character of
- * typo-tolerance away from looking like it might.
+ * TWO DECISIONS, NOT ONE, AND THE FIRST VERSION HAD THEM ON THE WRONG AXIS.
+ * That version suppressed the hotel tier whenever the query matched the
+ * supplier's city list by SUBSTRING, and the architecture review of NOS-66
+ * measured what that actually did:
  *
- * So: if the query names a place we know, we show places and never ask the
- * supplier. If it names nothing we know, it is probably a hotel.
+ *   hilton    suppressed by  Chilton WI | Hilton NY | Hilton Head Island SC
+ *   hyatt     suppressed by  Hyattsville MD
+ *   waldorf   suppressed by  Waldorf MD
+ *   ritz      suppressed by  Ritzville WA
+ *   sheraton  suppressed by  "Sheraton Lakeside Inn Heliport"
+ *   westin, marriott, nobu, "holiday inn"   fired
+ *
+ * Single-word brands failed and multi-word queries worked, which is the inverse
+ * of what a typeahead needs. A heliport in the supplier's own junk-laden city
+ * list was enough to make a major chain unreachable. The ADR's sentence "if the
+ * query names a place we know, we show places" was true of the code and false as
+ * a description: "Waldorf" does not name a place the guest means.
+ *
+ * So:
+ *
+ * 1. **`ask` - automatic, costs a call.** Only when the query is NOT itself the
+ *    name of a place we hold. Exact equality, not prefix and not substring: if
+ *    you typed the name of a city, you meant the city. This fires for `hyatt`,
+ *    `ritz`, `sheraton` and `holiday inn`, and not for `austin`.
+ * 2. **`offer` - a row the guest can press.** For a query long enough to mean a
+ *    hotel that we are not going to spend on automatically, the dropdown offers
+ *    "Search hotels named X". A press, not a keystroke. `hilton` and `waldorf`
+ *    land here, so no brand is unreachable, and the budget decision stops being
+ *    a guess about intent.
+ *
+ * `exactPlaceMatches` must count only EXACT name equality across the local
+ * tiers, and never a fuzzy match - a fuzzy match is a guess, and a guess is not
+ * a reason to withhold a real hotel. See `exactPlaceMatchCount` in
+ * `place-search.ts`, which is the only thing that should compute it.
  */
-export function shouldLookUpHotelNames(args: { query: string; placeMatchCount: number }): boolean {
+export type HotelLookupAdvice = "none" | "ask" | "offer";
+
+export function hotelLookupAdvice(args: {
+  query: string;
+  exactPlaceMatches: number;
+}): HotelLookupAdvice {
   const q = normaliseHotelQuery(args.query);
-  if (q.length < MIN_HOTEL_QUERY_LENGTH) return false;
-  if (args.placeMatchCount > 0) return false;
-  return true;
+  if (q.length < MIN_HOTEL_QUERY_LENGTH) return "none";
+  return args.exactPlaceMatches > 0 ? "offer" : "ask";
+}
+
+/**
+ * Where picking a suggestion goes.
+ *
+ * A DECISION, SO IT LIVES IN LIB. The first version built this URL inline
+ * inside `Experience.tsx`, which put the routing decision in the one layer this
+ * repository has no test tier for - and it silently dropped `dest` and `notes`,
+ * so `StayPage`'s own "back to results" fell through to `/` and a guest who
+ * picked a hotel had no results list to return to (architecture review, F6).
+ *
+ * A place sets the destination and is resolved by the search page, so it has no
+ * href of its own; `null` says so rather than inventing one.
+ */
+export function suggestionHref(
+  suggestion: Suggestion,
+  context: { checkin: string; nights: number; dest?: string; notes?: string },
+): string | null {
+  if (suggestion.kind !== "hotel") return null;
+
+  const params = new URLSearchParams({
+    checkin: context.checkin,
+    nights: String(context.nights),
+  });
+  // Carried so the hotel page can offer the way back to the search the guest
+  // came from. Omitted when absent rather than sent empty, because
+  // StayPage branches on presence.
+  if (context.dest) params.set("dest", context.dest);
+  if (context.notes) params.set("notes", context.notes);
+
+  return `/stay/${encodeURIComponent(suggestion.hotelId)}?${params.toString()}`;
 }
 
 /**

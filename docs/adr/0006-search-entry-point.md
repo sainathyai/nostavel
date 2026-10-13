@@ -113,19 +113,30 @@ hotel page already supports arriving cold - it has a `defaultCheckin()` for exac
 this adds no new route, no new `SearchTarget` kind and no new `dest` encoding. A guest who
 names one hotel is not asking for a list.
 
-The gate, because this is the first supplier call in this app driven by typing:
+The gate, because this is the first supplier call in this app driven by typing. **Revised
+after the design reviews of this change, which measured the first version doing close to the
+opposite of what this paragraph claimed** - see the amendment at the end of this ADR:
 
+- **It has its own route**, `/api/hotels`. The place tier answers from memory in about 60
+  milliseconds and never waits for it.
+- **It is rate-limited**, 20 per minute per client, the same as `/api/stays-in-area`. The
+  first version had no limit, while the area route one directory away had one.
 - **The query is at least 4 characters.**
-- **No local tier matched it by exact, prefix or substring.** Deliberately *not* counting
-  fuzzy matches: a fuzzy match is a guess, and a guess is not a reason to withhold a real
-  hotel. If the query names a place, we show places and never ask the supplier.
+- **It fires automatically only when the typed string is not itself the name of a place we
+  hold** - exact equality, not prefix and not substring, and never a fuzzy match.
+- **Otherwise the dropdown offers a row to press:** "Search hotels named X". A press, not a
+  keystroke, so no brand is unreachable and the budget decision stops being a guess about
+  what the guest meant.
 - **Answers are cached in the serving process** for 10 minutes, keyed by the normalised
-  query, so a guest deleting and retyping a character pays for one lookup.
-- **A failed lookup is invisible.** Any error, including a 429, returns the local results
-  alone. The typeahead must not break because a supplier is unhappy.
+  query, so a guest deleting and retyping a character pays for one lookup. The cache is
+  checked *before* the rate limit, because an answer already in hand costs nothing.
+- **A failed lookup leaves the local rows alone**, and a rate-limited one says so rather
+  than rendering as "no matches", which is how a limit turns into "this hotel does not
+  exist".
 
-So `holiday inn` (no local match) asks the supplier; `waikiki` no longer does, because it now
-matches a curated locality; `austin` never does.
+Measured on the finished behaviour: `hyatt`, `ritz`, `sheraton` and `holiday inn` ask
+automatically; `hilton`, `waldorf`, `austin` and `waikiki` offer the press row; `hol` does
+neither.
 
 **US only, for now.** `countryCode` is required and the typeahead has no country at the
 moment someone is typing. The curated set is US-only, so this matches where the app already
@@ -156,3 +167,42 @@ returns nothing, with no error.
 - A fourth broken locality appears. One is a data entry; a pattern of them means the harvested
   city list is the wrong source and a neighbourhood dataset is worth the work.
 - Someone needs a hotel by name outside the US.
+
+## Amended 2026-10-13, after the design reviews of this change
+
+This ADR was written alongside the code rather than before it, and two of the reviews that
+were skipped at the time found that the gate described above did close to the opposite of
+what it claimed.
+
+**The gate was on the wrong axis.** It suppressed the hotel tier whenever the query matched
+the supplier's city list by *substring*. Measured against the real dataset:
+
+```
+hilton    suppressed by  Chilton WI | Hilton NY | Hilton Head Island SC
+hyatt     suppressed by  Hyattsville MD
+waldorf   suppressed by  Waldorf MD
+ritz      suppressed by  Ritzville WA
+sheraton  suppressed by  "Sheraton Lakeside Inn Heliport"
+westin, marriott, nobu, "holiday inn"   fired
+```
+
+Single-word brands failed and multi-word queries worked, which is the inverse of what a
+typeahead needs. A heliport in the supplier's own city list was enough to make a major chain
+unreachable. The sentence above - "if the query names a place, we show places" - was true of
+the code and false as a description of its effect: "Waldorf" does not name a place the guest
+means. The axis is now exact equality, plus a press row for the rest.
+
+**The place tier waited for the hotel tier.** Both came from one route, which computed the
+local rows and then awaited the supplier for up to 2.5 seconds before returning anything.
+Measured after the split: 64 milliseconds for places, 180 to 1070 for hotels.
+
+**And the rule was edited to fit the implementation.** `.agents/rules/backend.md` required
+every supplier-calling route to be rate-limited; this change added a paragraph to that rule
+enumerating what had been built, which omitted the rate limit it had not built. That is the
+finding worth carrying forward, more than either defect: a rule edited to match the code
+stops being a constraint. The rule now says so in as many words.
+
+The design decisions themselves survived review: not adding a hotel kind to `SearchTarget`,
+and curated perimeters over `/data/places`, were both upheld, the latter called the
+strongest reasoning in the change. What failed was writing the ADR after the code, which is
+why planning and architecture now go through the roles before anything is built.

@@ -3,9 +3,10 @@ import {
   HOTEL_SUGGESTION_LIMIT,
   normaliseHotelQuery,
   rankHotelMatches,
-  shouldLookUpHotelNames,
+  hotelLookupAdvice,
+  suggestionHref,
   type HotelNameRow,
-} from "./hotel-name-search";
+} from "./search-suggestions";
 import { DESTINATIONS } from "./destinations";
 
 // The hotel the owner could not find, exactly as the supplier returned it on
@@ -18,36 +19,84 @@ const TARGET: HotelNameRow = {
   city: "Honolulu",
 };
 
-describe("shouldLookUpHotelNames", () => {
+describe("hotelLookupAdvice", () => {
   it("asks the supplier when the query names no place we hold", () => {
     // The query that opened NOS-66.
-    expect(shouldLookUpHotelNames({ query: "holiday inn", placeMatchCount: 0 })).toBe(true);
+    expect(hotelLookupAdvice({ query: "holiday inn", exactPlaceMatches: 0 })).toBe("ask");
   });
 
-  it("does not ask when a local tier already matched the name", () => {
-    expect(shouldLookUpHotelNames({ query: "austin", placeMatchCount: 1 })).toBe(false);
+  it("offers a row to press when the query IS the name of a place", () => {
+    // THE DEFECT THE ARCHITECTURE REVIEW MEASURED. The first version returned a
+    // flat "no" here, so a guest who typed a brand that happens to also be a
+    // town - Hilton NY, Waldorf MD - could not reach any hotel by name at all.
+    // Offering a press keeps every brand reachable without spending on a
+    // keystroke that probably meant the town.
+    expect(hotelLookupAdvice({ query: "hilton", exactPlaceMatches: 1 })).toBe("offer");
+    expect(hotelLookupAdvice({ query: "austin", exactPlaceMatches: 1 })).toBe("offer");
   });
 
-  it("does not ask for a query too short to mean one hotel", () => {
-    expect(shouldLookUpHotelNames({ query: "hol", placeMatchCount: 0 })).toBe(false);
-    expect(shouldLookUpHotelNames({ query: "   hol  ", placeMatchCount: 0 })).toBe(false);
+  it("does nothing for a query too short to mean one hotel", () => {
+    expect(hotelLookupAdvice({ query: "hol", exactPlaceMatches: 0 })).toBe("none");
+    expect(hotelLookupAdvice({ query: "   hol  ", exactPlaceMatches: 0 })).toBe("none");
+    // Short wins over everything: no automatic call, and nothing to offer.
+    expect(hotelLookupAdvice({ query: "nyc", exactPlaceMatches: 1 })).toBe("none");
   });
 
   it("counts a four-character brand as long enough", () => {
-    expect(shouldLookUpHotelNames({ query: "nobu", placeMatchCount: 0 })).toBe(true);
+    expect(hotelLookupAdvice({ query: "nobu", exactPlaceMatches: 0 })).toBe("ask");
   });
 
-  it("never asks for an empty query", () => {
-    expect(shouldLookUpHotelNames({ query: "", placeMatchCount: 0 })).toBe(false);
-    expect(shouldLookUpHotelNames({ query: "    ", placeMatchCount: 0 })).toBe(false);
+  it("does nothing for an empty query", () => {
+    expect(hotelLookupAdvice({ query: "", exactPlaceMatches: 0 })).toBe("none");
+    expect(hotelLookupAdvice({ query: "    ", exactPlaceMatches: 0 })).toBe("none");
   });
 
-  // A place match suppresses the lookup, so the thing that counts as a place
-  // match decides what costs money. Fuzzy matches must not be counted by the
-  // caller; this is the assertion that says so in one place.
-  it("treats any non-zero place match as enough, however many there are", () => {
-    expect(shouldLookUpHotelNames({ query: "holiday inn", placeMatchCount: 1 })).toBe(false);
-    expect(shouldLookUpHotelNames({ query: "holiday inn", placeMatchCount: 99 })).toBe(false);
+  it("never asks automatically once any exact place match exists", () => {
+    // The axis that decides spending, asserted as a rule: an exact match means
+    // the guest named a place, and naming a place is not a reason to call a
+    // hotel supplier.
+    for (const n of [1, 2, 99]) {
+      expect(hotelLookupAdvice({ query: "holiday inn", exactPlaceMatches: n })).toBe("offer");
+    }
+  });
+});
+
+describe("suggestionHref", () => {
+  const context = { checkin: "2026-11-15", nights: 2 };
+
+  it("sends a hotel suggestion to that hotel's page with the dates in hand", () => {
+    const href = suggestionHref(
+      { kind: "hotel", hotelId: "lp1dafc", name: "Holiday Inn Express Waikiki by IHG", sub: "" },
+      context,
+    );
+    expect(href).toBe("/stay/lp1dafc?checkin=2026-11-15&nights=2");
+  });
+
+  it("carries the search the guest came from, so the hotel page can offer the way back", () => {
+    // THE SILENT LOSS THE ARCHITECTURE REVIEW FOUND (F6). Building this URL
+    // inline in the component dropped `dest` and `notes`, so StayPage's
+    // "back to results" fell through to "/" and the guest's result list was gone.
+    const href = suggestionHref(
+      { kind: "hotel", hotelId: "lp1dafc", name: "x", sub: "" },
+      { ...context, dest: "waikiki", notes: "quiet, near the beach" },
+    );
+    expect(href).toContain("dest=waikiki");
+    expect(href).toContain("notes=quiet%2C+near+the+beach");
+  });
+
+  it("omits an absent dest rather than sending it empty, because the page branches on presence", () => {
+    const href = suggestionHref({ kind: "hotel", hotelId: "x", name: "x", sub: "" }, context);
+    expect(href).not.toContain("dest=");
+    expect(href).not.toContain("notes=");
+  });
+
+  it("escapes a hotel id rather than pasting it into a path", () => {
+    const href = suggestionHref({ kind: "hotel", hotelId: "a/b?c", name: "x", sub: "" }, context);
+    expect(href).toContain("/stay/a%2Fb%3Fc?");
+  });
+
+  it("has no href for a place, because a place is resolved by the search page", () => {
+    expect(suggestionHref({ kind: "place", dest: "waikiki", name: "Waikiki", sub: "HI, US" }, context)).toBeNull();
   });
 });
 
@@ -64,7 +113,7 @@ describe("rankHotelMatches", () => {
       { id: "b", name: "The Westin Something", address: "2 St", city: "Austin" },
       { id: "a", name: "Westin Austin Downtown", address: "1 St", city: "Austin" },
     ];
-    expect(rankHotelMatches("westin", rows).map((r) => r.hotelId)).toEqual(["a", "b"]);
+    expect(rankHotelMatches("westin", rows).map((r: { hotelId: string }) => r.hotelId)).toEqual(["a", "b"]);
   });
 
   it("prefers the shorter name inside a tier, which is the one the person meant", () => {
@@ -102,7 +151,7 @@ describe("rankHotelMatches", () => {
       { id: "y", name: "   ", city: "Austin" },
       TARGET,
     ];
-    expect(rankHotelMatches("hotel", rows).map((r) => r.hotelId)).toEqual(["lp1dafc"]);
+    expect(rankHotelMatches("hotel", rows).map((r: { hotelId: string }) => r.hotelId)).toEqual(["lp1dafc"]);
   });
 
   it("shows one hotel once, however many times the supplier sends it", () => {
@@ -117,7 +166,7 @@ describe("rankHotelMatches", () => {
       { id: "opaque", name: "Aulani Resort", address: "92 Olani St", city: "Kapolei" },
       TARGET,
     ];
-    expect(rankHotelMatches("holiday inn", rows).map((r) => r.hotelId)).toEqual([
+    expect(rankHotelMatches("holiday inn", rows).map((r: { hotelId: string }) => r.hotelId)).toEqual([
       "lp1dafc",
       "opaque",
     ]);
