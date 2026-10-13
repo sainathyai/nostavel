@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { mayActOnBooking } from "@/lib/booking-authz";
-import { confirmationPageIntent, isPaymentProviderReturn } from "@/lib/booking-transitions";
+import { confirmationPageIntent, holdLapsed, readProviderVerdict } from "@/lib/booking-transitions";
 import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
-import { confirmBooking } from "@/lib/booking-service";
+import { confirmBooking, recordUnresolvedPayment } from "@/lib/booking-service";
 import ThemeToggle from "@/components/ThemeToggle";
 
 type HotelSnap = { name?: string; city?: string; stars?: number };
@@ -96,7 +96,13 @@ export default async function ConfirmationPage(props: {
   let errorMsg: string | null = null;
   let finalizing = false;
   let resume = false;
-  switch (confirmationPageIntent({ status: booking.status, providerReturn: isPaymentProviderReturn(sp) })) {
+  let unresolved = false;
+  const intent = confirmationPageIntent({
+    status: booking.status,
+    provider: readProviderVerdict(sp),
+    holdLapsed: holdLapsed(booking.prebookedAt, new Date()),
+  });
+  switch (intent) {
     case "finalize":
       if (mayActOnBooking(caller, booking, "checkout").ok) {
         try {
@@ -116,6 +122,24 @@ export default async function ConfirmationPage(props: {
       // A claim is in flight - the guest refreshed, or the sweeper is finishing
       // the job. Waiting is the honest answer, not an error.
       finalizing = true;
+      break;
+    case "unresolved":
+      // A charge was started and the hold is gone, so the supplier cannot tell
+      // us whether money moved. Spend nothing, and WRITE DOWN the one fact we
+      // have: the provider sent this browser back here. Without that row the
+      // sweeper expires this booking recording "no payment started", which is
+      // the opposite of what we know (NOS-51 security review, F1).
+      unresolved = true;
+      try {
+        await recordUnresolvedPayment(
+          bookingId,
+          "the payment provider returned this browser after the supplier hold lapsed",
+        );
+      } catch {
+        // The guest still gets the honest page. A failed write here must not
+        // turn a recoverable situation into an error screen; the reconciler and
+        // the sweeper both still see the row.
+      }
       break;
     case "resume":
       // The room is still held and nothing says a payment was started. Send
@@ -137,6 +161,38 @@ export default async function ConfirmationPage(props: {
   const hotel = (finalBooking.hotelSnapshot ?? {}) as HotelSnap;
   const room = (finalBooking.roomSnapshot ?? {}) as RoomSnap;
   const confirmed = finalBooking.status === "confirmed";
+
+  // A CHARGE MAY HAVE HAPPENED AND WE CANNOT ASK. Never "start again" here: the
+  // guest may have been charged, and telling them to pay a second time is the
+  // worst thing this page can do. Say what is true, give them the reference, and
+  // say a person is looking - which is now true, because the event above is what
+  // a person looks at.
+  if (unresolved) {
+    return (
+      <Shell>
+        <div className="rounded-xl border border-brass/35 bg-brass/[0.07] p-6 text-center">
+          <h1 className="font-display text-[22px]">We&rsquo;re checking on your payment</h1>
+          <p className="mt-2 text-[14px] text-soft">
+            Your bank may have taken a payment for this stay, but the hotel released the room
+            before we could confirm it. We&rsquo;re looking into it now and will email you.
+          </p>
+          <p className="mt-2 text-[14px] text-soft">
+            Please don&rsquo;t pay again. If a charge shows on your statement it will either be
+            completed as a booking or released by your bank.
+          </p>
+          <p className="mt-1 text-[13px] text-soft">
+            Reference <span className="font-mono font-semibold text-ink">{finalBooking.humanRef}</span>
+          </p>
+          <Link
+            href="/trips"
+            className="btn-brass mt-5 inline-block rounded-lg px-5 py-2.5 text-[14px] font-semibold text-[#1a1410]"
+          >
+            View my trips
+          </Link>
+        </div>
+      </Shell>
+    );
+  }
 
   // NO PAYMENT STARTED, which is also not a failure. The hold may still be
   // alive, so the useful thing is the way back to the card step - not an error

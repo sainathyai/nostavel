@@ -217,28 +217,56 @@ export type FinalizeIntent =
    * the guest back to the card step. Spend nothing (NOS-51).
    */
   | "resume"
+  /**
+   * A charge was started and the hold is gone, so asking the supplier cannot
+   * answer whether the guest paid. Spend nothing, RECORD that the provider sent
+   * this browser here, and tell the guest a person is looking. Never "start the
+   * booking again": they may have been charged.
+   */
+  | "unresolved"
   /** This booking cannot be completed, and no payment was ever started for it. */
   | "dead";
 
 /**
+ * What the payment provider's redirect says about a charge attempt.
+ *
+ * Three values, not a boolean, because the provider speaks in both directions
+ * and a boolean threw half of that away. `declined` is an assertion that this
+ * attempt did NOT succeed, which is information; `none` is the absence of any
+ * assertion, which is not. Collapsing them is what made the documented
+ * behaviour of a declined card unreachable - see the note on the rule below.
+ */
+export type ProviderVerdict =
+  /** The provider redirected this browser here after a charge attempt. */
+  | "attested"
+  /** The provider says this attempt did not succeed. */
+  | "declined"
+  /** No provider parameters at all: an ordinary navigation to this URL. */
+  | "none";
+
+/**
  * What the confirmation page knows about how this request arrived.
  *
- * `providerReturn` is the answer to "did the payment provider send this browser
- * here after a charge attempt", and it is the reason this is an object rather
- * than a bare status - see the NOS-51 note on the function below.
+ * Three inputs, each of which had to be here before this rule was right:
+ * the row's own state, what the payment provider says, and whether the
+ * supplier's hold has lapsed. The last one decides whether asking the supplier
+ * can answer anything at all.
  */
 export type ConfirmationArrival = {
   status: TransitionStatus;
-  providerReturn: boolean;
+  provider: ProviderVerdict;
+  /** Has the supplier's hold on this room lapsed? See holdLapsed(). */
+  holdLapsed: boolean;
 };
 
 /**
- * NOS-51: A GET MUST NOT SPEND MONEY UNLESS A CHARGE WAS ACTUALLY STARTED.
+ * NOS-51: A GET MUST NOT SPEND MONEY UNLESS A CHARGE WAS ACTUALLY STARTED,
+ * AND MUST NEVER TELL A GUEST WHO MAY HAVE PAID TO PAY AGAIN.
  *
  * This page is the payment provider's return URL, and it used to finalize from
- * `prebooked` as well as `payment_pending` - which means a prefetch, a restored
- * tab, or a link opened from history could call the supplier's `book()` without
- * the guest deciding anything. That is the whole ticket (D-7.1 A).
+ * `prebooked` as well as `payment_pending` - so a prefetch, a restored tab, or a
+ * link opened from history could call the supplier's `book()` with the guest
+ * deciding nothing. That is the ticket (D-7.1 A).
  *
  * So the question becomes: what counts as evidence that a charge was started?
  *
@@ -252,44 +280,109 @@ export type ConfirmationArrival = {
  *
  * Dropping `prebooked` on its own would therefore have told a guest who had just
  * paid to go and pay again. The fix is not to keep guessing from the status, it
- * is to ask the only party that knows: `providerReturn` is true when the payment
- * provider redirected this browser here, which it does only after a charge
- * attempt. That is better evidence than our own breadcrumb, not worse.
+ * is to ask the only party that knows, which is the provider.
  *
- * The two together give four cases that matter:
+ * TWO CORRECTIONS FROM THE SECURITY AND ARCHITECTURE REVIEWS OF THIS CHANGE,
+ * both of which this rule got wrong on its first pass. They are recorded here
+ * because each one is a case the first version read as "fine":
  *
- *   payment_pending, however it arrived  -> finalize. We said a charge started.
- *   prebooked + provider redirect        -> finalize. The provider says one did.
- *   prebooked, no redirect               -> RESUME. Nobody says a charge started,
- *                                          so spend nothing and offer the card
- *                                          step again.
- *   anything else                        -> as before.
+ * 1. **The provider's NEGATIVE verdict was unreachable.** The first version
+ *    switched on `status` first, so `payment_pending` returned `finalize` before
+ *    the provider was ever consulted - and `payment_pending` is exactly the
+ *    state a redirect-based decline arrives in, because `CheckoutClient` awaits
+ *    `markPaymentStartingAction` BEFORE `confirmPayment`. A guest whose bank
+ *    declined them at the 3-D Secure step therefore got a supplier call, a 2014
+ *    refusal and a red "we couldn't confirm your stay" page, for a card that was
+ *    never charged. The provider outranks our breadcrumb in BOTH directions, so
+ *    `declined` is now checked before anything else.
  *
- * `providerReturn` comes from a URL the browser controls, so it is forgeable.
+ * 2. **A guest who paid and came back late left no trace at all.** 3-D Secure
+ *    through a bank app can take longer than the supplier's 15-minute hold -
+ *    `booking-access.ts` already sets its claim TTL in hours for exactly that
+ *    reason. On a lapsed hold, `confirmBooking` throws before claiming the row
+ *    or writing any event, the page said "this rate is no longer held, please
+ *    start the booking again", the row stayed `prebooked`, and the sweeper then
+ *    expired it recording "hold lapsed with no payment started". A charged guest,
+ *    told to book again, and the only record we kept asserted the opposite. The
+ *    provider's attestation - the best evidence of a charge this system will ever
+ *    receive - was read for one branch and thrown away. Hence `unresolved`.
+ *
+ * The cases, in the order they are decided:
+ *
+ *   provider says declined          -> resume      (whatever our breadcrumb says)
+ *   confirmed                       -> done
+ *   confirming                      -> wait
+ *   payment_pending                 -> finalize    (our breadcrumb is all we have)
+ *   prebooked + attested + lapsed   -> unresolved  (record it; spend nothing)
+ *   prebooked + attested + held     -> finalize    (the provider says a charge began)
+ *   prebooked + no signal           -> resume      (nobody says a charge began)
+ *   draft/failed/cancelled/expired  -> dead
+ *
+ * `provider` is derived from a URL the browser controls, so it is forgeable.
  * That is acceptable and worth being explicit about: the holder of a booking id
- * who passes the ownership check could already finalize it before this change.
- * The worst a forged parameter buys is one supplier call, which comes back 2014
- * "payment not completed" for an unpaid transaction and leaves the row exactly
- * where it was (see statusAfterFailedBook). It can cost a call; it cannot
- * confirm an unpaid booking.
+ * who passes the ownership check could already finalize it before this change,
+ * so no new authority is granted. What a forged parameter can do is spend a
+ * supplier call - and, in the unlucky case, more than that: for a DEFINITIVE
+ * supplier refusal on a `prebooked` row (a dead prebook, no availability)
+ * `statusAfterFailedBook` returns `failed`, which this file calls terminal. So a
+ * forged attestation on a live hold can kill that hold permanently. Small harm,
+ * bounded by ownership, but the earlier claim here - that the worst case was
+ * "one supplier call" and the row was left "exactly where it was" - was
+ * overstated, and the security review was right to say so.
  */
 export function confirmationPageIntent(arrival: ConfirmationArrival): FinalizeIntent {
+  // FIRST, because the provider outranks us in both directions. A decline is an
+  // assertion that no money moved, and it is worth more than our own guess that
+  // a charge was about to start. See correction 1 above.
+  if (arrival.provider === "declined") {
+    switch (arrival.status) {
+      // A finished or terminal row is not made unfinished by a failed retry.
+      case "confirmed":
+        return "done";
+      case "confirming":
+        return "wait";
+      case "draft":
+      case "failed":
+      case "cancelled":
+      case "expired":
+        return "dead";
+      // The two pre-payment states: back to the card step, spending nothing.
+      case "prebooked":
+      case "payment_pending":
+        return "resume";
+    }
+  }
+
   switch (arrival.status) {
     case "confirmed":
       return "done";
 
+    case "confirming":
+      return "wait";
+
     // Our own breadcrumb: the browser told us it was about to charge. This is
     // the NORMAL arrival state on the happy path.
+    //
+    // Deliberately NOT conditioned on the hold here, although a lapsed hold
+    // means the supplier cannot answer either. The difference from `prebooked`
+    // below is that this state is already protected: `confirmBooking` does not
+    // throw on it, `statusAfterFailedBook` never terminalises it, and the
+    // sweeper raises `payment.unresolved` for it once the hold lapses. So a
+    // record already exists either way. Whether this case should ALSO skip the
+    // supplier call is a real question and a separate one; it is filed rather
+    // than guessed at here, because changing it changes the NOS-5 happy path.
     case "payment_pending":
       return "finalize";
 
-    // The room is held and we have no breadcrumb. Only the provider's own
-    // redirect may turn this into a supplier call.
     case "prebooked":
-      return arrival.providerReturn ? "finalize" : "resume";
+      // Nothing says a charge began. Spend nothing; offer the card step.
+      if (arrival.provider === "none") return "resume";
+      // A charge began and the hold is gone, so the supplier cannot tell us
+      // whether money moved. Record the attestation and say so. See correction 2.
+      if (arrival.holdLapsed) return "unresolved";
+      // A charge began and the room is still held: this is what finalizing is for.
+      return "finalize";
 
-    case "confirming":
-      return "wait";
     case "draft":
     case "failed":
     case "cancelled":
@@ -299,34 +392,42 @@ export function confirmationPageIntent(arrival: ConfirmationArrival): FinalizeIn
 }
 
 /**
- * Did the payment provider redirect this browser here?
+ * Read the payment provider's verdict out of the return URL's parameters.
  *
  * Stripe appends its own parameters to the `return_url` it was given
  * (`src/app/book/[bookingId]/CheckoutClient.tsx` sets that URL): a
  * `payment_intent`, its client secret, and a `redirect_status`. Their PRESENCE
- * is the signal - a browser that simply navigated to this page carries none of
- * them.
+ * is the attestation - a browser that simply navigated to this page carries
+ * none of them.
  *
- * `redirect_status=failed` is the one value that argues against a charge rather
- * than for one: the provider is saying this attempt did not succeed. Treated as
- * "no charge started", so a declined card leads back to the card step instead of
- * spending a supplier call to be told 2014.
+ * `redirect_status=failed` is the one value that argues AGAINST a charge rather
+ * than for one, and it is returned as `declined` rather than folded into "no
+ * signal", because the two mean different things and the caller must act
+ * differently on them. Folding them together is what made the declined-card
+ * path unreachable in the first version of this file.
  *
- * Nothing here is trusted as PROOF of payment. It decides one thing only:
- * whether asking the supplier is warranted. The supplier remains the only party
- * that can say whether money moved.
+ * Any other non-empty status counts as an attestation, including values this
+ * code has never seen. That is deliberate: an unknown status means a guest
+ * reached the provider and something happened, and the safe reading of
+ * "something happened" is that money may have moved. The set of values that
+ * argue against a charge is pinned to one string on purpose, because that is the
+ * only direction in which being wrong harms a guest rather than costing a call.
+ *
+ * Nothing here is trusted as PROOF of payment. It decides one thing: whether
+ * asking the supplier is warranted. The supplier remains the only party that can
+ * say whether money moved.
  */
-export function isPaymentProviderReturn(params: {
+export function readProviderVerdict(params: {
   payment_intent?: string | string[];
   redirect_status?: string | string[];
-}): boolean {
+}): ProviderVerdict {
   const first = (v: string | string[] | undefined): string =>
     (Array.isArray(v) ? v[0] : v)?.trim() ?? "";
 
   const status = first(params.redirect_status).toLowerCase();
-  if (status === "failed") return false;
+  if (status === "failed") return "declined";
 
-  return Boolean(first(params.payment_intent)) || Boolean(status);
+  return first(params.payment_intent) || status ? "attested" : "none";
 }
 
 /** The supplier's rate limit. Silence dressed as an answer. */
