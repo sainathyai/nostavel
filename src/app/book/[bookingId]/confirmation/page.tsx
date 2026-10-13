@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { mayActOnBooking } from "@/lib/booking-authz";
-import { confirmationPageIntent } from "@/lib/booking-transitions";
+import { confirmationPageIntent, holdLapsed, readProviderVerdict } from "@/lib/booking-transitions";
 import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
-import { confirmBooking } from "@/lib/booking-service";
+import { confirmBooking, recordUnresolvedPayment } from "@/lib/booking-service";
 import ThemeToggle from "@/components/ThemeToggle";
 
 type HotelSnap = { name?: string; city?: string; stars?: number };
@@ -35,8 +35,20 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default async function ConfirmationPage(props: { params: Promise<{ bookingId: string }> }) {
+export default async function ConfirmationPage(props: {
+  params: Promise<{ bookingId: string }>;
+  /**
+   * The payment provider's own parameters, appended to the return URL it was
+   * given. Read for ONE decision: whether a charge was actually started, which
+   * is what decides whether this GET may call the supplier (NOS-51).
+   */
+  searchParams: Promise<{
+    payment_intent?: string | string[];
+    redirect_status?: string | string[];
+  }>;
+}) {
   const { bookingId } = await props.params;
+  const sp = await props.searchParams;
 
   const booking = await getBookingById(bookingId);
   const notFound = (
@@ -67,25 +79,30 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
   const caller = await resolveCaller();
   if (!mayActOnBooking(caller, booking, "manage").ok) return notFound;
 
-  // Finalize on arrival. Idempotent: an already-confirmed booking just returns
-  // its stored result, so a refresh or double-hit here is safe.
+  // Finalize on arrival, but ONLY IF A CHARGE WAS ACTUALLY STARTED (NOS-51,
+  // D-7.1 A). Opening this URL used to call the supplier's `book()` from any
+  // pre-payment state, so a prefetch, a restored tab or a tap in history spent
+  // money without the guest deciding to.
   //
-  // BOTH PRE-PAYMENT STATES, and this is not a detail. The guest's browser now
-  // says "charging now" before the card is charged (NOS-5), so on the normal
-  // path they arrive here as `payment_pending`, not `prebooked`. A version of
-  // this page that finalized only from `prebooked` sent every successful payment
-  // down the failure branch below: no booking, no email, and a red page telling
-  // a guest who had just paid that their charge would be reversed. Caught by the
-  // security review of NOS-5, in a file that branch never touched - which is
-  // why it was missed.
-  // Which states mean what is a tested rule, not a chain of conditions in a
-  // page nothing in CI can exercise. See confirmationPageIntent: the version of
-  // this block that finalized only from `prebooked` showed every successful
-  // payment a failure, because the browser now marks `payment_pending` before
-  // the charge.
+  // Which states mean what is a tested rule, not a chain of conditions in a page
+  // nothing in CI can exercise - this repository has no component test tier, so
+  // a branch that lives here is a branch nothing checks. See
+  // confirmationPageIntent for why the provider's redirect is part of the input
+  // and not just the status: `payment_pending` is our own best-effort
+  // breadcrumb, and `prebooked` does not mean "never charged".
+  //
+  // Finalizing is idempotent: an already-confirmed booking returns its stored
+  // result, so a refresh or a double hit here is safe.
   let errorMsg: string | null = null;
   let finalizing = false;
-  switch (confirmationPageIntent(booking.status)) {
+  let resume = false;
+  let unresolved = false;
+  const intent = confirmationPageIntent({
+    status: booking.status,
+    provider: readProviderVerdict(sp),
+    holdLapsed: holdLapsed(booking.prebookedAt, new Date()),
+  });
+  switch (intent) {
     case "finalize":
       if (mayActOnBooking(caller, booking, "checkout").ok) {
         try {
@@ -106,6 +123,30 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
       // the job. Waiting is the honest answer, not an error.
       finalizing = true;
       break;
+    case "unresolved":
+      // A charge was started and the hold is gone, so the supplier cannot tell
+      // us whether money moved. Spend nothing, and WRITE DOWN the one fact we
+      // have: the provider sent this browser back here. Without that row the
+      // sweeper expires this booking recording "no payment started", which is
+      // the opposite of what we know (NOS-51 security review, F1).
+      unresolved = true;
+      try {
+        await recordUnresolvedPayment(
+          bookingId,
+          "the payment provider returned this browser after the supplier hold lapsed",
+        );
+      } catch {
+        // The guest still gets the honest page. A failed write here must not
+        // turn a recoverable situation into an error screen; the reconciler and
+        // the sweeper both still see the row.
+      }
+      break;
+    case "resume":
+      // The room is still held and nothing says a payment was started. Send
+      // them back to the card step rather than calling the supplier or showing
+      // a failure: neither is true, and this is the state a prefetch lands in.
+      resume = true;
+      break;
     case "dead":
       // Reached only for a booking no payment was ever started for, which is
       // why this no longer promises to reverse a charge we may not have taken.
@@ -120,6 +161,64 @@ export default async function ConfirmationPage(props: { params: Promise<{ bookin
   const hotel = (finalBooking.hotelSnapshot ?? {}) as HotelSnap;
   const room = (finalBooking.roomSnapshot ?? {}) as RoomSnap;
   const confirmed = finalBooking.status === "confirmed";
+
+  // A CHARGE MAY HAVE HAPPENED AND WE CANNOT ASK. Never "start again" here: the
+  // guest may have been charged, and telling them to pay a second time is the
+  // worst thing this page can do. Say what is true, give them the reference, and
+  // say a person is looking - which is now true, because the event above is what
+  // a person looks at.
+  if (unresolved) {
+    return (
+      <Shell>
+        <div className="rounded-xl border border-brass/35 bg-brass/[0.07] p-6 text-center">
+          <h1 className="font-display text-[22px]">We&rsquo;re checking on your payment</h1>
+          <p className="mt-2 text-[14px] text-soft">
+            Your bank may have taken a payment for this stay, but the hotel released the room
+            before we could confirm it. We&rsquo;re looking into it now and will email you.
+          </p>
+          <p className="mt-2 text-[14px] text-soft">
+            Please don&rsquo;t pay again. If a charge shows on your statement it will either be
+            completed as a booking or released by your bank.
+          </p>
+          <p className="mt-1 text-[13px] text-soft">
+            Reference <span className="font-mono font-semibold text-ink">{finalBooking.humanRef}</span>
+          </p>
+          <Link
+            href="/trips"
+            className="btn-brass mt-5 inline-block rounded-lg px-5 py-2.5 text-[14px] font-semibold text-[#1a1410]"
+          >
+            View my trips
+          </Link>
+        </div>
+      </Shell>
+    );
+  }
+
+  // NO PAYMENT STARTED, which is also not a failure. The hold may still be
+  // alive, so the useful thing is the way back to the card step - not an error
+  // about a charge nobody made.
+  if (resume && finalBooking.status === "prebooked") {
+    return (
+      <Shell>
+        <div className="rounded-xl border border-line bg-surface p-6 text-center">
+          <h1 className="font-display text-[22px]">Your booking isn&rsquo;t paid yet</h1>
+          <p className="mt-2 text-[14px] text-soft">
+            We haven&rsquo;t taken a payment for this stay, so there&rsquo;s nothing to confirm
+            yet. Your room is held for a short while longer.
+          </p>
+          <p className="mt-1 text-[13px] text-soft">
+            Reference <span className="font-mono font-semibold text-ink">{finalBooking.humanRef}</span>
+          </p>
+          <Link
+            href={`/book/${bookingId}`}
+            className="btn-brass mt-5 inline-block rounded-lg px-5 py-2.5 text-[14px] font-semibold text-[#1a1410]"
+          >
+            Continue to payment
+          </Link>
+        </div>
+      </Shell>
+    );
+  }
 
   // STILL BEING FINALIZED, which is not a failure. Someone - another tab, or
   // the sweeper - is making this booking right now. Telling the guest that, with

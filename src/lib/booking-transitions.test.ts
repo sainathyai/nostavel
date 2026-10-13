@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAIM_STALE_AFTER_MINUTES,
   confirmationPageIntent,
+  readProviderVerdict,
   PREBOOK_HOLD_MINUTES,
   RECOVER_AFTER_MINUTES,
   holdLapsed,
@@ -11,6 +12,7 @@ import {
   statusAfterFailedBook,
   sweepDecision,
   type SweepCandidate,
+  type ProviderVerdict,
   type TransitionStatus,
 } from "./booking-transitions";
 
@@ -263,34 +265,127 @@ describe("reading the real supplier error, not a test fiction", () => {
 });
 
 describe("what the confirmation page does with each state", () => {
+  // The rule's three inputs: the row's status, what the payment provider says,
+  // and whether the supplier's hold has lapsed. Named helpers so each test reads
+  // as the situation it describes rather than as an object literal.
+  const held = (status: TransitionStatus, provider: ProviderVerdict) =>
+    confirmationPageIntent({ status, provider, holdLapsed: false });
+  const lapsed = (status: TransitionStatus, provider: ProviderVerdict) =>
+    confirmationPageIntent({ status, provider, holdLapsed: true });
+
   it("finalizes from the state the happy path actually arrives in", () => {
     // THE CRITICAL BUG BOTH REVIEWS FOUND. The browser marks `payment_pending`
     // before charging, so that - not `prebooked` - is how a paying guest
     // arrives. A page that finalized only from `prebooked` showed every
     // successful payment a failure.
-    expect(confirmationPageIntent("payment_pending")).toBe("finalize");
-    // Still accepted: a browser that failed to send the heads-up charged anyway.
-    expect(confirmationPageIntent("prebooked")).toBe("finalize");
+    expect(held("payment_pending", "attested")).toBe("finalize");
+    // And it does not matter how that request reached the page: our own
+    // breadcrumb already says a charge was started.
+    expect(held("payment_pending", "none")).toBe("finalize");
+  });
+
+  it("still finalizes a prebooked row the provider redirected here", () => {
+    // The breadcrumb is written best-effort and CheckoutClient swallows its
+    // failure on purpose, so `prebooked` does NOT mean "never charged". Without
+    // this case, NOS-51 would tell a guest who had just paid to pay again.
+    expect(held("prebooked", "attested")).toBe("finalize");
+  });
+
+  it("spends nothing on a prebooked row nobody says was charged (NOS-51)", () => {
+    // A prefetch, a restored tab, a tap in history. This is the whole ticket:
+    // a GET must not call the supplier because someone opened a URL.
+    expect(held("prebooked", "none")).toBe("resume");
+    expect(lapsed("prebooked", "none")).toBe("resume");
+  });
+
+  // ---- correction 1: the provider's NEGATIVE verdict outranks our breadcrumb
+  it("sends a declined card back to the card step, not to the supplier", () => {
+    // THE DEFECT THE ARCHITECTURE REVIEW FOUND. A redirect-based decline (a bank
+    // 3-D Secure step that fails) arrives as `payment_pending`, because the
+    // breadcrumb is written BEFORE confirmPayment. The first version of this rule
+    // switched on status first, so it finalized: a supplier call, a 2014 refusal,
+    // and a red "we couldn't confirm your stay" for a card that was never
+    // charged. The documented behaviour was unreachable on the only path that
+    // produces it.
+    expect(held("payment_pending", "declined")).toBe("resume");
+    expect(lapsed("payment_pending", "declined")).toBe("resume");
+    expect(held("prebooked", "declined")).toBe("resume");
+  });
+
+  it("does not un-finish a booking because a later retry was declined", () => {
+    // A decline must not reopen a row that is already done or already claimed.
+    expect(held("confirmed", "declined")).toBe("done");
+    expect(held("confirming", "declined")).toBe("wait");
+    for (const status of ["draft", "failed", "cancelled", "expired"] as const) {
+      expect(held(status, "declined")).toBe("dead");
+    }
+  });
+
+  // ---- correction 2: a guest who paid and came back late
+  it("records rather than refuses when a charge began and the hold is gone", () => {
+    // THE HIGH FINDING FROM THE SECURITY REVIEW. 3-D Secure through a bank app
+    // can outlast the supplier's 15-minute hold. The guest comes back with a
+    // valid provider attestation; confirmBooking would throw before writing
+    // anything; the row would stay `prebooked`; and the sweeper would then expire
+    // it recording "hold lapsed with no payment started" - the opposite of what
+    // we know. "unresolved" is what keeps the evidence.
+    expect(lapsed("prebooked", "attested")).toBe("unresolved");
+  });
+
+  it("never tells a guest who may have been charged to start again", () => {
+    // The guest-harming direction, asserted as a rule rather than as a case:
+    // any arrival carrying payment evidence must not land on a state whose page
+    // asks for another payment or declares the booking dead.
+    for (const holdIsGone of [false, true]) {
+      for (const status of ["prebooked", "payment_pending"] as const) {
+        const intent = confirmationPageIntent({
+          status,
+          provider: "attested",
+          holdLapsed: holdIsGone,
+        });
+        expect(intent).not.toBe("resume");
+        expect(intent).not.toBe("dead");
+      }
+    }
   });
 
   it("waits rather than failing when another caller holds the claim", () => {
-    expect(confirmationPageIntent("confirming")).toBe("wait");
+    expect(held("confirming", "attested")).toBe("wait");
+    expect(held("confirming", "none")).toBe("wait");
+    expect(lapsed("confirming", "attested")).toBe("wait");
   });
 
   it("shows the confirmation when it is done", () => {
-    expect(confirmationPageIntent("confirmed")).toBe("done");
+    expect(held("confirmed", "attested")).toBe("done");
+    expect(held("confirmed", "none")).toBe("done");
+    expect(lapsed("confirmed", "attested")).toBe("done");
   });
 
   it("only calls a booking dead where no payment was ever started", () => {
     // The states that may say "this could not be completed" to a guest. If a
     // payment-bearing state ever appears here, a paying guest is being told
-    // their booking failed - so this list is the assertion.
+    // their booking failed - so this list is the assertion. `prebooked` is NOT
+    // on it: an unpaid hold is not a dead booking, it is an unfinished one.
     for (const status of ["draft", "failed", "cancelled", "expired"] as const) {
-      expect(confirmationPageIntent(status)).toBe("dead");
+      for (const provider of ["attested", "declined", "none"] as const) {
+        expect(held(status, provider)).toBe("dead");
+        expect(lapsed(status, provider)).toBe("dead");
+      }
     }
   });
 
-  it("has an answer for every status, so a new one cannot fall through silently", () => {
+  it("never resumes a state that cannot be paid for", () => {
+    // "resume" sends the guest back to the card step, so it must only ever be
+    // reached for a row the card step can still complete.
+    for (const status of ["draft", "failed", "cancelled", "expired", "confirmed", "confirming"] as const) {
+      for (const provider of ["attested", "declined", "none"] as const) {
+        expect(held(status, provider)).not.toBe("resume");
+        expect(lapsed(status, provider)).not.toBe("resume");
+      }
+    }
+  });
+
+  it("has an answer for every combination, so a new one cannot fall through silently", () => {
     const all: TransitionStatus[] = [
       "draft",
       "prebooked",
@@ -302,7 +397,55 @@ describe("what the confirmation page does with each state", () => {
       "expired",
     ];
     for (const status of all) {
-      expect(["finalize", "wait", "done", "dead"]).toContain(confirmationPageIntent(status));
+      for (const provider of ["attested", "declined", "none"] as const) {
+        for (const holdIsGone of [false, true]) {
+          expect(["finalize", "wait", "done", "resume", "unresolved", "dead"]).toContain(
+            confirmationPageIntent({ status, provider, holdLapsed: holdIsGone }),
+          );
+        }
+      }
     }
+  });
+});
+
+describe("reading the payment provider's verdict", () => {
+  it("reads a completed attempt as an attestation", () => {
+    expect(readProviderVerdict({ payment_intent: "pi_123", redirect_status: "succeeded" })).toBe(
+      "attested",
+    );
+  });
+
+  it("reads a bare navigation to the page as no signal at all", () => {
+    expect(readProviderVerdict({})).toBe("none");
+  });
+
+  it("reads a declined attempt as a decline, not as silence", () => {
+    // The distinction the first version threw away by returning a boolean. A
+    // decline is an assertion that no money moved; silence asserts nothing. The
+    // caller acts differently on them, so this function must keep them apart.
+    expect(readProviderVerdict({ payment_intent: "pi_123", redirect_status: "failed" })).toBe(
+      "declined",
+    );
+    expect(readProviderVerdict({ redirect_status: "FAILED" })).toBe("declined");
+  });
+
+  it("treats a status it has never seen as a charge that may have happened", () => {
+    // Stripe can redirect while an attempt is still settling, and may add values
+    // later. Being wrong in this direction costs a supplier call; being wrong in
+    // the other direction tells a charged guest to pay again.
+    expect(readProviderVerdict({ redirect_status: "processing" })).toBe("attested");
+    expect(readProviderVerdict({ redirect_status: "pending" })).toBe("attested");
+    expect(readProviderVerdict({ redirect_status: "canceled" })).toBe("attested");
+  });
+
+  it("reads a repeated parameter without throwing", () => {
+    // Next gives a repeated query parameter as an array. Worth a case because
+    // this value decides whether a GET may spend money.
+    expect(readProviderVerdict({ payment_intent: ["pi_123", "pi_456"] })).toBe("attested");
+    expect(readProviderVerdict({ redirect_status: ["failed", "succeeded"] })).toBe("declined");
+  });
+
+  it("ignores whitespace and empty values rather than reading them as a signal", () => {
+    expect(readProviderVerdict({ payment_intent: "   ", redirect_status: "  " })).toBe("none");
   });
 });

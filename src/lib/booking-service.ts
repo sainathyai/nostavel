@@ -493,6 +493,52 @@ export type ConfirmResult =
 // (the SDK charge), advances the ledger to confirmed, records the payment, and
 // appends the terminal event. Idempotent — a retry of an already-confirmed
 // booking hands back the stored result rather than double-booking.
+/**
+ * Record that the payment provider sent a guest's browser back to us for a
+ * booking whose supplier hold has already lapsed (NOS-51).
+ *
+ * WHY THIS EXISTS AT ALL. The provider's redirect is the best evidence of a
+ * charge this system will ever receive: there is no payment webhook and no
+ * transaction-status endpoint (checked 2026-10-06 against the supplier's event
+ * list). Past the hold, asking the supplier cannot answer whether money moved,
+ * so there is nothing to attempt and nothing to confirm. What there IS, is a
+ * fact worth keeping: this browser came back from the provider.
+ *
+ * Before this existed that fact was read for one branch and discarded, and the
+ * row stayed `prebooked` - where the sweeper expired it, writing "hold lapsed
+ * with no payment started". A guest who may have been charged, and a ledger
+ * asserting the opposite. This writes the row that contradicts it.
+ *
+ * The STATUS IS DELIBERATELY NOT CHANGED. Promoting to `payment_pending` would
+ * make the sweeper try to recover a hold that no longer exists, spending a
+ * supplier call to be told what we already know, and `markPaymentStarting` is a
+ * compare-and-swap from `prebooked` whose own preconditions this path has not
+ * checked. Whether the sweeper should learn to read this event instead of
+ * trusting the status is the open question the review raised; it is a ticket,
+ * not a guess made here.
+ *
+ * Idempotent, because this page is a URL a guest will refresh: one event per
+ * booking, matching the sweeper's own `appendOnce`.
+ */
+export async function recordUnresolvedPayment(
+  bookingId: string,
+  reason: string,
+): Promise<void> {
+  const existing = await db
+    .select({ id: bookingEvents.id })
+    .from(bookingEvents)
+    .where(and(eq(bookingEvents.bookingId, bookingId), eq(bookingEvents.type, "payment.unresolved")))
+    .limit(1);
+  if (existing.length) return;
+
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "payment.unresolved",
+    actor: "guest",
+    payload: { reason },
+  });
+}
+
 export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult> {
   const rows = await db.select().from(bookings).where(eq(bookings.id, input.bookingId)).limit(1);
   const row = rows[0];
@@ -518,9 +564,23 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
 
   // THE HOLD IS GONE. The supplier releases a prebooked room after 15 minutes
   // and `book()` would fail anyway (NOS-46); saying so plainly beats passing a
-  // dead prebook to the supplier and relaying whatever it says. A guest who
-  // already paid is not turned away here - a paid row is `payment_pending`, and
-  // the sweeper's recovery, not this path, is what resolves it.
+  // dead prebook to the supplier and relaying whatever it says.
+  //
+  // THIS COMMENT USED TO SAY "a guest who already paid is not turned away here -
+  // a paid row is `payment_pending`". NOS-51 made that premise false, and the
+  // security review of NOS-51 caught it: a `prebooked` row carrying the payment
+  // provider's own redirect attestation may well have been charged, because the
+  // breadcrumb that would have written `payment_pending` is best-effort and
+  // `CheckoutClient` swallows its failure. A 3-D Secure step through a bank app
+  // can easily outlast fifteen minutes - `booking-access.ts` sets its claim TTL
+  // in hours for that exact reason.
+  //
+  // So this throw must never be the thing a charged guest meets. It is not any
+  // more: `confirmationPageIntent` returns `unresolved` for that case and the
+  // page records `payment.unresolved` instead of calling this function. This
+  // throw is now only reached for a lapsed hold with NO payment evidence, which
+  // is a guest who genuinely has to start again. If you change that rule, change
+  // this comment with it.
   if (row.status === "prebooked" && holdLapsed(row.prebookedAt, new Date())) {
     throw new Error("This rate is no longer held. Please start the booking again.");
   }
