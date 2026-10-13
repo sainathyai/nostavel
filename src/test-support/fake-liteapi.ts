@@ -104,6 +104,9 @@ let bookGate: Promise<void> | null = null;
 let releaseBookGate: (() => void) | null = null;
 let bookResult: Partial<FakeBookResult> = {};
 let bookError: Error | null = null;
+/** What `getSupplierBooking` reports, keyed by the supplier's booking id. */
+let supplierBookings = new Map<string, unknown>();
+let supplierBookingError: Error | null = null;
 
 type CallCountWaiter = { count: number; resolve: () => void };
 let callCountWaiters: CallCountWaiter[] = [];
@@ -127,6 +130,8 @@ export function resetFakeSupplier(): void {
   releaseBookGate = null;
   bookResult = {};
   bookError = null;
+  supplierBookings = new Map();
+  supplierBookingError = null;
   callCountWaiters = [];
 }
 
@@ -160,6 +165,23 @@ export function waitForBookCalls(count: number): Promise<void> {
 /** Configure what the next (and subsequent) `book()` calls resolve with. */
 export function configureBookResult(result: Partial<FakeBookResult>): void {
   bookResult = result;
+}
+
+/**
+ * Configure what `getSupplierBooking(id)` reports for one supplier booking id.
+ *
+ * Added in NOS-64. The reconciler calls `getSupplierBooking` and this fake had no
+ * such export, which is the mechanical reason that route had no tests at all: any
+ * test that mocked `@/lib/liteapi` left the reconciler calling undefined. A
+ * money-safety job was therefore untestable rather than untested.
+ */
+export function configureSupplierBooking(bookingId: string, value: unknown): void {
+  supplierBookings.set(bookingId, value);
+}
+
+/** Configure `getSupplierBooking()` to reject, for the unreachable-supplier path. */
+export function configureSupplierBookingError(error: Error | null): void {
+  supplierBookingError = error;
 }
 
 /** Configure `book()` to reject instead of resolving, for a failure-path test. */
@@ -259,4 +281,17 @@ export function buildFakeWebhookPayload(opts: {
       status: opts.status ?? "CANCELLED",
     }),
   };
+}
+
+/**
+ * The supplier's own view of a booking, as the reconciler asks for it.
+ *
+ * An id nobody configured resolves to `{ status: "confirmed" }`, because the
+ * common case in a reconciliation test is "the supplier agrees" and spelling that
+ * out in every test would bury the case each one is actually about.
+ */
+export async function getSupplierBooking(bookingId: string): Promise<unknown> {
+  if (supplierBookingError) throw supplierBookingError;
+  if (supplierBookings.has(bookingId)) return supplierBookings.get(bookingId);
+  return { status: "confirmed" };
 }
