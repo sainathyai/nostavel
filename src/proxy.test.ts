@@ -44,15 +44,15 @@ function shared(overrides: Record<string, string> = {}): void {
     DATABASE_URL: "present",
     AUTH_SECRET: "present",
     CRON_SECRET: OPS_SECRET,
-    APP_URL: "https://example.invalid",
-    AUTH_URL: "https://example.invalid",
+    APP_URL: "https://nostavel-uat.example.com",
+    AUTH_URL: "https://nostavel-uat.example.com",
     ACCESS_PASSWORD: GATE_PASSWORD,
     ...overrides,
   });
 }
 
 function request(path: string, headers: Record<string, string> = {}): NextRequest {
-  return new NextRequest("https://example.invalid" + path, { headers });
+  return new NextRequest("https://nostavel-uat.example.com" + path, { headers });
 }
 
 function basic(password: string): Record<string, string> {

@@ -138,6 +138,83 @@ const DEGRADED_IN_SHARED: Array<{ name: string; code: string; effect: string }> 
 ];
 
 /**
+ * The two variables whose VALUE, not just presence, decides whether a guest
+ * gets a usable link. Both carry this environment's own origin.
+ */
+const URL_VARS = ["APP_URL", "AUTH_URL"] as const;
+
+/**
+ * Hosts that are never an origin a guest's browser can reach.
+ *
+ * `.invalid` is reserved by RFC 2606 precisely so it can never resolve, and it
+ * is in this list for a concrete reason: `infra/envs/uat/variables.tf` defaults
+ * `app_url` to `https://example.invalid`, and the bootstrap runbook DOCUMENTS
+ * leaving it at that placeholder through the first apply, because the service's
+ * URL is not knowable until the service exists.
+ */
+const UNREACHABLE_HOSTS = ["0.0.0.0", "localhost", "127.0.0.1", "::1", "[::1]"];
+
+/**
+ * Is this value a usable origin for a shared environment?
+ *
+ * A PRESENCE CHECK COULD NOT CATCH THE FAILURE IT WAS ADDED FOR, and the
+ * architecture review of NOS-67 said so. The original defect was a sign-in link
+ * pointing at `https://0.0.0.0:8080/`, caused by AUTH_URL being unset. Making it
+ * fatal-when-missing fixed exactly that, and nothing else: `example.invalid` is
+ * present, non-empty, passes the required-list loop, and reports `ok: true` -
+ * while every link mailed to a guest is dead. That is the same bug with a
+ * different hostname, and the runbook walks the owner straight through it.
+ *
+ * So the check is on the shape:
+ *   - it must parse as a URL;
+ *   - `https` in a shared environment, because a link we mail is a link a
+ *     browser follows and a bank's app may refuse plain http;
+ *   - the host must be one a guest's browser can actually reach, which rules out
+ *     the container's own bind address, the loopback names, and the reserved
+ *     `.invalid` suffix the bootstrap placeholder uses.
+ *
+ * Returns the reason it is unusable, or null when it is fine. A reason rather
+ * than a boolean so the message can name what is wrong: the person reading it is
+ * mid-deploy and the difference between "not a URL" and "placeholder still set"
+ * is the difference between a typo and an unfinished runbook.
+ *
+ * NO REASON EVER ECHOES THE VALUE. The first version of this quoted the raw
+ * string back ("is not a URL (...)"), which the existing secret-leak test caught
+ * immediately: that test plants a sentinel in every variable and asserts no
+ * problem message contains any of them. APP_URL is not a secret, so exempting it
+ * would have been easy and wrong - the rule is categorical precisely so nobody
+ * has to decide per variable, and the NOS-60 review had already found the weak
+ * version of that test once. The host names below are literals from
+ * UNREACHABLE_HOSTS, not substrings of the input, so naming them echoes our own
+ * list rather than the value.
+ */
+export function unusableOriginReason(value: string): string | null {
+  const raw = value.trim();
+  if (!raw) return "is not set";
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "is not a URL";
+  }
+
+  if (url.protocol !== "https:") {
+    return "is not https, and a link mailed to a guest has to be";
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (UNREACHABLE_HOSTS.includes(host)) {
+    return "points at this container's own address, which no guest's browser can reach";
+  }
+  if (host === "invalid" || host.endsWith(".invalid")) {
+    return "is still the bootstrap placeholder, so every link mailed to a guest is dead";
+  }
+
+  return null;
+}
+
+/**
  * Every problem with this process's configuration, worst first.
  *
  * Order within a severity follows the lists above rather than discovery order,
@@ -205,6 +282,53 @@ export function configProblems(env: Env): ConfigProblem[] {
         message: `${name} is not set, and a shared environment needs it for ${why}.`,
       });
     }
+  }
+
+  // THE VALUE, NOT ONLY THE PRESENCE. See unusableOriginReason: a placeholder
+  // origin is present, non-empty, and mails every guest a dead link. Only
+  // checked when the value is set, so a missing variable reports once, as
+  // missing, rather than twice.
+  for (const name of URL_VARS) {
+    const value = (env[name] ?? "").trim();
+    if (!value) continue;
+    const reason = unusableOriginReason(value);
+    if (reason) {
+      problems.push({
+        code: `${name.toLowerCase().replace(/_/g, "-")}-unusable`,
+        severity: "fatal",
+        message: `${name} ${reason}.`,
+      });
+    }
+  }
+
+  // AND THAT THEY AGREE. Terraform feeds both from one variable precisely
+  // because two copies of a URL drift, but nothing stopped them drifting: a
+  // `gcloud run services update` can set either one alone. Diverged, sign-in
+  // links and booking-email links point at different origins and an auth cookie
+  // set on one host is not sent to the other, with nothing erroring. Raised by
+  // the security review of NOS-67. Compared by origin, not by string, so a
+  // trailing slash is not a problem (NOS-67 review, F10).
+  const origins = URL_VARS.map((name) => {
+    const value = (env[name] ?? "").trim();
+    if (!value || unusableOriginReason(value)) return null;
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  });
+  if (origins[0] && origins[1] && origins[0] !== origins[1]) {
+    problems.push({
+      code: "app-auth-url-disagree",
+      severity: "fatal",
+      // Deliberately does not print the two origins, for the same reason as
+      // above: no problem message echoes a variable's value. The health route
+      // behind the operations secret is where an operator reads the values.
+      message:
+        "APP_URL and AUTH_URL name different origins. They are one value: a guest would " +
+        "get sign-in links on one host and booking links on the other, and a cookie set " +
+        "on one is not sent to the other.",
+    });
   }
 
   // JUDGED AND COMPARED THE SAME WAY. The first draft tested `trim()` for
