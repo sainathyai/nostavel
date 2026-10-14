@@ -66,8 +66,10 @@ async function seedFinalized(overrides: {
   status?: string;
   amountSupplierMinor?: number | null;
   liteapiBookingId?: string | null;
+  createdAt?: Date;
 }) {
   return seedPrebookedBooking({
+    ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
     status: (overrides.status ?? "confirmed") as never,
     humanRef: overrides.humanRef ?? "NSTVL-" + Math.random().toString(36).slice(2, 8).toUpperCase(),
     liteapiBookingId:
@@ -177,6 +179,51 @@ describe("the exclusions that §1.2 settled, which must still hold", () => {
     const booking = await seedFinalized({
       humanRef: "NSTVL-LNTRN1",
       amountSupplierMinor: null,
+    });
+
+    const summary = await runReconcile();
+
+    expect(summary.missingSupplierCost).toBe(1);
+    expect(await eventTypes(booking.id)).toContain("reconcile.missing_supplier_cost");
+  });
+
+  it("excludes the legacy era however it is capitalised", async () => {
+    // THE NOS-64 SECURITY REVIEW, F7. Postgres `LIKE` is case-sensitive and
+    // `human_ref` is free text, so a filter written for `LNTRN-%` let
+    // `lntrn-795bnm` walk straight through. The exclusions are `ilike` now.
+    for (const ref of ["lntrn-795bnm", "Lntrn-795BNM", "fix0001", "Fix0002"]) {
+      await resetTestDatabase();
+      const booking = await seedFinalized({ humanRef: ref, amountSupplierMinor: null });
+      const summary = await runReconcile();
+      expect(summary.checked, `ref ${ref} should be excluded`).toBe(0);
+      expect(summary.missingSupplierCost, `ref ${ref} should raise nothing`).toBe(0);
+      expect(await eventTypes(booking.id)).toHaveLength(0);
+    }
+  });
+
+  it("excludes a row from before the ledger era even when its reference looks current", async () => {
+    // Also F7: the comment defines the legacy population as a DATE ERA, and a
+    // reference prefix is only a proxy for it. A legacy-era row that was never
+    // `LNTRN-`-prefixed was excluded by nothing, so the era is now excluded too.
+    const booking = await seedFinalized({
+      humanRef: "NSTVL-OLD001",
+      amountSupplierMinor: null,
+      createdAt: new Date("2026-08-04T12:00:00.000Z"),
+    });
+
+    const summary = await runReconcile();
+
+    expect(summary.checked).toBe(0);
+    expect(summary.missingSupplierCost).toBe(0);
+    expect(await eventTypes(booking.id)).toHaveLength(0);
+  });
+
+  it("includes a row from the first day of the real ledger era", async () => {
+    // The boundary itself, asserted so the cutover cannot drift silently.
+    const booking = await seedFinalized({
+      humanRef: "NSTVL-NEW001",
+      amountSupplierMinor: null,
+      createdAt: new Date("2026-08-12T00:00:00.000Z"),
     });
 
     const summary = await runReconcile();

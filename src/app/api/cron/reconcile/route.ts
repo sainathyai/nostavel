@@ -34,12 +34,41 @@
 // Note also that §1.2 said its rule "belongs in ONE place, the reporting store,
 // never copied into each view". It had been copied here. That is how a predicate
 // written for revenue reporting ended up deciding what a money-safety job can see.
-import { and, eq, inArray, notLike } from "drizzle-orm";
+//
+// **DO NOT COPY THIS PREDICATE INTO A MONEY REPORT.** It is the opposite of the
+// one §1.2 settled, and for a good reason: this job wants to SEE a row with an
+// unknown supplier cost, and a revenue report must NOT, because `total - (net ??
+// 0)` on those rows books $972.29 of profit that never existed. The two
+// predicates look interchangeable and are not. The security review of NOS-64
+// asked for this sentence, on the grounds that this file's own history is a
+// persuasive comment getting copied to a place where it was wrong.
+//
+// CASE AND ERA (NOS-64 security review, F7). The exclusions are
+// case-insensitive, because `human_ref` is free text and Postgres `LIKE` is not,
+// so `lntrn-795bnm` would otherwise walk straight through a filter written for
+// `LNTRN-%`. And because the comment above defines the legacy population as a
+// DATE ERA while a prefix is only a proxy for it, the era itself is excluded too:
+// a row created before the real ledger began is legacy whatever it is called.
+// Belt and braces, deliberately, because this predicate is now the only thing
+// standing between a false nightly mismatch and a human learning to ignore them.
+import { and, eq, gte, inArray, notIlike } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
 import { getSupplierBooking } from "@/lib/liteapi";
 import { verifySharedSecret } from "@/lib/webhook-auth";
 import { statusesAgree } from "@/lib/cron-format";
+
+/**
+ * When the ledger started meaning what it means today: the first `NSTVL-*` row,
+ * 2026-08-12 (docs/production-readiness.md §1.2, measured 2026-08-23). Anything
+ * older is the `LNTRN-*` era, which recorded no supplier net at all and would
+ * mismatch forever if compared.
+ *
+ * A date rather than a row count because the eras are defined by date in §1.2,
+ * and midnight UTC on the 12th because the first real row is from that day and
+ * the three eras do not overlap.
+ */
+const LEDGER_ERA_BEGAN = new Date("2026-08-12T00:00:00.000Z");
 
 export async function POST(request: Request) {
   const auth = request.headers.get("authorization");
@@ -56,8 +85,12 @@ export async function POST(request: Request) {
         inArray(bookings.status, ["confirmed", "cancelled"]),
         // The legacy era and the prebook fixtures, named for what they are
         // rather than inferred from a null column. See the note at the top.
-        notLike(bookings.humanRef, "LNTRN-%"),
-        notLike(bookings.humanRef, "FIX%"),
+        notIlike(bookings.humanRef, "LNTRN-%"),
+        notIlike(bookings.humanRef, "FIX%"),
+        // The era itself, so the code states what the comment claims rather than
+        // trusting a reference prefix nobody enforces. `created_at` is NOT NULL
+        // with a default, so this needs no null branch.
+        gte(bookings.createdAt, LEDGER_ERA_BEGAN),
       ),
     );
 
