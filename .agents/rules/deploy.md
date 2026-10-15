@@ -190,6 +190,20 @@ from the Actions documentation (checked 2026-10-10) say that is a stopgap:
 Do not treat a green manual run as evidence the schedule works. They are
 different claims, and only the second one matters at 3am.
 
+**Measured 2026-10-13, after `*/5` had been live three days: it does not work
+either.** GitHub fired the sweeper **13 times against an expected 808** over 67.3
+hours, a delivery rate of **1.6%**, worst observed gap **9 hours 41 minutes**
+against the 15-minute hold. The reconciler fired 3 times. Every one of those runs
+reports success, so nothing reports a problem anywhere: the job is not failing, it
+is simply not being invoked.
+
+That closes the question the `*/5` fix left open. The problem was never the
+interval, it is the event. Until Cloud Scheduler lands, the honest statement is
+that this application has no working automatic rescue for a guest who was charged.
+Keep the workflows as `workflow_dispatch` so a manual run stays available during
+an incident, but do not leave a `schedule:` block behind pretending to be a safety
+net.
+
 ## Changing a workflow
 
 - Least privilege in `permissions:`, and no secret reachable from a fork-triggered
