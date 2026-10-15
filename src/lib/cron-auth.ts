@@ -144,7 +144,14 @@ export async function authorizeCronRequest(
         // requires `iat` when `maxTokenAge` is set. So these are not decoration:
         // without them jose alone would accept a Google-signed token that never
         // expires. The rule below also demands both, which is the belt.
-        requiredClaims: ["exp", "iat", "email", "email_verified", "sub"],
+        // NOT `email` or `email_verified`: Google adds those only when an
+        // include-email option is requested, and Cloud Scheduler's job config
+        // has no such option (checked against Google's documentation
+        // 2026-10-14). Requiring them here would have denied every real
+        // Scheduler token and failed both money jobs closed on day one. `sub` is
+        // the documented, always-present identity claim and is what pins the
+        // caller; see the note at the top of `cron-identity.ts`.
+        requiredClaims: ["exp", "iat", "sub"],
         // The only thing that bounds how long a captured token stays replayable.
         maxTokenAge: "1h",
         // Both layers now judge time against the SAME injected instant. jose's

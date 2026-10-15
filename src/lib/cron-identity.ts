@@ -20,9 +20,30 @@
 // only an IAM-gated service does that, and IAM is per service, not per path. If
 // this rule checked the issuer and stopped there, any Google Cloud customer could
 // mint a token for our audience and run the sweeper. The caller's exact
-// service-account identity is therefore pinned by `email` AND by `sub`, the
-// account's immutable unique id, because an email can be recreated on a deleted
-// account and `sub` cannot.
+// service-account identity is therefore pinned.
+//
+// WHICH CLAIM PINS IT, AND WHY IT IS `sub` AND NOT `email`. Checked against
+// Google's documentation 2026-10-14, before any of this ran:
+//
+//   - `sub` is in the documented field table for a service-account ID token, and
+//     it is the identifier Google's own OpenID Connect guidance says to key on.
+//     It is also immutable: an email can be recreated on a deleted account and a
+//     `sub` cannot.
+//   - **`email` and `email_verified` are NOT in that table.** They appear in an
+//     example payload, and the token-generation documentation is explicit that
+//     they are added only when an include-email option is requested
+//     (`gcloud auth print-identity-token --include-email`, the auth action's
+//     `id_token_include_email`). Cloud Scheduler's job configuration has no such
+//     option: it takes a service account and an audience, and nothing else.
+//
+// The first version of this file REQUIRED `email` and `email_verified: true`, and
+// passed both to jose as required claims. If Cloud Scheduler omits them, that
+// version denies every token and both money-safety jobs fail closed on day one -
+// which is the failure the security review predicted and asked someone to check
+// before the Scheduler jobs were applied. So: `sub` is required and pinned;
+// `email` is verified only if it is present. That is not a weakening. A token
+// bearing our service account's `sub` can only be obtained by something able to
+// act as that service account, which is the whole claim being made.
 //
 // WHY EVERY MISSING CLAIM IS A DENIAL. `Date.now() > undefined` is `false`, so an
 // expiry check written the obvious way passes a token with no `exp` at all. That
@@ -32,9 +53,17 @@
 
 /** What the token must prove, supplied by the route from configuration. */
 export type ExpectedCaller = {
-  /** The service account Cloud Scheduler uses for this job. */
+  /**
+   * The service account Cloud Scheduler uses for this job.
+   *
+   * Checked only when the token carries an `email` claim, because Google does not
+   * guarantee one for a service-account ID token. See the note at the top.
+   */
   email: string;
-  /** That account's immutable unique id, which outlives a recreated email. */
+  /**
+   * That account's immutable unique id. THIS is what pins the caller: it is
+   * documented, always present, and cannot be reused by a recreated account.
+   */
   subject: string;
   /** The exact URL the job targets, which is what the token is audience-bound to. */
   audience: string;
@@ -114,19 +143,28 @@ export function verifyCronCaller(
   if (aud !== expected.audience) return { ok: false, reason: "aud is not this route" };
 
   // THE CHECK THAT STOPS ALL OF GOOGLE CLOUD FROM BEING AUTHORISED.
-  const email = nonEmptyString(claims.email);
-  if (!email) return { ok: false, reason: "email is missing or not a string" };
-  if (email !== expected.email) return { ok: false, reason: "email is not the expected caller" };
-
-  // Google sets this true for a service account. Requiring it explicitly means a
-  // token shaped like a human's unverified account cannot pass as the job.
-  if (claims.email_verified !== true) {
-    return { ok: false, reason: "email_verified is not true" };
-  }
-
+  //
+  // `sub` carries it, because it is the only identity claim Google documents as
+  // present on a service-account ID token. Required, and pinned.
   const sub = nonEmptyString(claims.sub);
   if (!sub) return { ok: false, reason: "sub is missing or not a string" };
   if (sub !== expected.subject) return { ok: false, reason: "sub is not the expected caller" };
+
+  // `email` is a corroborating claim, not the gate. Verified when present, absent
+  // without complaint, because Cloud Scheduler has no way to ask for it. A token
+  // that carries SOMEONE ELSE'S email alongside our `sub` is impossible to obtain
+  // and is still refused here, which costs nothing.
+  if (claims.email !== undefined) {
+    const email = nonEmptyString(claims.email);
+    if (!email) return { ok: false, reason: "email is present but not a string" };
+    if (email !== expected.email) return { ok: false, reason: "email is not the expected caller" };
+    // Only meaningful alongside an email, and only ever `true` or absent for a
+    // service account. `!== true` rather than falsiness, so the string "false"
+    // cannot pass.
+    if (claims.email_verified !== undefined && claims.email_verified !== true) {
+      return { ok: false, reason: "email_verified is not true" };
+    }
+  }
 
   // Expiry last, and explicitly, because this is the claim whose absence fails
   // open if it is compared without being checked first.
