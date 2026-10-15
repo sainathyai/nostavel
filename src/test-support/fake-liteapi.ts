@@ -103,6 +103,7 @@ export const bookCalls: FakeBookCall[] = [];
 let bookGate: Promise<void> | null = null;
 let releaseBookGate: (() => void) | null = null;
 let bookResult: Partial<FakeBookResult> = {};
+let cancelResult: Partial<FakeCancelResult> = {};
 let bookError: Error | null = null;
 /** What `getSupplierBooking` reports, keyed by the supplier's booking id. */
 let supplierBookings = new Map<string, unknown>();
@@ -129,6 +130,7 @@ export function resetFakeSupplier(): void {
   bookGate = null;
   releaseBookGate = null;
   bookResult = {};
+  cancelResult = {};
   bookError = null;
   supplierBookings = new Map();
   supplierBookingError = null;
@@ -182,6 +184,20 @@ export function configureSupplierBooking(bookingId: string, value: unknown): voi
 /** Configure `getSupplierBooking()` to reject, for the unreachable-supplier path. */
 export function configureSupplierBookingError(error: Error | null): void {
   supplierBookingError = error;
+}
+
+/**
+ * Configure what the next (and subsequent) `cancelBooking()` calls resolve with.
+ *
+ * Added in NOS-7. The fake returned a fixed zero-refund result, which is fine for
+ * the happy path and useless for the one that matters: proving the three writes
+ * after a successful supplier cancellation are atomic needs a supplier response
+ * the DATABASE rejects, so the write fails after the status update has been
+ * issued. `refundAmountMinor` is an `integer` column, so a value above 2^31 - 1
+ * is refused by Postgres itself rather than by a check we wrote.
+ */
+export function configureCancelResult(result: Partial<FakeCancelResult>): void {
+  cancelResult = result;
 }
 
 /** Configure `book()` to reject instead of resolving, for a failure-path test. */
@@ -244,7 +260,7 @@ export async function prebook(offerId: string): Promise<FakePrebookResult> {
   };
 }
 
-/** See the `prebook` note above — not used by NOS-33's three tests. */
+/** Mirrors `cancelBooking` in src/lib/liteapi.ts. Configured by `configureCancelResult`. */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for signature parity with src/lib/liteapi.ts's cancelBooking
 export async function cancelBooking(_liteapiBookingId: string): Promise<FakeCancelResult> {
   return {
@@ -252,6 +268,7 @@ export async function cancelBooking(_liteapiBookingId: string): Promise<FakeCanc
     cancellationFeeMinor: 0,
     refundAmountMinor: 0,
     currency: "USD",
+    ...cancelResult,
   };
 }
 

@@ -853,24 +853,56 @@ export async function cancelBooking(
     throw e;
   }
 
+  // ONE TRANSACTION, NOT THREE AWAITS (NOS-7, threat-model gap G1). These three
+  // rows are one fact: the booking is cancelled, this is what came back, and
+  // here is the audit entry. Written as three separate awaits, a crash, a
+  // timeout or a rejected statement between them left the booking marked
+  // `cancelled` with no cancellation record - so the idempotent branch above
+  // returned `refundAmountMinor: 0` to a guest who was owed money, and nothing
+  // in the ledger said otherwise. `db.batch` on the neon-http driver sends all
+  // three in a single HTTPS round trip inside one transaction (see
+  // src/db/index.ts), so either all three land or none do.
   const now = new Date();
-  await db
-    .update(bookings)
-    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
-    .where(eq(bookings.id, row.id));
-
-  await db.insert(cancellations).values({
-    bookingId: row.id,
-    status: result.status,
-    refundAmountMinor: result.refundAmountMinor,
-  });
-
-  await db.insert(bookingEvents).values({
-    bookingId: row.id,
-    type: "booking.cancel.confirmed",
-    actor: opts.actor,
-    payload: result,
-  });
+  try {
+    await db.batch([
+      db
+        .update(bookings)
+        .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+        .where(eq(bookings.id, row.id)),
+      db.insert(cancellations).values({
+        bookingId: row.id,
+        status: result.status,
+        refundAmountMinor: result.refundAmountMinor,
+      }),
+      db.insert(bookingEvents).values({
+        bookingId: row.id,
+        type: "booking.cancel.confirmed",
+        actor: opts.actor,
+        payload: result,
+      }),
+    ]);
+  } catch (e) {
+    // WHAT ATOMICITY DOES NOT FIX, named rather than left implicit. The supplier
+    // has already cancelled by the time we get here, so a rolled-back write
+    // leaves our ledger saying `confirmed` while the stay is gone. That is a
+    // divergence between us and the supplier, which is the reconciler's job
+    // (src/app/api/cron/reconcile/route.ts), not this function's - but it is
+    // only the reconciler's job if something records that it happened. This
+    // event is that breadcrumb, and it is best-effort on purpose: if the write
+    // that failed was the database being unreachable, this one fails too, and
+    // the original error is what the caller must see.
+    try {
+      await db.insert(bookingEvents).values({
+        bookingId: row.id,
+        type: "booking.cancel.failed",
+        actor: "system",
+        payload: { stage: "write", error: (e as Error).message },
+      });
+    } catch {
+      // Swallowed deliberately: see above.
+    }
+    throw e;
+  }
 
   return {
     bookingId: row.id,
@@ -909,24 +941,30 @@ export async function recordSupplierCancellation(
     return { bookingId: row.id, alreadyRecorded: true };
   }
 
+  // One transaction, as in `cancelBooking` above and for the same reason (NOS-7,
+  // gap G1). There is no breadcrumb branch here because this path already has
+  // one: the webhook route stores the delivery before dispatching and leaves
+  // `webhook_events.processedAt` null when dispatch throws, which is exactly the
+  // "we were told and did not apply it" marker the reconciler looks for. Writing
+  // our own event on top would duplicate that signal.
   const now = new Date();
-  await db
-    .update(bookings)
-    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
-    .where(eq(bookings.id, row.id));
-
-  await db.insert(cancellations).values({
-    bookingId: row.id,
-    status: payload.status ?? "confirmed",
-    refundAmountMinor: payload.refundAmountMinor ?? null,
-  });
-
-  await db.insert(bookingEvents).values({
-    bookingId: row.id,
-    type: webhookEventType("cancellation"),
-    actor: "webhook",
-    payload: payload.raw as object,
-  });
+  await db.batch([
+    db
+      .update(bookings)
+      .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+      .where(eq(bookings.id, row.id)),
+    db.insert(cancellations).values({
+      bookingId: row.id,
+      status: payload.status ?? "confirmed",
+      refundAmountMinor: payload.refundAmountMinor ?? null,
+    }),
+    db.insert(bookingEvents).values({
+      bookingId: row.id,
+      type: webhookEventType("cancellation"),
+      actor: "webhook",
+      payload: payload.raw as object,
+    }),
+  ]);
 
   return { bookingId: row.id, alreadyRecorded: false };
 }
@@ -985,20 +1023,26 @@ export async function recordSupplierRefund(
     return { bookingId: row.id, recorded: false };
   }
 
-  await db.insert(refunds).values({
-    bookingId: row.id,
-    supplierRefId: payload.supplierRefId ?? null,
-    amountMinor,
-    currency: row.currency,
-    supplierStatus: payload.status ?? null,
-  });
-
-  await db.insert(bookingEvents).values({
-    bookingId: row.id,
-    type: webhookEventType("refund"),
-    actor: "webhook",
-    payload: payload.raw as object,
-  });
+  // Two rows, one fact, one transaction - the same rule the cancellation paths
+  // follow (NOS-7). This function arrived with NOS-8, after that ticket was
+  // written, so it is not named in it; a `refunds` row with no audit event is
+  // the same defect as a `cancellations` row with no audit event, and the audit
+  // trail is what the reconciler and a human both read.
+  await db.batch([
+    db.insert(refunds).values({
+      bookingId: row.id,
+      supplierRefId: payload.supplierRefId ?? null,
+      amountMinor,
+      currency: row.currency,
+      supplierStatus: payload.status ?? null,
+    }),
+    db.insert(bookingEvents).values({
+      bookingId: row.id,
+      type: webhookEventType("refund"),
+      actor: "webhook",
+      payload: payload.raw as object,
+    }),
+  ]);
 
   return { bookingId: row.id, recorded: true };
 }
