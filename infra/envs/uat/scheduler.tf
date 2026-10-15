@@ -19,6 +19,29 @@
 # An identity is not a secret, so this file satisfies the rule by construction.
 
 # ---------------------------------------------------------------------------
+# The APIs this file needs
+# ---------------------------------------------------------------------------
+# Without these the apply fails part-way through, leaving the environment half
+# configured (part 3 review, L2). Enabling Cloud Scheduler also creates its
+# service agent, which must keep `roles/cloudscheduler.serviceAgent` or every job
+# returns 403 regardless of which invoker account it uses - that is a project-level
+# grant made at enablement, not something this file should fight over, but it is
+# the first thing to check if every job 403s at once.
+#
+# `disable_on_destroy = false`: destroying this environment must not switch off an
+# API another thing in the project might rely on.
+resource "google_project_service" "scheduler_stack" {
+  for_each = toset([
+    "cloudscheduler.googleapis.com",
+    "monitoring.googleapis.com",
+    "logging.googleapis.com",
+  ])
+
+  service            = each.key
+  disable_on_destroy = false
+}
+
+# ---------------------------------------------------------------------------
 # One identity per job
 # ---------------------------------------------------------------------------
 # TWO, not one. The jobs have different blast radii: the sweeper expires holds
@@ -75,22 +98,29 @@ locals {
 resource "google_cloud_scheduler_job" "cron" {
   for_each = local.cron_jobs
 
+  depends_on = [google_project_service.scheduler_stack]
+
   name        = "${var.service_name}-${each.key}"
   region      = var.region
   description = each.value.description
   schedule    = each.value.schedule
   time_zone   = "America/Chicago"
 
-  # One attempt and then wait for the next tick, for the sweeper's sake: a retry
-  # storm against the supplier is how a rate limit becomes silence, and silence
-  # read as fact is the NOS-5 harm. The next run is 5 minutes away.
+  # ZERO RETRIES: wait for the next tick. `retry_count` counts RETRIES, so the
+  # 1 this used to say meant two attempts and contradicted its own rationale
+  # (NOS-65 part 3 review, M3). The rationale is the real one: a retry storm
+  # against the supplier is how a rate limit becomes silence, and silence read as
+  # fact is the NOS-5 harm. The next sweep is 5 minutes away.
   retry_config {
-    retry_count = 1
+    retry_count = 0
   }
 
-  # A pass that has not answered in 10 minutes is not going to; the next tick is
-  # a better bet than a hung request holding a container open.
-  attempt_deadline = "600s"
+  # 300s, matching Cloud Run's own default request timeout, which this service
+  # does not override. This used to say 600s with a comment about a pass that has
+  # not answered in 10 minutes - unreachable, because the platform kills the
+  # request at 5 minutes first. Same class of defect as the clock tolerance in
+  # part 2: a documented property that did not exist.
+  attempt_deadline = "300s"
 
   http_target {
     uri         = "${local.cron_base}/api/cron/${each.key}"
@@ -130,17 +160,25 @@ resource "google_monitoring_notification_channel" "owner_email" {
   }
 }
 
-# The app logs one structured line per authorised run
-# (`cron.<job>.authorized`, added in NOS-65 part 2 for exactly this). A
-# log-based metric turns that into something an absence condition can watch.
-resource "google_logging_metric" "cron_authorized" {
+# The app logs one structured line per COMPLETED pass, carrying which credential
+# authorised it. Two deliberate choices here, both from the part 3 review:
+#
+#   - `completed`, not `authorized`. The authorised line is emitted before a
+#     single row is read, so a job that authenticates and then throws on its
+#     first query would feed this metric every 5 minutes while rescuing nobody.
+#   - `via="oidc"`, so a GitHub `workflow_dispatch` run cannot keep the metric
+#     alive and hide a dead Scheduler job. That is also what makes NOS-65's
+#     "72 hours of Scheduler delivery" precondition answerable at all: while both
+#     triggers coexist, an unfiltered metric cannot tell them apart.
+resource "google_logging_metric" "cron_completed" {
   for_each = local.cron_jobs
 
-  name   = "${var.service_name}-cron-${each.key}-authorized"
+  name   = "${var.service_name}-cron-${each.key}-completed"
   filter = <<-EOT
     resource.type="cloud_run_revision"
     resource.labels.service_name="${var.service_name}"
-    jsonPayload.event="cron.${each.key}.authorized"
+    jsonPayload.event="cron.${each.key}.completed"
+    jsonPayload.via="oidc"
   EOT
 
   metric_descriptor {
@@ -149,37 +187,49 @@ resource "google_logging_metric" "cron_authorized" {
   }
 }
 
-resource "google_monitoring_alert_policy" "cron_absent" {
-  for_each = local.cron_jobs
-
-  display_name = "${var.service_name}: the ${each.key} job has stopped running"
+# THE SWEEPER'S ALARM: absence of a completed pass.
+#
+# Absence is the right mechanism here and only here. The sweeper runs every 5
+# minutes, so a 20-minute window is three missed ticks and sits comfortably inside
+# Google's documented 23.5 hour maximum for an absence condition.
+#
+# GROUPED ACROSS REVISIONS, which the first version was not, and that was a
+# defect worth more than the feature (part 3 review, C2). A log-based metric's
+# series carries the log entry's resource, and `cloud_run_revision` includes
+# `revision_name` - so without a cross-series reducer there is one series per
+# revision, Monitoring opens an incident per violating series, and EVERY DEPLOY
+# would fire "the sweep job has stopped running" twenty minutes later as the old
+# revision stopped logging. With `auto_close` at a week, those stale incidents
+# would pile up, and the alarm that has to be believed at 3am becomes the one
+# that always cries wolf. Reducing across revisions asks the question actually
+# being asked: did ANY revision complete a pass?
+resource "google_monitoring_alert_policy" "sweep_absent" {
+  display_name = "${var.service_name}: the sweep job has stopped running"
   combiner     = "OR"
 
   documentation {
     content = join(" ", [
-      "The ${each.key} job has not completed a pass within its window.",
-      each.key == "sweep"
-      ? "The sweeper is the only automatic rescue for a guest who was charged and never came back, so while this is firing that rescue is not happening."
-      : "The reconciler is the only automatic comparison of our ledger against the supplier's.",
-      "Run it by hand with: gcloud scheduler jobs run ${var.service_name}-${each.key} --location ${var.region}.",
-      "That uses your own identity and no secret. See docs/runbooks/cron-jobs.md.",
+      "No sweep pass has completed in 20 minutes.",
+      "The sweeper is the only automatic rescue for a guest who was charged and never came back, so while this is firing that rescue is not happening.",
+      "Run it by hand first: gcloud scheduler jobs run ${var.service_name}-sweep --location ${var.region}.",
+      "Then follow docs/runbooks/cron-jobs.md, which maps each 401 reason to one action.",
+      "NOTE: this policy only watches passes authorised by Cloud Scheduler (via=oidc). A GitHub workflow_dispatch run will not clear it.",
     ])
     mime_type = "text/markdown"
   }
 
   conditions {
-    display_name = "no completed ${each.key} pass"
+    display_name = "no completed sweep pass in 20 minutes"
 
     condition_absent {
-      filter = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.cron_authorized[each.key].name}\" AND resource.type=\"cloud_run_revision\""
-      # Sweep: 20 minutes, which is three missed 5-minute ticks and still inside
-      # a fresh 15-minute hold's successor. Reconcile: 36 hours, so one missed
-      # nightly run is noise and two are not.
-      duration = each.key == "sweep" ? "1200s" : "129600s"
+      filter   = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.cron_completed["sweep"].name}\" AND resource.type=\"cloud_run_revision\""
+      duration = "1200s"
 
       aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_COUNT"
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_COUNT"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
       }
     }
   }
@@ -187,8 +237,72 @@ resource "google_monitoring_alert_policy" "cron_absent" {
   notification_channels = [google_monitoring_notification_channel.owner_email.id]
 
   alert_strategy {
-    # Closes itself once passes resume, so a recovered job does not need a human
-    # to tidy up after it.
+    auto_close = "604800s"
+  }
+}
+
+# THE RECONCILER'S ALARM: a threshold, because absence cannot express a daily job.
+#
+# This was `condition_absent` with a 36 hour window, and that was wrong twice over
+# (part 3 review, C1). Google documents the maximum absence window as 23.5 hours,
+# so either the apply fails or the condition is never satisfiable and the alarm is
+# decorative - and a policy that exists, looks green, and cannot fire is worse than
+# none, because it stops anyone looking again. Worse still, the normal gap between
+# nightly runs is about 24 hours, which EXCEEDS that maximum: any legal absence
+# window would have fired every morning shortly before the next run, and after
+# four nights of false alarms the owner would mute the only alarm the reconciler
+# has. That is this ticket's own defect wearing a new hat.
+#
+# So: a threshold on the same metric. A 24 hour rolling count below 1, sustained
+# for 12 hours, means roughly 36 hours without a completed pass - one missed night
+# is noise, two are not, which is what the design intended all along and could not
+# say in the previous form. `EVALUATION_MISSING_DATA_ACTIVE` is the part that makes
+# it work at all: a log-based counter writes NOTHING when no entry matches, not a
+# zero, so without this the condition would simply have no data to compare.
+resource "google_monitoring_alert_policy" "reconcile_stalled" {
+  display_name = "${var.service_name}: the reconcile job has stopped running"
+  combiner     = "OR"
+
+  documentation {
+    content = join(" ", [
+      "No reconcile pass has completed in roughly 36 hours, so one missed night has become two.",
+      "The reconciler is the only automatic comparison of our ledger against the supplier's.",
+      "Run it by hand: gcloud scheduler jobs run ${var.service_name}-reconcile --location ${var.region}.",
+      "Then follow docs/runbooks/cron-jobs.md.",
+    ])
+    mime_type = "text/markdown"
+  }
+
+  conditions {
+    display_name = "fewer than one completed reconcile pass per day"
+
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.cron_completed["reconcile"].name}\" AND resource.type=\"cloud_run_revision\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 1
+      duration        = "43200s"
+
+      aggregations {
+        alignment_period     = "86400s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+
+      trigger {
+        count = 1
+      }
+
+      # Treat "no data at all" as the alarm condition. Without this a metric with
+      # no matching entries has no series to evaluate and the policy stays quiet
+      # in precisely the case it exists for.
+      evaluation_missing_data = "EVALUATION_MISSING_DATA_ACTIVE"
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.owner_email.id]
+
+  alert_strategy {
     auto_close = "604800s"
   }
 }

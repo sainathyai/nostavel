@@ -97,6 +97,10 @@ variable "alert_email" {
     policy that notifies nothing.
   EOT
   type        = string
+  # Personal data, not a credential, but it lands in plaintext state, in plan
+  # output and in any saved plan file. Marking it keeps it out of console output
+  # for nothing (part 3 review, L1).
+  sensitive = true
 
   validation {
     condition     = can(regex("^[^@]+@[^@]+[.][^@]+$", var.alert_email))

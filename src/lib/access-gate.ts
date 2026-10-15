@@ -119,31 +119,29 @@ export type VerdictInput = {
  * its caller a password.
  */
 export function isExemptPath(path: string): boolean {
-  return EXEMPT_FROM_PASSWORD.includes(normalisePath(path));
+  return EXEMPT_FROM_PASSWORD.includes(path);
 }
 
 /**
- * One trailing slash removed, and nothing else.
+ * MEASURED 2026-10-14, because an earlier version of this file guessed wrong.
  *
- * The exemption list is an exact-match list on purpose (see above), and that
- * stays true: this widens no set, it only stops `/api/cron/sweep/` being treated
- * as a different route from `/api/cron/sweep`.
+ * NOS-65 added a trailing-slash normalisation here, on the stated grounds that a
+ * Cloud Scheduler URL ending in `/` would be refused by this gate with a Basic
+ * challenge before Next could redirect it. That is backwards. With
+ * `trailingSlash` false, Next inserts an internal redirect ahead of the proxy in
+ * its route list, so the redirect happens FIRST:
  *
- * Why it matters, from the NOS-65 security review: Cloud Scheduler is configured
- * with a URL, and a URL with a trailing slash would be refused **by the proxy**
- * with a Basic challenge and never reach the route. Next.js would have redirected
- * it, but the gate runs before routing, so the redirect never happens. The log
- * line then reads `[gate] refused` rather than `cron.sweep.unauthorized`, and
- * telling those two apart is the whole diagnosis of a dead sweeper at 3am. The
- * job URL should still be written without the slash; this is so that getting it
- * wrong is not a silent hour.
+ *     POST /api/cron/sweep/  ->  308, Location: /api/cron/sweep   (nothing in the
+ *                                app saw the request)
+ *     POST /api/cron/sweep   ->  401 from the route's own auth
  *
- * The query string needs no handling: `VerdictInput.path` is a pathname, already
- * stripped by the framework.
+ * So the normalisation was unreachable, and it has been removed rather than kept
+ * with a corrected comment: dead code defended by a false premise is worse than
+ * no code, because the next person inherits the premise. What a trailing slash
+ * actually produces is a 308 in CLOUD SCHEDULER's log and nothing at all in ours,
+ * which is why `docs/runbooks/cron-jobs.md` has a branch for "neither app log
+ * line exists".
  */
-function normalisePath(path: string): string {
-  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
-}
 
 /**
  * The password out of an `Authorization: Basic ...` header, or null.
