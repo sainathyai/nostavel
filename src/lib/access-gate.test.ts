@@ -61,6 +61,27 @@ describe("isExemptPath", () => {
     expect(isExemptPath("/api/webhooks/liteapi")).toBe(true);
   });
 
+  it("exempts an exempt path written with a trailing slash", () => {
+    // NOS-65 security review. Cloud Scheduler is configured with a URL, and a
+    // trailing slash would be refused BY THE PROXY with a Basic challenge and
+    // never reach the route - Next.js would have redirected it, but the gate runs
+    // before routing. The job URL should still be written without the slash; this
+    // is so getting it wrong is a 401 from the route, which names its reason,
+    // rather than a silent hour spent reading the wrong log line.
+    expect(isExemptPath("/api/cron/sweep/")).toBe(true);
+    expect(isExemptPath("/api/cron/reconcile/")).toBe(true);
+    expect(isExemptPath("/api/webhooks/liteapi/")).toBe(true);
+  });
+
+  it("widens nothing else when it strips that slash", () => {
+    // The list stays an exact-match list: one trailing slash is removed, and
+    // nothing else is.
+    expect(isExemptPath("/api/cron/sweep//")).toBe(false);
+    expect(isExemptPath("/api/cron/warm-search/")).toBe(false);
+    expect(isExemptPath("/")).toBe(false);
+    expect(isExemptPath("")).toBe(false);
+  });
+
   it("does not exempt a route that does not exist yet under an exempt one", () => {
     // The M5 fix. Under the prefix list all three of these were exempt.
     expect(isExemptPath("/api/cron/warm-search")).toBe(false);

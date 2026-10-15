@@ -119,7 +119,30 @@ export type VerdictInput = {
  * its caller a password.
  */
 export function isExemptPath(path: string): boolean {
-  return EXEMPT_FROM_PASSWORD.includes(path);
+  return EXEMPT_FROM_PASSWORD.includes(normalisePath(path));
+}
+
+/**
+ * One trailing slash removed, and nothing else.
+ *
+ * The exemption list is an exact-match list on purpose (see above), and that
+ * stays true: this widens no set, it only stops `/api/cron/sweep/` being treated
+ * as a different route from `/api/cron/sweep`.
+ *
+ * Why it matters, from the NOS-65 security review: Cloud Scheduler is configured
+ * with a URL, and a URL with a trailing slash would be refused **by the proxy**
+ * with a Basic challenge and never reach the route. Next.js would have redirected
+ * it, but the gate runs before routing, so the redirect never happens. The log
+ * line then reads `[gate] refused` rather than `cron.sweep.unauthorized`, and
+ * telling those two apart is the whole diagnosis of a dead sweeper at 3am. The
+ * job URL should still be written without the slash; this is so that getting it
+ * wrong is not a silent hour.
+ *
+ * The query string needs no handling: `VerdictInput.path` is a pathname, already
+ * stripped by the framework.
+ */
+function normalisePath(path: string): string {
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
 /**

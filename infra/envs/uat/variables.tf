@@ -83,3 +83,23 @@ variable "billing_account" {
   type        = string
   default     = ""
 }
+
+variable "alert_email" {
+  description = <<-EOT
+    Where a stopped money-safety job is reported (NOS-65).
+
+    Not a secret, but it is personal data, so it lives in the untracked
+    terraform.tfvars like every other value here rather than in the example file.
+
+    This is the address that finds out the sweeper has stopped. An alert nobody
+    receives is the same as no alert, which is the defect NOS-65 exists to fix,
+    so there is no default: an apply without it fails rather than creating a
+    policy that notifies nothing.
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@]+@[^@]+[.][^@]+$", var.alert_email))
+    error_message = "alert_email must be an email address."
+  }
+}
