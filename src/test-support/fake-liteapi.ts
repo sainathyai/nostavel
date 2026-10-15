@@ -104,6 +104,12 @@ let bookGate: Promise<void> | null = null;
 let releaseBookGate: (() => void) | null = null;
 let bookResult: Partial<FakeBookResult> = {};
 let cancelResult: Partial<FakeCancelResult> = {};
+
+/** Every supplier booking id passed to `cancelBooking()`, in order. */
+export const cancelCalls: string[] = [];
+let cancelGate: Promise<void> | null = null;
+let releaseCancelGate: (() => void) | null = null;
+let cancelWaiters: CallCountWaiter[] = [];
 let bookError: Error | null = null;
 /** What `getSupplierBooking` reports, keyed by the supplier's booking id. */
 let supplierBookings = new Map<string, unknown>();
@@ -131,6 +137,10 @@ export function resetFakeSupplier(): void {
   releaseBookGate = null;
   bookResult = {};
   cancelResult = {};
+  cancelCalls.length = 0;
+  cancelGate = null;
+  releaseCancelGate = null;
+  cancelWaiters = [];
   bookError = null;
   supplierBookings = new Map();
   supplierBookingError = null;
@@ -200,6 +210,37 @@ export function configureCancelResult(result: Partial<FakeCancelResult>): void {
   cancelResult = result;
 }
 
+/**
+ * Every subsequent `cancelBooking()` call awaits this gate before resolving.
+ *
+ * Added in NOS-16, to make the cancellation race DETERMINISTIC rather than
+ * hoped for. `cancelBooking` reads the booking's status, calls the supplier, and
+ * only then writes. Holding the supplier call open parks the guest path inside
+ * exactly that window, so a webhook cancellation can be driven to completion in
+ * between and the two writes genuinely collide - the same technique
+ * `holdBookCalls` uses for the double-confirm race.
+ */
+export function holdCancelCalls(): void {
+  cancelGate = new Promise<void>((resolve) => {
+    releaseCancelGate = resolve;
+  });
+}
+
+/** Lets every `cancelBooking()` call currently waiting on the gate resolve. */
+export function releaseCancelCalls(): void {
+  releaseCancelGate?.();
+  cancelGate = null;
+  releaseCancelGate = null;
+}
+
+/** Resolves once at least `count` calls to `cancelBooking()` have been recorded. */
+export function waitForCancelCalls(count: number): Promise<void> {
+  if (cancelCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    cancelWaiters.push({ count, resolve });
+  });
+}
+
 /** Configure `book()` to reject instead of resolving, for a failure-path test. */
 export function configureBookError(error: Error | null): void {
   bookError = error;
@@ -261,8 +302,14 @@ export async function prebook(offerId: string): Promise<FakePrebookResult> {
 }
 
 /** Mirrors `cancelBooking` in src/lib/liteapi.ts. Configured by `configureCancelResult`. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for signature parity with src/lib/liteapi.ts's cancelBooking
-export async function cancelBooking(_liteapiBookingId: string): Promise<FakeCancelResult> {
+export async function cancelBooking(liteapiBookingId: string): Promise<FakeCancelResult> {
+  cancelCalls.push(liteapiBookingId);
+  cancelWaiters = cancelWaiters.filter((w) => {
+    if (cancelCalls.length < w.count) return true;
+    w.resolve();
+    return false;
+  });
+  if (cancelGate) await cancelGate;
   return {
     status: "CANCELLED",
     cancellationFeeMinor: 0,

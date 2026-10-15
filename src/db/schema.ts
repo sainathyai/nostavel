@@ -296,7 +296,26 @@ export const cancellations = pgTable(
     requestedAt: timestamp("requested_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
-  (t) => [index("cancellations_booking_idx").on(t.bookingId)],
+  // ONE CANCELLATION PER BOOKING, ENFORCED BY THE DATABASE (NOS-16, gap G5).
+  // A guest cancel and a supplier webhook cancel can both pass their
+  // `status === "cancelled"` check before either has written, and each insert a
+  // row - with DIFFERENT refund amounts, since each read its own supplier
+  // response. Two rows for one cancellation is a reconciliation that cannot be
+  // settled: `cancelBooking`'s idempotent branch reads one row with `.limit(1)`
+  // and returns its `refundAmountMinor` to the guest, so which of the two it
+  // picks is arbitrary.
+  //
+  // This replaces the plain index rather than sitting beside it: a unique index
+  // on the same single column serves every lookup the plain one did, so keeping
+  // both would maintain two B-trees for one purpose and leave a later reader
+  // wondering which matters. No data is lost by the swap, and the migration runs
+  // in a transaction, so a failed unique creation rolls the drop back with it.
+  //
+  // Safe only because NOS-8 moved refunds to their own table. While a
+  // refund-only row could occupy this slot, this constraint would have made a
+  // LATER genuine cancellation collide and be dropped
+  // (docs/adr/0008-refunds-recorded-separately-from-cancellations.md).
+  (t) => [uniqueIndex("cancellations_booking_unique").on(t.bookingId)],
 );
 
 /* ------------------------------------------------------------------ */
