@@ -10,6 +10,15 @@
 //     gate: `jose`'s own issuer and audience options are set as well, but as
 //     defence in depth rather than as the decision. Both must pass.
 //
+//     One correction the security review insisted on, because the first version
+//     of this comment oversold it: `issuer` and `audience` are passed to jose AND
+//     checked by the rule, but both read the SAME derived value, so that is one
+//     source of truth checked twice rather than two independent checks. jose's
+//     genuinely independent contributions are the signature, the algorithm/key
+//     binding, and `nbf`, which the rule never looks at. The rule's genuinely
+//     independent contributions are `email`, `email_verified`, `sub`, a future
+//     `iat`, and the presence and finiteness of `exp` and `iat`.
+//
 // Why that split: the security review of NOS-65 put it plainly - moving these
 // routes off a shared secret moves authentication into a JWT verifier in the money
 // path, and a fail-open bug there is worse than a leaked string. So every claim
@@ -17,7 +26,12 @@
 // does nothing but fetch keys and check a signature.
 import "server-only";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { verifyCronCaller, type ExpectedCaller, type IdentityVerdict } from "./cron-identity";
+import {
+  CLOCK_SKEW_SECONDS,
+  verifyCronCaller,
+  type ExpectedCaller,
+  type IdentityVerdict,
+} from "./cron-identity";
 import { verifySharedSecret } from "./webhook-auth";
 
 /**
@@ -33,6 +47,23 @@ import { verifySharedSecret } from "./webhook-auth";
 const GOOGLE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/oauth2/v3/certs"),
 );
+
+/**
+ * How a token's signing key is resolved. Injectable for one reason, and it is the
+ * reason the security review of NOS-65 called the most important finding.
+ *
+ * Without this, nothing could test the line that connects the signature layer to
+ * the claim rule. Dropping the `verifyCronCaller` call during a refactor would
+ * leave 21 green tests, a clean typecheck and a clean lint, while authorising
+ * **every Google Cloud customer** to expire holds and drive supplier calls -
+ * because jose alone checks the signature, `iss` and `aud`, and anyone can mint a
+ * Google-signed token for any audience. That is the exact failure this file's
+ * whole structure exists to prevent, and it was undefended.
+ *
+ * Production always uses Google's live key set: the parameter has a default and no
+ * caller passes anything else.
+ */
+export type KeyResolver = Parameters<typeof jwtVerify>[1];
 
 /**
  * What a route expects of its caller, from the environment.
@@ -80,30 +111,57 @@ export async function authorizeCronRequest(
   request: Request,
   job: "sweep" | "reconcile",
   now: Date,
+  keys: KeyResolver = GOOGLE_JWKS,
 ): Promise<CronAuthResult> {
   const header = request.headers.get("authorization");
   const bearer = header?.startsWith("Bearer ") ? header.slice(7) : header;
   if (!bearer) return { ok: false, reason: "no authorization header" };
 
   const expected = expectedCronCaller(job);
-  // A JWT has two dots and a shared secret does not, so this picks the path
-  // without either branch being able to accept the other's credential.
+  // A JWT has two dots and a shared secret does not. This picks the path; it is
+  // NOT a security boundary, and the next branch is what makes that true.
   const looksLikeJwt = bearer.split(".").length === 3;
 
-  if (looksLikeJwt && expected) {
+  if (looksLikeJwt) {
+    // TOTAL on purpose (security review, M2). The first version only entered
+    // this branch when `expected` existed, so a JWT-shaped credential with the
+    // identity unconfigured fell through to the shared-secret compare - which
+    // made the stated invariant "neither branch can accept the other's
+    // credential" false. Not exploitable, because that compare is length-guarded
+    // and constant-time, but a claimed invariant that does not hold is how the
+    // next person reasons wrongly about this file.
+    if (!expected) return { ok: false, reason: "identity is not configured" };
     try {
-      const { payload } = await jwtVerify(bearer, GOOGLE_JWKS, {
-        // Defence in depth. The decision is `verifyCronCaller` below.
+      const { payload } = await jwtVerify(bearer, keys, {
+        // `algorithms` is insurance, not a current fix: jose 6.2.7's key
+        // resolver already refuses a secret-based algorithm, so an HS256 token
+        // signed with CRON_SECRET cannot resolve a key. Pinned anyway, against a
+        // future version that loosens the resolver.
+        algorithms: ["RS256"],
         issuer: ["https://accounts.google.com", "accounts.google.com"],
         audience: expected.audience,
+        // jose SKIPS the expiry check entirely when `exp` is absent, and only
+        // requires `iat` when `maxTokenAge` is set. So these are not decoration:
+        // without them jose alone would accept a Google-signed token that never
+        // expires. The rule below also demands both, which is the belt.
+        requiredClaims: ["exp", "iat", "email", "email_verified", "sub"],
+        // The only thing that bounds how long a captured token stays replayable.
+        maxTokenAge: "1h",
+        // Both layers now judge time against the SAME injected instant. jose's
+        // `clockTolerance` defaults to 0 and its `now` is the real clock, so
+        // before this the rule's skew allowance was unreachable: jose had already
+        // rejected anything one second past expiry. Stricter than documented is
+        // still a documented property that did not exist.
+        clockTolerance: CLOCK_SKEW_SECONDS,
+        currentDate: now,
       });
       const verdict = verifyCronCaller(payload, expected, now);
       return verdict.ok ? { ok: true, via: "oidc" } : verdict;
     } catch {
-      // A bad signature, an unreachable key server, or a malformed token. No
-      // detail is surfaced: the reason goes no further than this string, because
-      // this route's whole value is being unguessable.
-      return { ok: false, reason: "token signature could not be verified" };
+      // A bad signature, an unreachable key server, a missing required claim, or
+      // a malformed token. No detail is surfaced: this route's whole value is
+      // being unguessable.
+      return { ok: false, reason: "token signature or required claims rejected" };
     }
   }
 
@@ -111,8 +169,5 @@ export async function authorizeCronRequest(
     return { ok: true, via: "shared-secret" };
   }
 
-  return {
-    ok: false,
-    reason: looksLikeJwt && !expected ? "identity is not configured" : "credential not accepted",
-  };
+  return { ok: false, reason: "credential not accepted" };
 }

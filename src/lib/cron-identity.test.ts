@@ -101,6 +101,15 @@ describe("every claim missing or wrong-typed is a denial, never a pass", () => {
   // `exp` through. Same shape for every other claim.
   const absent = [undefined, null, "", 0, false, {}, [], Number.NaN, Infinity];
 
+  it("has a case for every claim the rule reads, so a new one cannot be forgotten", () => {
+    // The loops below name claims by hand, which means a SEVENTH required claim
+    // added later would have no absent-or-wrong-type case and would fail open
+    // silently. This asserts the hand-written list still covers the whole shape.
+    expect(Object.keys(goodClaims()).sort()).toEqual(
+      ["aud", "email", "email_verified", "exp", "iat", "iss", "sub"].sort(),
+    );
+  });
+
   for (const [claim, reason] of [
     ["iss", "iss is missing or not a string"],
     ["aud", "aud is missing or not a string"],
@@ -161,8 +170,33 @@ describe("time", () => {
       expected,
       NOW,
     );
-    // Expired first, which is the stronger statement about the same nonsense.
-    expect(v.ok).toBe(false);
+    // The reason is pinned like every other test in this file. It did not used
+    // to be, and the comment here used to claim "expired first, which is the
+    // stronger statement" - which was simply wrong arithmetic: `now > exp + 60`
+    // is `now > now + 40`, false. The security review caught it, and noted that
+    // the weak assertion is exactly what let the wrong belief survive.
+    expect(v).toEqual({ ok: false, reason: "token expires before it was issued" });
+  });
+
+  it("admits the exact edge of the skew allowance, in both directions", () => {
+    // L3: `nowSeconds > exp + 60` admits exactly `exp + 60`, and
+    // `iat - 60 > nowSeconds` admits exactly `now + 60`. The suite probed +/-30
+    // and +/-61, so an off-by-one in either comparison shipped green.
+    // `iat` moves with `exp` here: leaving it at the default made `iat > exp`
+    // true, so the first attempt at this test was denied for the right reason at
+    // the wrong boundary. That the rule caught my own bad fixture is mildly
+    // reassuring about the rule.
+    const atExp = goodClaims({ iat: nowSeconds - 120, exp: nowSeconds - 60 });
+    expect(verifyCronCaller(atExp, expected, NOW).ok).toBe(true);
+    const pastExp = goodClaims({ iat: nowSeconds - 120, exp: nowSeconds - 61 });
+    expect(verifyCronCaller(pastExp, expected, NOW)).toEqual({
+      ok: false,
+      reason: "token has expired",
+    });
+    const atEdge = goodClaims({ iat: nowSeconds + 60, exp: nowSeconds + 4000 });
+    expect(verifyCronCaller(atEdge, expected, NOW).ok).toBe(true);
+    const pastEdge = goodClaims({ iat: nowSeconds + 61, exp: nowSeconds + 4000 });
+    expect(verifyCronCaller(pastEdge, expected, NOW).ok).toBe(false);
   });
 
   it("uses the injected clock, not the real one", () => {

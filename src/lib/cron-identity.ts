@@ -59,12 +59,22 @@ const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
 /**
  * How much clock skew to forgive, in seconds.
  *
- * Small on purpose. A scale-to-zero container's clock comes from the host, not
- * from us, and a generous window is a generous replay window. 60 seconds is the
- * usual allowance for signed-token verification and is far shorter than the token
- * lifetime Google issues.
+ * Small on purpose: a scale-to-zero container's clock comes from the host, not
+ * from us. 60 seconds is the usual allowance for signed-token verification.
+ *
+ * It does NOT govern replay, and an earlier version of this comment claimed it
+ * did. `exp` governs replay, and a Cloud Scheduler OIDC token is good for about
+ * an hour, so a captured token stays usable for its remaining lifetime - roughly
+ * 60 times longer than this constant suggests. There is no `jti` cache and no
+ * nonce. That is accepted rather than overlooked: a replayed sweep is an extra
+ * sweep, and the job is built to be safe to run repeatedly. The lever that
+ * actually bounds the window is `maxTokenAge` in `cron-auth.ts`.
+ *
+ * Exported so the signature layer forgives exactly the same amount. It did not
+ * used to: jose's `clockTolerance` defaults to 0, so this allowance was
+ * unreachable in practice (security review of NOS-65, M1).
  */
-const CLOCK_SKEW_SECONDS = 60;
+export const CLOCK_SKEW_SECONDS = 60;
 
 /** A claim is only usable as a time if it is a real, finite number. */
 function finiteNumber(value: unknown): number | null {

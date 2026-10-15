@@ -3,6 +3,7 @@ paths:
   - "src/auth.ts"
   - "src/lib/{dal,guest-verify,webhook-auth,rate-limit,quote-token,signed-claim,booking-access,booking-authz,booking-caller}.ts"
   - "src/lib/{access-gate,deploy-config,health}.ts"
+  - "src/lib/{cron-auth,cron-identity}.ts"
   - "src/app/api/**"
   - "src/app/actions/**"
   - "src/proxy.ts"
@@ -39,7 +40,13 @@ Source of truth: `docs/conventions.md` §2 and `SECURITY.md`. The repository is 
   - verify the shared secret first;
   - store the raw event, and deduplicate on the supplier's event ID;
   - make processing idempotent.
-- **Cron routes** require `Authorization: Bearer CRON_SECRET`.
+- **Cron routes** accept EITHER a Cloud Scheduler OIDC token or the legacy
+  `Authorization: Bearer CRON_SECRET` (NOS-65). The identity decision is the pure
+  rule in `cron-identity.ts`, never inline: our Cloud Run service is public, so
+  Cloud Run does not validate a token for us, and a verifier that checks the
+  issuer without pinning the exact service-account `email` and `sub` authorises
+  every Google Cloud customer. The shared-secret path is temporary; see the gap
+  table for why it is worth removing and what still blocks that.
 - **Rate limits:** anything that calls the supplier, sends email or checks a code is rate-limited.
 - **Input:** validate at the boundary. Never trust IDs, prices or tiers sent by the browser.
 - **Errors:** the guest gets a safe message; the detail goes to the server log.
@@ -68,6 +75,8 @@ These exist in the code today, each with a ticket. Don't treat them as precedent
 | The nightly reconciler **cannot see a confirmed booking whose `amountSupplierMinor` is null**: `isNotNull` excludes it permanently, and a confirmed booking with no recorded supplier cost is exactly the row most worth reconciling. Found by running it against the test environment, where 2 of 3 candidate rows were excluded this way | `src/app/api/cron/reconcile/route.ts` | NOS-64 |
 | Both money-safety jobs run on GitHub's `schedule` event, which **delivered 1.6% of the sweeper's runs**: measured 2026-10-13, 13 scheduled runs against an expected 808 over 67.3 hours at `*/5`, worst observed gap **9h41m** against a 15-minute supplier hold. Every one of those 13 reports success, so there is no failure signal at all. Also a 5-minute floor below which nothing fires (measured separately: `*/3` produced no run in 45 minutes), and **automatic disabling on a public repository after 60 days of no activity**. The sweeper is the only thing that rescues a guest who was charged, and on this evidence it is not a scheduler | `.github/workflows/cron-sweep.yml`, `cron-reconcile.yml` | NOS-65 |
 | **`markPaymentFailedAction` reverts a booking out of `payment_pending` on the browser's word that payment failed**, which is correct only if a client-side `confirmPayment` error always means no money moved. Unverified, and Stripe surfaces timeouts and abandonment through the same path as a decline. Deliberately not a ticket: the answer lives in the owner's Stripe dashboard and decides whether the fix is a guard or a provider round-trip. Held as an open question in `docs/production-readiness.md` §8.1 until production testing (D-10.2) | `src/app/actions/booking.ts`, `src/app/book/[bookingId]/CheckoutClient.tsx` | — |
+
+| The cron routes still accept `CRON_SECRET`, a repository-scoped Actions secret reachable from any workflow on any merged branch, so anything able to run a workflow can expire a hold. The same secret also unlocks `/api/health?deep=1`, which returns the **fatal-configuration problem list** naming which secrets a deployed copy is missing, and drives an on-demand database query. The OIDC path (NOS-65) has never been exercised against a real Google token, so the secret cannot be removed yet - and removing it from these routes would not retire the credential, because `deploy-uat.yml` consumes it for the smoke step | `src/lib/cron-auth.ts`, `src/app/api/health/route.ts`, `.github/workflows/deploy-uat.yml` | NOS-65 |
 
 The full list of pre-production gaps is in `docs/production-readiness.md` §4.
 
