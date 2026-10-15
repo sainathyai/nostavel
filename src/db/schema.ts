@@ -226,6 +226,63 @@ export const payments = pgTable(
   (t) => [index("payments_booking_idx").on(t.bookingId)],
 );
 
+/**
+ * Money returned on a booking that is NOT necessarily cancelled (NOS-8).
+ *
+ * WHY THIS IS NOT A COLUMN ON `cancellations`. That table is one row per
+ * booking, and NOS-16 makes that a database fact. Recording a refund there would
+ * mean a partial or goodwill refund on a live stay occupies the booking's only
+ * cancellation slot, so a later genuine cancellation is silently absorbed by the
+ * unique constraint and the booking ends up `cancelled` with no cancellation
+ * record. That is the harm NOS-7 exists to prevent, reintroduced.
+ *
+ * It is also a money-reading bug on its own: `cancelBooking`'s idempotent branch
+ * reads a single `cancellations` row and returns its `refundAmountMinor` to the
+ * guest as what they got back. A refund-only row there shows a refund for a
+ * booking nobody cancelled.
+ *
+ * And a stay can be refunded more than once. One row per booking would silently
+ * drop the second partial refund, and the weekly payout reconciliation would
+ * show a shortfall charged to the wrong booking.
+ *
+ * `cancellations.refundAmountMinor` keeps its narrower meaning: money returned as
+ * part of THAT cancellation. Anything returned outside a cancellation lives here.
+ *
+ * THE COST, stated because it is real: two tables now hold "money came back"
+ * facts, so reconciliation against the supplier's payout must sum both, and any
+ * future refund report that reads only one of them undercounts. Recorded in
+ * ADR 0008.
+ */
+export const refunds = pgTable(
+  "refunds",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bookingId: uuid("booking_id")
+      .notNull()
+      .references(() => bookings.id, { onDelete: "cascade" }),
+    /**
+     * The supplier's own identifier for this refund, when the payload carries
+     * one. Nullable because it may not, and the unique constraint below treats
+     * two nulls as distinct in Postgres - deliberately, because two refunds we
+     * cannot tell apart are still two refunds, and dropping one loses money we
+     * know moved. Deduplication of redelivered webhooks is handled upstream by
+     * `webhook_events.externalId`, which is where it belongs.
+     */
+    supplierRefId: text("supplier_ref_id"),
+    /** Integer minor units, same basis as every other money column (§3). */
+    amountMinor: integer("amount_minor").notNull(),
+    currency: char("currency", { length: 3 }).notNull().default("USD"),
+    /** The supplier's reported status at the moment of the refund, verbatim. */
+    supplierStatus: text("supplier_status"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("refunds_booking_idx").on(t.bookingId),
+    uniqueIndex("refunds_booking_supplier_ref_unique").on(t.bookingId, t.supplierRefId),
+  ],
+);
+
 export const cancellations = pgTable(
   "cancellations",
   {

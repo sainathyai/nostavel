@@ -18,10 +18,12 @@ import {
   parseWebhookEnvelope,
   extractLiteapiBookingId,
   extractRefundAmountMinor,
+  extractRefundId,
   extractSupplierStatus,
   type WebhookEnvelope,
 } from "@/lib/webhook-format";
-import { recordSupplierCancellation } from "@/lib/booking-service";
+import { webhookIntent } from "@/lib/webhook-dispatch";
+import { recordSupplierCancellation, recordSupplierRefund } from "@/lib/booking-service";
 
 export const runtime = "nodejs";
 
@@ -74,10 +76,30 @@ export async function POST(request: Request) {
 }
 
 async function dispatch(env: WebhookEnvelope) {
-  const name = env.eventName ?? "";
-  if (name === "booking.cancel" || name === "booking.refund") {
-    const liteapiBookingId = extractLiteapiBookingId(env);
-    if (!liteapiBookingId) return;
+  // WHAT the webhook means is a pure rule (`webhookIntent`), not a condition on
+  // the event name. NOS-8: this used to send both `booking.cancel` and
+  // `booking.refund` to the cancellation path, which set `status: "cancelled"`
+  // unconditionally - so a partial or goodwill refund on a stay that was still
+  // going ahead marked the booking cancelled. The supplier's own reported status
+  // is the better evidence, and the event name is only the fallback.
+  //
+  // This function now routes. It does not interpret.
+  const intent = webhookIntent({
+    eventName: env.eventName,
+    supplierStatus: extractSupplierStatus(env),
+  });
+  if (intent === "ignore") {
+    // booking.book / .amendment / .hotelConfirmationNumber / *_error: the stored
+    // webhook_events row IS the record for these today (corroboration, not the
+    // primary path - we already set our own status at checkout time). No
+    // further write needed.
+    return;
+  }
+
+  const liteapiBookingId = extractLiteapiBookingId(env);
+  if (!liteapiBookingId) return;
+
+  if (intent === "cancellation") {
     await recordSupplierCancellation(liteapiBookingId, {
       refundAmountMinor: extractRefundAmountMinor(env),
       status: extractSupplierStatus(env),
@@ -85,8 +107,13 @@ async function dispatch(env: WebhookEnvelope) {
     });
     return;
   }
-  // booking.book / .amendment / .hotelConfirmationNumber / *_error: the stored
-  // webhook_events row IS the record for these today (corroboration, not the
-  // primary path — we already set our own status at checkout time). No
-  // further write needed.
+
+  // A refund on a booking that is still going ahead. The status is left alone.
+  await recordSupplierRefund(liteapiBookingId, {
+    refundAmountMinor: extractRefundAmountMinor(env),
+    status: extractSupplierStatus(env),
+    supplierRefId: extractRefundId(env),
+    raw: env.response ?? env.request ?? {},
+  });
+  return;
 }
