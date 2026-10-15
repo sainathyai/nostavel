@@ -55,7 +55,7 @@ import { and, eq, gte, inArray, notIlike } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
 import { getSupplierBooking } from "@/lib/liteapi";
-import { verifySharedSecret } from "@/lib/webhook-auth";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 import { statusesAgree } from "@/lib/cron-format";
 
 /**
@@ -71,11 +71,22 @@ import { statusesAgree } from "@/lib/cron-format";
 const LEDGER_ERA_BEGAN = new Date("2026-08-12T00:00:00.000Z");
 
 export async function POST(request: Request) {
-  const auth = request.headers.get("authorization");
-  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (!verifySharedSecret(bearer, process.env.CRON_SECRET)) {
+  const now = new Date();
+
+  // Either a Cloud Scheduler OIDC token or the legacy shared secret (NOS-65).
+  const auth = await authorizeCronRequest(request, "reconcile", now);
+  if (!auth.ok) {
+    console.warn(JSON.stringify({ event: "cron.reconcile.unauthorized", reason: auth.reason }));
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
+  // WHICH credential ran this, logged on success (security review of NOS-65, H1).
+  // Without it `via` was computed and thrown away, and two things became
+  // unanswerable: whether a partial Terraform apply had silently reverted this
+  // job to the repository-scoped shared secret, and NOS-65's own precondition
+  // for deleting that secret path, which is 72 hours of Scheduler delivery
+  // "counted from booking_events and Cloud Run logs". No ledger row can tell a
+  // Scheduler run from a workflow_dispatch run from someone's curl. This line can.
+  console.info(JSON.stringify({ event: "cron.reconcile.authorized", via: auth.via }));
 
   const rows = await db
     .select()

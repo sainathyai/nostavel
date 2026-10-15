@@ -56,7 +56,7 @@ import {
   sweepDecision,
   type SweepCandidate,
 } from "@/lib/booking-transitions";
-import { verifySharedSecret } from "@/lib/webhook-auth";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 
 export const runtime = "nodejs";
 
@@ -76,13 +76,32 @@ type Counts = {
 };
 
 export async function POST(request: Request) {
-  const auth = request.headers.get("authorization");
-  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (!verifySharedSecret(bearer, process.env.CRON_SECRET)) {
+  // The clock is taken ONCE, before authorising, so the token's expiry and every
+  // hold calculation below are judged against the same instant (conventions §2).
+  // That sentence was FALSE when first written: jose used its own `new Date()`
+  // and a zero clock tolerance, so only the pure rule saw this value. Passing
+  // `currentDate` and `clockTolerance` through made it true (NOS-65, M1).
+  const now = new Date();
+
+  // Either a Cloud Scheduler OIDC token or the legacy shared secret (NOS-65).
+  // The secret path is temporary and exists only so `workflow_dispatch` keeps
+  // working until Scheduler is proven; see `cron-auth.ts`.
+  const auth = await authorizeCronRequest(request, "sweep", now);
+  if (!auth.ok) {
+    // The reason is logged, not returned: this route's value is being
+    // unguessable, and telling a caller which claim failed is a map.
+    console.warn(JSON.stringify({ event: "cron.sweep.unauthorized", reason: auth.reason }));
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
+  // WHICH credential ran this, logged on success (security review of NOS-65, H1).
+  // Without it `via` was computed and thrown away, and two things became
+  // unanswerable: whether a partial Terraform apply had silently reverted this
+  // job to the repository-scoped shared secret, and NOS-65's own precondition
+  // for deleting that secret path, which is 72 hours of Scheduler delivery
+  // "counted from booking_events and Cloud Run logs". No ledger row can tell a
+  // Scheduler run from a workflow_dispatch run from someone's curl. This line can.
+  console.info(JSON.stringify({ event: "cron.sweep.authorized", via: auth.via }));
 
-  const now = new Date();
   const counts: Counts = {
     holdsExpired: 0,
     recovered: 0,
