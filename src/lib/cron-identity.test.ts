@@ -81,7 +81,7 @@ describe("the identity checks, which are what stop all of Google Cloud", () => {
     expect(v).toEqual({ ok: false, reason: "iss is not Google" });
   });
 
-  it("refuses an unverified email", () => {
+  it("refuses an unverified email when the token carries one", () => {
     const v = verifyCronCaller(goodClaims({ email_verified: false }), expected, NOW);
     expect(v).toEqual({ ok: false, reason: "email_verified is not true" });
   });
@@ -91,6 +91,34 @@ describe("the identity checks, which are what stop all of Google Cloud", () => {
     for (const value of ["true", "false", 1, {}]) {
       const v = verifyCronCaller(goodClaims({ email_verified: value }), expected, NOW);
       expect(v).toEqual({ ok: false, reason: "email_verified is not true" });
+    }
+  });
+
+  it("AUTHORISES A TOKEN WITH NO EMAIL CLAIM AT ALL", () => {
+    // THE DAY-ONE FAILURE THIS COMMIT EXISTS TO PREVENT. Google adds `email` and
+    // `email_verified` only when an include-email option is requested, and Cloud
+    // Scheduler's job configuration has no such option. The first version of this
+    // rule required both, so every real Scheduler token would have been denied and
+    // both money-safety jobs would have failed closed the moment they were
+    // applied. `sub` is what pins the caller, and it is present here.
+    const claims = goodClaims();
+    delete claims.email;
+    delete claims.email_verified;
+    expect(verifyCronCaller(claims, expected, NOW)).toEqual({ ok: true });
+  });
+
+  it("still refuses someone else's email when a token does carry one", () => {
+    const v = verifyCronCaller(goodClaims({ email: "attacker@evil.example.com" }), expected, NOW);
+    expect(v).toEqual({ ok: false, reason: "email is not the expected caller" });
+  });
+
+  it("refuses an email claim that is present but not a string", () => {
+    for (const value of [null, "", 0, false, {}, []]) {
+      const v = verifyCronCaller(goodClaims({ email: value }), expected, NOW);
+      expect(v, `email = ${JSON.stringify(value)}`).toEqual({
+        ok: false,
+        reason: "email is present but not a string",
+      });
     }
   });
 });
@@ -105,6 +133,8 @@ describe("every claim missing or wrong-typed is a denial, never a pass", () => {
     // The loops below name claims by hand, which means a SEVENTH required claim
     // added later would have no absent-or-wrong-type case and would fail open
     // silently. This asserts the hand-written list still covers the whole shape.
+    // `email` and `email_verified` are OPTIONAL in the rule now, so they are
+    // listed here but excluded from the required-claim loops above.
     expect(Object.keys(goodClaims()).sort()).toEqual(
       ["aud", "email", "email_verified", "exp", "iat", "iss", "sub"].sort(),
     );
@@ -113,7 +143,6 @@ describe("every claim missing or wrong-typed is a denial, never a pass", () => {
   for (const [claim, reason] of [
     ["iss", "iss is missing or not a string"],
     ["aud", "aud is missing or not a string"],
-    ["email", "email is missing or not a string"],
     ["sub", "sub is missing or not a string"],
   ] as const) {
     it(`refuses a token whose ${claim} is absent or the wrong type`, () => {

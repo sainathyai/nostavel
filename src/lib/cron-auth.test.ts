@@ -106,6 +106,16 @@ describe("the OIDC path", () => {
     expect(result).toEqual({ ok: false, reason: "email is not the expected caller" });
   });
 
+  it("REFUSES THE TOKEN AN ATTACKER WOULD ACTUALLY HAVE: their own account, no email", async () => {
+    // Now that `email` is optional, this is the realistic forgery rather than the
+    // earlier one. Someone with any Google Cloud project mints a token for our
+    // audience using THEIR service account. It is correctly signed by Google, the
+    // issuer and audience are right, it is unexpired, and it carries no email at
+    // all. Only `sub` tells it apart, which is why `sub` is the gate.
+    const jwt = await token({ sub: "777777777777777777777" }, ourKey, ["email", "email_verified"]);
+    expect(await authorize(jwt)).toEqual({ ok: false, reason: "sub is not the expected caller" });
+  });
+
   it("refuses the right email with a different subject", async () => {
     const result = await authorize(await token({ sub: "999999" }));
     expect(result).toEqual({ ok: false, reason: "sub is not the expected caller" });
@@ -114,6 +124,14 @@ describe("the OIDC path", () => {
   it("refuses an unverified email even when everything else is right", async () => {
     const result = await authorize(await token({ email_verified: false }));
     expect(result).toEqual({ ok: false, reason: "email_verified is not true" });
+  });
+
+  it("AUTHORISES A REAL SCHEDULER-SHAPED TOKEN, WHICH CARRIES NO EMAIL", async () => {
+    // End to end through jose as well as the rule, because `requiredClaims`
+    // listed `email` and `email_verified` and would have rejected this before the
+    // rule was ever consulted. This is the token Cloud Scheduler actually sends.
+    const jwt = await token({}, ourKey, ["email", "email_verified"]);
+    expect(await authorize(jwt)).toEqual({ ok: true, via: "oidc" });
   });
 
   it("refuses a validly signed token with no expiry", async () => {
