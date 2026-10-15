@@ -55,7 +55,7 @@ import { and, eq, gte, inArray, notIlike } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
 import { getSupplierBooking } from "@/lib/liteapi";
-import { verifySharedSecret } from "@/lib/webhook-auth";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 import { statusesAgree } from "@/lib/cron-format";
 
 /**
@@ -71,9 +71,12 @@ import { statusesAgree } from "@/lib/cron-format";
 const LEDGER_ERA_BEGAN = new Date("2026-08-12T00:00:00.000Z");
 
 export async function POST(request: Request) {
-  const auth = request.headers.get("authorization");
-  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (!verifySharedSecret(bearer, process.env.CRON_SECRET)) {
+  const now = new Date();
+
+  // Either a Cloud Scheduler OIDC token or the legacy shared secret (NOS-65).
+  const auth = await authorizeCronRequest(request, "reconcile", now);
+  if (!auth.ok) {
+    console.warn(JSON.stringify({ event: "cron.reconcile.unauthorized", reason: auth.reason }));
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 

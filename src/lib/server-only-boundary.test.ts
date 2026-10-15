@@ -131,7 +131,14 @@ describe("server-only boundary (docs/conventions.md §2, T15/G4)", () => {
     // is built on (NOS-9). This list caught it on the first run, which is the
     // point of pinning it - a new module that handles a secret has to be
     // noticed, not just happen to be correct.
+    //
+    // cron-auth.ts joined in NOS-65, and this test is how it was noticed rather
+    // than how it was remembered. It reads `CRON_SECRET` for the legacy bearer
+    // path that keeps `workflow_dispatch` working until Cloud Scheduler is
+    // proven. When that path is deleted it stops handling a secret and should
+    // leave this list again, which will fail here and say so.
     expect(names).toEqual([
+      "cron-auth.ts",
       "dal.ts",
       "guest-verify.ts",
       "quote-token.ts",

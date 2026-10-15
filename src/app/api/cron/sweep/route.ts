@@ -56,7 +56,7 @@ import {
   sweepDecision,
   type SweepCandidate,
 } from "@/lib/booking-transitions";
-import { verifySharedSecret } from "@/lib/webhook-auth";
+import { authorizeCronRequest } from "@/lib/cron-auth";
 
 export const runtime = "nodejs";
 
@@ -76,13 +76,21 @@ type Counts = {
 };
 
 export async function POST(request: Request) {
-  const auth = request.headers.get("authorization");
-  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-  if (!verifySharedSecret(bearer, process.env.CRON_SECRET)) {
+  // The clock is taken ONCE, before authorising, so the token's expiry and every
+  // hold calculation below are judged against the same instant (conventions §2).
+  const now = new Date();
+
+  // Either a Cloud Scheduler OIDC token or the legacy shared secret (NOS-65).
+  // The secret path is temporary and exists only so `workflow_dispatch` keeps
+  // working until Scheduler is proven; see `cron-auth.ts`.
+  const auth = await authorizeCronRequest(request, "sweep", now);
+  if (!auth.ok) {
+    // The reason is logged, not returned: this route's value is being
+    // unguessable, and telling a caller which claim failed is a map.
+    console.warn(JSON.stringify({ event: "cron.sweep.unauthorized", reason: auth.reason }));
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const now = new Date();
   const counts: Counts = {
     holdsExpired: 0,
     recovered: 0,
