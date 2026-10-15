@@ -61,6 +61,16 @@ describe("isExemptPath", () => {
     expect(isExemptPath("/api/webhooks/liteapi")).toBe(true);
   });
 
+  it("does not exempt an exempt path written with a trailing slash", () => {
+    // And it does not need to. MEASURED 2026-10-14: Next answers
+    // `POST /api/cron/sweep/` with a 308 before the proxy runs, so this gate
+    // never sees that spelling. NOS-65 briefly normalised it here on the
+    // opposite assumption; the assumption was wrong and the code is gone. A
+    // trailing slash on a Scheduler URL shows up as a non-2xx in Scheduler's own
+    // log and as nothing in ours.
+    expect(isExemptPath("/api/cron/sweep/")).toBe(false);
+  });
+
   it("does not exempt a route that does not exist yet under an exempt one", () => {
     // The M5 fix. Under the prefix list all three of these were exempt.
     expect(isExemptPath("/api/cron/warm-search")).toBe(false);

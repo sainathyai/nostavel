@@ -18,6 +18,10 @@ function shared(overrides: Env = {}): Env {
     ACCESS_PASSWORD: "p".repeat(20),
     ANTHROPIC_API_KEY: "present",
     RESEND_API_KEY: "present",
+    CRON_SWEEP_INVOKER_EMAIL: "sweep-invoker@example-project.iam.gserviceaccount.com",
+    CRON_SWEEP_INVOKER_SUB: "100000000000000000001",
+    CRON_RECONCILE_INVOKER_EMAIL: "reconcile-invoker@example-project.iam.gserviceaccount.com",
+    CRON_RECONCILE_INVOKER_SUB: "100000000000000000002",
     ...overrides,
   };
 }

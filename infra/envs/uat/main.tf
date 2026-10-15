@@ -250,6 +250,29 @@ resource "google_cloud_run_v2_service" "app" {
         value = var.app_url
       }
 
+      # Cloud Scheduler's identity for each money-safety job (NOS-65).
+      # Configuration, not secrets: a service-account email and that account's
+      # immutable numeric id, which is exactly why this approach exists - a
+      # shared secret could not travel this way (ADR 0005).
+      #
+      # BOTH per job, or neither. If one lands without the other the app cannot
+      # authorise by identity and silently falls back to accepting only the
+      # shared secret, which any workflow on any merged branch can read.
+      # `deploy-config.ts` warns on that case rather than refusing, because a
+      # 503 over a cron misconfiguration trades a dead job for a dead site.
+      dynamic "env" {
+        for_each = {
+          CRON_SWEEP_INVOKER_EMAIL     = google_service_account.cron_invoker["sweep"].email
+          CRON_SWEEP_INVOKER_SUB       = google_service_account.cron_invoker["sweep"].unique_id
+          CRON_RECONCILE_INVOKER_EMAIL = google_service_account.cron_invoker["reconcile"].email
+          CRON_RECONCILE_INVOKER_SUB   = google_service_account.cron_invoker["reconcile"].unique_id
+        }
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
       dynamic "env" {
         for_each = google_secret_manager_secret.app
         content {

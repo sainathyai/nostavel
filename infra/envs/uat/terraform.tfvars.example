@@ -10,3 +10,7 @@ billing_account = ""
 # Left at the placeholder for the first apply; set to the service's own URL for
 # the second (the runbook explains the two passes).
 # app_url = "https://nostavel-uat-xxxxxxxx-uc.a.run.app"
+
+# Where a stopped money-safety job is reported (NOS-65). Required: an apply
+# without it fails rather than creating an alert policy that notifies nobody.
+alert_email = "you@example.com"

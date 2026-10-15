@@ -33,6 +33,10 @@ function healthyShared(overrides: Env = {}): Env {
     ACCESS_PASSWORD: PASSWORD,
     ANTHROPIC_API_KEY: "present",
     RESEND_API_KEY: "present",
+    CRON_SWEEP_INVOKER_EMAIL: "sweep-invoker@example-project.iam.gserviceaccount.com",
+    CRON_SWEEP_INVOKER_SUB: "100000000000000000001",
+    CRON_RECONCILE_INVOKER_EMAIL: "reconcile-invoker@example-project.iam.gserviceaccount.com",
+    CRON_RECONCILE_INVOKER_SUB: "100000000000000000002",
     ...overrides,
   };
 }
@@ -169,6 +173,51 @@ describe("configProblems for a built image", () => {
 describe("configProblems in a shared environment", () => {
   it("reports nothing when everything is set", () => {
     expect(configProblems(healthyShared())).toEqual([]);
+  });
+
+  it("warns, and does NOT refuse, when a job's Scheduler identity is missing", () => {
+    // NOS-65. The security review was explicit: fatal here would 503 the entire
+    // application over a cron misconfiguration, trading a dead job for a dead
+    // site. So this must be a warning, and the test says so rather than trusting
+    // the severity to stay put.
+    const env = healthyShared({ CRON_SWEEP_INVOKER_EMAIL: "", CRON_SWEEP_INVOKER_SUB: "" });
+    expect(codes(env)).toEqual(["cron-sweep-invoker-missing"]);
+    expect(fatalProblems(env)).toEqual([]);
+  });
+
+  it("warns about a PARTIAL identity differently, because that is the dangerous one", () => {
+    // One variable landing without the other is a plausible partial apply: a
+    // service account's unique_id is a different attribute from its email. The
+    // job then silently reverts to accepting only the shared secret, which any
+    // workflow on any merged branch can read, and nothing would have said so.
+    const env = healthyShared({ CRON_RECONCILE_INVOKER_SUB: "" });
+    expect(codes(env)).toEqual(["cron-reconcile-invoker-partial"]);
+    expect(fatalProblems(env)).toEqual([]);
+    const [problem] = configProblems(env);
+    expect(problem.message).toContain("must both be set");
+    expect(problem.message).toContain("any workflow on any merged branch");
+  });
+
+  it("warns per job, so one configured job does not mask the other", () => {
+    const env = healthyShared({
+      CRON_SWEEP_INVOKER_EMAIL: "",
+      CRON_SWEEP_INVOKER_SUB: "",
+      CRON_RECONCILE_INVOKER_EMAIL: "",
+      CRON_RECONCILE_INVOKER_SUB: "",
+    });
+    expect(codes(env)).toEqual(["cron-sweep-invoker-missing", "cron-reconcile-invoker-missing"]);
+  });
+
+  it("treats whitespace as unset, like every other variable here", () => {
+    expect(codes(healthyShared({ CRON_SWEEP_INVOKER_SUB: "   " }))).toEqual([
+      "cron-sweep-invoker-partial",
+    ]);
+  });
+
+  it("never echoes an invoker value, which is configuration but still not for a log", () => {
+    const sentinel = "sentinel-invoker-value";
+    const env = healthyShared({ CRON_SWEEP_INVOKER_EMAIL: sentinel, CRON_SWEEP_INVOKER_SUB: "" });
+    for (const p of configProblems(env)) expect(p.message).not.toContain(sentinel);
   });
 
   it("refuses a live supplier key", () => {

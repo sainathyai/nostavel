@@ -209,6 +209,14 @@ export async function POST(request: Request) {
     }
   }
 
+  // A COMPLETED pass, which is what the absence alert watches (NOS-65 part 3
+  // review, M2). The `authorized` line above is emitted before a single row is
+  // read, so a job that authenticates and then throws on its first query would
+  // have fed the metric every 5 minutes while rescuing nobody. `via` is carried
+  // so the metric can require `oidc` and not be kept alive by a GitHub
+  // workflow_dispatch run, which is also what makes this ticket's "72 hours of
+  // Scheduler delivery" precondition answerable.
+  console.info(JSON.stringify({ event: "cron.sweep.completed", via: auth.via, ...counts }));
   return Response.json({ ok: true, ...counts });
 }
 

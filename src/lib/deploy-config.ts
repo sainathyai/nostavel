@@ -363,6 +363,38 @@ export function configProblems(env: Env): ConfigProblem[] {
     }
   }
 
+  // Cloud Scheduler's identity for each money-safety job (NOS-65).
+  //
+  // WARN, NOT FATAL, and the security review was explicit about why: fatal would
+  // 503 the entire application over a cron misconfiguration, trading a dead job
+  // for a dead site. A warning surfaces in `/api/health?deep=1` and in the
+  // startup log, which is where a partial identity config belongs.
+  //
+  // PARTIAL is the case worth catching. If one of the two variables lands and the
+  // other does not - a plausible partial apply, since a service account's
+  // `unique_id` is a different attribute from its email - then
+  // `expectedCronCaller` returns null, the OIDC path is skipped, and the job
+  // silently reverts to accepting only the repository-scoped shared secret: the
+  // exact credential this work exists to retire. Nothing would have said so.
+  for (const job of ["SWEEP", "RECONCILE"] as const) {
+    const email = (env[`CRON_${job}_INVOKER_EMAIL`] ?? "").trim();
+    const subject = (env[`CRON_${job}_INVOKER_SUB`] ?? "").trim();
+    const label = job.toLowerCase();
+    if (email && subject) continue;
+    problems.push({
+      code: `cron-${label}-invoker-${email || subject ? "partial" : "missing"}`,
+      severity: "warn",
+      message:
+        email || subject
+          ? `CRON_${job}_INVOKER_EMAIL and CRON_${job}_INVOKER_SUB must both be set, and only ` +
+            `one is. The ${label} job cannot be authorised by identity, so it accepts only the ` +
+            "shared secret, which any workflow on any merged branch can read."
+          : `CRON_${job}_INVOKER_EMAIL and CRON_${job}_INVOKER_SUB are not set, so the ` +
+            `${label} job is not reachable by Cloud Scheduler and runs only from the shared ` +
+            "secret.",
+    });
+  }
+
   return problems;
 }
 

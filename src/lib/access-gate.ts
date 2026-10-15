@@ -123,6 +123,27 @@ export function isExemptPath(path: string): boolean {
 }
 
 /**
+ * MEASURED 2026-10-14, because an earlier version of this file guessed wrong.
+ *
+ * NOS-65 added a trailing-slash normalisation here, on the stated grounds that a
+ * Cloud Scheduler URL ending in `/` would be refused by this gate with a Basic
+ * challenge before Next could redirect it. That is backwards. With
+ * `trailingSlash` false, Next inserts an internal redirect ahead of the proxy in
+ * its route list, so the redirect happens FIRST:
+ *
+ *     POST /api/cron/sweep/  ->  308, Location: /api/cron/sweep   (nothing in the
+ *                                app saw the request)
+ *     POST /api/cron/sweep   ->  401 from the route's own auth
+ *
+ * So the normalisation was unreachable, and it has been removed rather than kept
+ * with a corrected comment: dead code defended by a false premise is worse than
+ * no code, because the next person inherits the premise. What a trailing slash
+ * actually produces is a 308 in CLOUD SCHEDULER's log and nothing at all in ours,
+ * which is why `docs/runbooks/cron-jobs.md` has a branch for "neither app log
+ * line exists".
+ */
+
+/**
  * The password out of an `Authorization: Basic ...` header, or null.
  *
  * The username is ignored on purpose: a second shared string adds no secrecy
