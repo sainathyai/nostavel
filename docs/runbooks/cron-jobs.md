@@ -15,6 +15,46 @@ secret-free alternative sits beside it.
 
 ---
 
+## 0. The first apply, once
+
+Terraform here is applied **by hand** (D-5.5): the delivery pipeline plans and
+applies database changes only, never infrastructure. So these steps are a person's,
+and they are in this order for a reason.
+
+1. `alert_email` must be set in the untracked `infra/envs/uat/terraform.tfvars`.
+   Use a personal address. A Google Group silently drops alerting mail unless it is
+   configured to accept it from `alerting-noreply@google.com`, and an alarm nobody
+   receives is this runbook's whole subject.
+2. `terraform apply`. It enables three APIs, creates two role-less invoker
+   identities, two Scheduler jobs, two log-based metrics and three alert policies.
+3. **Promote traffic.** The apply creates a revision with **zero traffic**, so the
+   four `CRON_*_INVOKER_*` values are on the template and not on the copy serving
+   requests. This is measured, not theoretical: see section 4.
+   ```
+   gcloud run services update-traffic nostavel-uat --region us-central1 --to-latest
+   ```
+4. Confirm the serving revision actually has them, using section 4's commands. Not
+   the template.
+5. **Watch the first invocation**, within 5 minutes. Section 1 tells you whether it
+   completed and which credential authorised it. If it 401s, section 3's table maps
+   each reason to one action.
+6. **Prove the alarm**, because an unfired alert is an untested alert:
+   - disable the GitHub `cron-sweep` workflow, so the metric cannot be fed from the
+     old trigger;
+   - `gcloud scheduler jobs pause nostavel-uat-sweep --location us-central1`;
+   - wait ~25 minutes and confirm the email arrives;
+   - resume the job and re-enable the workflow, and confirm the alert clears.
+7. **Watch one deploy afterwards** and confirm no spurious "has stopped running"
+   arrives 20 minutes later. The alert is grouped across revisions so that a
+   retired revision going quiet is not reported as a stopped job, and that grouping
+   has not been observed working.
+
+Only when 5, 6 and 7 have all been seen should the `schedule:` blocks come out of
+`cron-sweep.yml` and `cron-reconcile.yml`. Removing a broken trigger before its
+replacement is proven leaves none.
+
+---
+
 ## 1. Run the job by hand, first
 
 Do this before diagnosing anything. One command, and it is the thing that helps a
