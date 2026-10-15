@@ -80,3 +80,23 @@ export function extractSupplierStatus(env: WebhookEnvelope): string | null {
   const v = deep(env.response, "status");
   return typeof v === "string" ? v : null;
 }
+
+/**
+ * The supplier's own identifier for a refund, when the payload carries one.
+ *
+ * Nullable by design (NOS-8). It is stored on the `refunds` row so two refunds on
+ * one stay can be told apart, and it is NOT what deduplicates a redelivered
+ * webhook - `webhook_events.externalId` does that upstream, which is where
+ * delivery-level deduplication belongs.
+ *
+ * Several plausible key names, because the supplier's payloads are not uniform
+ * and this is read from whichever one is present rather than asserted.
+ */
+export function extractRefundId(env: WebhookEnvelope): string | null {
+  for (const key of ["refundId", "refund_id", "refundReference", "transactionId"]) {
+    const v = deep(env.response, key);
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
+    if (typeof v === "number") return String(v);
+  }
+  return null;
+}

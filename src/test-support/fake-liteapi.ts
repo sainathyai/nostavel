@@ -270,16 +270,26 @@ export function buildFakeWebhookPayload(opts: {
   eventName: string;
   bookingId: string;
   status?: string;
+  /**
+   * Major units, as the supplier sends them: `extractRefundAmountMinor` reads
+   * `refund_amount` and multiplies by 100. Added in NOS-8, where a refund that
+   * is not a cancellation has to be expressible at all.
+   */
+  refundAmount?: number;
+  refundId?: string;
 }): Record<string, unknown> {
+  const response: Record<string, unknown> = {
+    bookingId: opts.bookingId,
+    status: opts.status ?? "CANCELLED",
+  };
+  if (opts.refundAmount !== undefined) response.refund_amount = opts.refundAmount;
+  if (opts.refundId !== undefined) response.refundId = opts.refundId;
   return {
     event_id: opts.eventId,
     event_name: opts.eventName,
     sandbox: true,
     request: JSON.stringify({ bookingId: opts.bookingId }),
-    response: JSON.stringify({
-      bookingId: opts.bookingId,
-      status: opts.status ?? "CANCELLED",
-    }),
+    response: JSON.stringify(response),
   };
 }
 

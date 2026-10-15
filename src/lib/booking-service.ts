@@ -12,12 +12,14 @@ import {
   payments,
   cancellations,
   type NewBooking,
+  refunds,
 } from "@/db/schema";
 import { prebook, book, cancelBooking as cancelSupplierBooking } from "@/lib/liteapi";
 import { sendBookingConfirmation } from "@/lib/email";
 import { makeRef, extractCancellation } from "@/lib/booking-format";
 import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
 import { holdLapsed, statusAfterFailedBook } from "@/lib/booking-transitions";
+import { webhookEventType } from "@/lib/webhook-dispatch";
 
 export type HotelSnapshot = {
   name: string;
@@ -921,10 +923,82 @@ export async function recordSupplierCancellation(
 
   await db.insert(bookingEvents).values({
     bookingId: row.id,
-    type: "webhook.booking.cancel",
+    type: webhookEventType("cancellation"),
     actor: "webhook",
     payload: payload.raw as object,
   });
 
   return { bookingId: row.id, alreadyRecorded: false };
+}
+
+/**
+ * Record money returned on a booking that is NOT being cancelled (NOS-8).
+ *
+ * The booking's status is deliberately untouched. A partial or goodwill refund on
+ * a stay that is still going ahead used to route here through
+ * `recordSupplierCancellation`, which set `status: "cancelled"` unconditionally -
+ * so the guest's trip page showed a live stay as cancelled and the weekly payout
+ * reconciliation was wrong for that booking (threat-model gap G6).
+ *
+ * Writes to `refunds`, never to `cancellations`. The reason is in the schema
+ * comment: `cancellations` is one row per booking, and a refund sitting in that
+ * slot makes a later real cancellation unrecordable.
+ *
+ * Returns null when the supplier id matches no booking of ours, the same as the
+ * cancellation path, because a webhook for someone else's booking is not an error.
+ */
+export async function recordSupplierRefund(
+  liteapiBookingId: string,
+  payload: {
+    refundAmountMinor?: number | null;
+    status?: string | null;
+    supplierRefId?: string | null;
+    raw: unknown;
+  },
+): Promise<{ bookingId: string; recorded: boolean } | null> {
+  const rows = await db
+    .select()
+    .from(bookings)
+    .where(eq(bookings.liteapiBookingId, liteapiBookingId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  // A cancelled booking's refund belongs to its cancellation, which the
+  // cancellation path already recorded. Writing a second row here would double
+  // count the same money at reconciliation.
+  if (row.status === "cancelled") {
+    return { bookingId: row.id, recorded: false };
+  }
+
+  // No amount means nothing to record. The event itself is already stored in
+  // `webhook_events`, which is the corroboration; inventing a zero-value refund
+  // row would put a money fact in the ledger that the supplier never asserted.
+  const amountMinor = payload.refundAmountMinor;
+  if (amountMinor == null) {
+    await db.insert(bookingEvents).values({
+      bookingId: row.id,
+      type: webhookEventType("refund"),
+      actor: "webhook",
+      payload: payload.raw as object,
+    });
+    return { bookingId: row.id, recorded: false };
+  }
+
+  await db.insert(refunds).values({
+    bookingId: row.id,
+    supplierRefId: payload.supplierRefId ?? null,
+    amountMinor,
+    currency: row.currency,
+    supplierStatus: payload.status ?? null,
+  });
+
+  await db.insert(bookingEvents).values({
+    bookingId: row.id,
+    type: webhookEventType("refund"),
+    actor: "webhook",
+    payload: payload.raw as object,
+  });
+
+  return { bookingId: row.id, recorded: true };
 }
