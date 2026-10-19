@@ -1,12 +1,20 @@
 name: Cron - nightly reconciliation
 
-# docs/production-readiness.md §2.4. Same infra as cron-sweep.yml (a scheduled
-# workflow calling a secret-protected route, no platform-specific cron), on a
-# nightly schedule — low traffic, ~2am US-Central. Needs the same APP_URL /
-# CRON_SECRET configured before it can pass.
+# MANUAL FALLBACK ONLY, for the same reason as cron-sweep.yml: Cloud Scheduler
+# owns this job (infra/envs/uat/scheduler.tf, nightly at 02:00 America/Chicago)
+# and GitHub's `schedule` event was measured delivering 1.6% of the sweeper's
+# runs. This job ran nightly, so its own delivery was never measurable at that
+# resolution - which is exactly the problem: a daily job that silently does not
+# fire looks identical to one that fires and finds nothing.
+#
+# Verified before the schedule came out: the Scheduler job has fired every night
+# since the apply, last attempt 2026-10-19T07:00:01Z.
+#
+# `workflow_dispatch` stays as the hand-run path. It authorises with the shared
+# secret, and the reconcile alarm counts only `via=oidc` passes, so running this
+# will not clear an alarm about the real job. See docs/runbooks/cron-jobs.md
+# section 6.
 on:
-  schedule:
-    - cron: "0 9 * * *"
   workflow_dispatch:
 
 jobs:

@@ -43,9 +43,11 @@
 // advisory lock is available anyway: the neon-http driver is stateless per
 // query, so a lock spanning two queries couldn't be held reliably.
 //
-// Triggered by a scheduled GitHub Actions workflow
-// (.github/workflows/cron-sweep.yml) rather than a platform-specific cron —
-// no deploy target is chosen yet, and this works under any future host.
+// Triggered by Cloud Scheduler every 5 minutes (infra/envs/uat/scheduler.tf),
+// authorised by the job's own OIDC identity (src/lib/cron-auth.ts). It used to
+// be a scheduled GitHub Actions workflow, which delivered 13 of an expected 808
+// runs over 67.3 hours while reporting success every time (NOS-65). That
+// workflow still exists as a hand-run fallback and nothing else.
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
