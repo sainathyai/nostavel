@@ -1,4 +1,5 @@
 import { getHotelCardExtras } from "@/lib/liteapi";
+import { reportFailure } from "@/lib/action-error";
 
 // Image gallery + amenity icons for a search-result card — fetched once on
 // mount (queued client-side, see fetch-queue.ts) rather than for all 30
@@ -11,6 +12,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const extras = await getHotelCardExtras(id);
     return Response.json(extras);
   } catch (err) {
-    return Response.json({ error: err instanceof Error ? err.message : "fetch failed" }, { status: 502 });
+    // NOS-11: relayed the supplier's own error text to an unauthenticated
+    // caller. Not named in the ticket; same defect as the other routes.
+    return Response.json({ error: reportFailure("hotel-extras", err).error }, { status: 502 });
   }
 }

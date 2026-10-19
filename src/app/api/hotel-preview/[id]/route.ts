@@ -1,4 +1,5 @@
 import { getHotelPreview } from "@/lib/liteapi";
+import { reportFailure } from "@/lib/action-error";
 
 // Backs the results-page preview modal: photos, amenities, facilities,
 // reviews, check-in/out times — everything except rates (the modal doesn't
@@ -11,6 +12,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const preview = await getHotelPreview(id);
     return Response.json(preview);
   } catch (err) {
-    return Response.json({ error: err instanceof Error ? err.message : "fetch failed" }, { status: 502 });
+    // NOS-11, same as hotel-images: the supplier's text never reaches a caller.
+    return Response.json({ error: reportFailure("hotel-extras", err).error }, { status: 502 });
   }
 }

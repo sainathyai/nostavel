@@ -5,6 +5,7 @@ import { resolveCaller } from "@/lib/booking-caller";
 import { getBookingById } from "@/lib/bookings";
 import { confirmBooking, recordUnresolvedPayment } from "@/lib/booking-service";
 import ThemeToggle from "@/components/ThemeToggle";
+import { reportFailure } from "@/lib/action-error";
 
 type HotelSnap = { name?: string; city?: string; stars?: number };
 type RoomSnap = { title?: string; board?: string };
@@ -112,7 +113,11 @@ export default async function ConfirmationPage(props: {
           // there first.
           finalizing = result.status === "finalizing";
         } catch (e) {
-          errorMsg = (e as Error).message;
+          // NOS-11, AND THE WORST OF THE SET: this renders on the money path,
+          // so a failed `book()` showed the guest LiteAPI's raw text while the
+          // two sibling branches below used static copy. Same scope as
+          // `confirmBookingAction`, because it is the same failure.
+          errorMsg = reportFailure("confirm", e).error;
         }
       } else {
         errorMsg = "This booking was never completed. Start a fresh search to book this stay.";
