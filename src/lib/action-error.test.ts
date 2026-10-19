@@ -1,6 +1,6 @@
 // The guest-facing error contract (NOS-11). Pure apart from one injected log,
 // so every branch is reachable without a database, a network or a console.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   describeThrown,
   guestMessage,
@@ -10,14 +10,28 @@ import {
 } from "./action-error";
 import { LiteApiError } from "./liteapi-error";
 
-const ALL_SCOPES: FailureScope[] = [
+const ALL_SCOPES = [
   "prepare",
   "guest",
   "payment",
   "confirm",
   "cancel",
+  "search",
   "area-search",
-];
+  "hotel-extras",
+] as const satisfies readonly FailureScope[];
+
+// A STALE LIST IS WHY THIS GUARD EXISTS. The first version of this file listed
+// six scopes and `FailureScope` grew to eight while widening the fix past the
+// ticket's call sites. Every "for every scope" test below still passed, because
+// it iterated the list rather than the type, and CI's coverage report was the
+// only thing that noticed the two new messages were never executed.
+//
+// So the list is now checked against the union at COMPILE time: if a scope is
+// added to `FailureScope` and not here, `Missing` stops being `never` and this
+// assignment stops type-checking, which `tsc --noEmit` fails on in CI.
+type Missing = Exclude<FailureScope, (typeof ALL_SCOPES)[number]>;
+const everyScopeIsCovered: Missing extends never ? true : Missing = true;
 
 /** The real shapes this used to leak, taken from the modules that throw them. */
 const REAL_LEAKS = {
@@ -30,6 +44,15 @@ const REAL_LEAKS = {
   // src/lib/liteapi.ts: an instruction meant for whoever runs the service.
   configuration: new Error("LITEAPI_KEY missing. Add it to .env.local"),
 };
+
+describe("the scope list this file iterates is the whole type", () => {
+  it("covers every FailureScope", () => {
+    // The compile-time guard above is the real check; this makes the intent
+    // visible in the test output and keeps the constant referenced.
+    expect(everyScopeIsCovered).toBe(true);
+    expect(ALL_SCOPES.length).toBe(new Set(ALL_SCOPES).size);
+  });
+});
 
 describe("nothing a guest is shown carries supplier or internal detail (NOS-11)", () => {
   it("replaces the supplier's own error text with fixed copy", () => {
@@ -118,6 +141,22 @@ describe("the reference is the whole point: it must be in both places", () => {
     expect(typeof calls[0][0]).toBe("string");
   });
 
+  it("writes to console.error when no log is injected, which is the real path", () => {
+    // Every other test here injects a log, so the default - the only branch
+    // that runs in production - was never executed. Found by CI's coverage
+    // report, not by reading the file.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const report = reportFailure("prepare", new Error("upstream exploded"));
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = String(spy.mock.calls[0][0]);
+      expect(line).toContain(report.reference);
+      expect(line).toContain("upstream exploded");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("mints a different reference each time, in a readable shape", () => {
     const a = newReference();
     const b = newReference();
@@ -172,6 +211,15 @@ describe("anything can be thrown, and the catch block must not throw (unhappy pa
 
   it("describes an Error with no message", () => {
     expect(describeThrown(new Error(""))).toBe("Error: (no message)");
+  });
+
+  it("names an Error whose own name has been blanked", () => {
+    // A defensive fallback, and the last uncovered branch in the module: some
+    // Error subclasses and some bundlers leave `name` empty, and a log line
+    // reading ": boom" names nothing.
+    const nameless = new Error("boom");
+    (nameless as { name: string }).name = "";
+    expect(describeThrown(nameless)).toBe("Error: boom");
   });
 
   it("describes an object, and a value whose own toString throws", () => {
