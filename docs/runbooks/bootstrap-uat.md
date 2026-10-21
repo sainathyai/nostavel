@@ -495,20 +495,27 @@ Open the site in a browser. It will ask for a password: any username, and the
 
 ## 14. Switch the money-safety jobs back on
 
-These have been written, tested and disabled since they were built, because there
-was nothing to call. The sweeper is the only thing that rescues a guest who was
-charged and whose browser never came back.
+The sweeper is the only thing that rescues a guest who was charged and whose
+browser never came back.
+
+**Cloud Scheduler owns both jobs now**, created by `terraform apply` in step 10,
+not by these workflows. Setting them up is `docs/runbooks/cron-jobs.md` section 0,
+which includes promoting traffic and watching the first invocation. Do that
+instead of enabling anything here.
+
+The two GitHub workflows still exist, with `workflow_dispatch` only, as the
+hand-run fallback. Running one is still the fastest way to prove the endpoint and
+the secret are wired, which is worth doing while you are here:
 
 ```bash
-gh workflow enable cron-sweep.yml --repo "$GITHUB_REPO"
-gh workflow enable cron-reconcile.yml --repo "$GITHUB_REPO"
-
-# Prove they work rather than waiting for the schedule.
+# A hand run, not a schedule: these workflows no longer have one (NOS-65).
 gh workflow run cron-sweep.yml --repo "$GITHUB_REPO"
 gh run watch --repo "$GITHUB_REPO"
 ```
 
-They read `APP_URL` and `CRON_SECRET`, both set in step 11.
+It reads `APP_URL` and `CRON_SECRET`, both set in step 11. It authorises with the
+shared secret, so it logs `via=shared-secret` and does **not** clear the sweep
+alarm, which counts Cloud Scheduler passes only.
 
 ---
 
@@ -535,7 +542,8 @@ They read `APP_URL` and `CRON_SECRET`, both set in step 11.
 
 - [ ] `curl .../api/health` returns `ok: true` and `env: uat`
 - [ ] The browser asks for the password, and the site loads after it
-- [ ] `gh workflow run cron-sweep.yml` goes green
+- [ ] `gh workflow run cron-sweep.yml` goes green (the hand-run path)
+- [ ] A Cloud Scheduler tick logs `cron.sweep.completed` with `via=oidc` within 5 minutes (cron-jobs.md section 1)
 - [ ] A merge to `main` deploys on its own
 - [ ] A merge containing a migration stops and asks you first
 

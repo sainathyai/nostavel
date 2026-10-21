@@ -49,8 +49,28 @@ and they are in this order for a reason.
    retired revision going quiet is not reported as a stopped job, and that grouping
    has not been observed working.
 
-Only when 5, 6 and 7 have all been seen should the `schedule:` blocks come out of
-`cron-sweep.yml` and `cron-reconcile.yml`. Removing a broken trigger before its
+**All three were seen, and the `schedule:` blocks are out** (2026-10-19, NOS-65).
+What was observed, so a later reader can judge it rather than take it:
+
+- **5, first invocation:** 2026-10-15 14:35:01Z, `cron.sweep.authorized` then
+  `cron.sweep.completed`, both `via=oidc`.
+- **6, the alarm:** last data point 14:47, condition met 15:07, email ~15:10,
+  cleared when passes resumed 15:20:05Z.
+- **7, a deploy afterwards:** two on 2026-10-15, at 21:55:33Z and 22:19:38Z,
+  retiring revision `00031` which had been logging passes since 14:35. No
+  spurious "has stopped running" followed. The structural reason it cannot:
+  the policy aggregates `REDUCE_SUM` grouped on `resource.label.service_name`
+  (confirmed against the live policy, not just the Terraform), so the series
+  evaluated is the sum across revisions, and that sum's longest gap in four days
+  was 10m01s against a 1200s absence window.
+- **Delivery, over the 95.3 hours from 14:35Z on the 15th:** 1138 completed
+  passes authorised by Cloud Scheduler against 1145 expected at `*/5`, **99.4%**.
+  The 7-tick deficit is fully accounted for: 6 ticks lost to the deliberate
+  alarm test above, 1 late tick on the 19th. The replaced GitHub schedule fired
+  27 times across the same window, 1.6% of its own `*/3`, independently
+  reproducing the measurement that opened the ticket.
+
+The order mattered and still does: removing a broken trigger before its
 replacement is proven leaves none.
 
 ---
@@ -230,9 +250,13 @@ secret:
 
 **Actions → cron-sweep → Run workflow.**
 
-Do not delete the Scheduler jobs to "clean up". Until the preconditions on NOS-65
-are met both paths are deliberately present, and the GitHub `schedule:` blocks are
-kept precisely so that removing a broken trigger cannot leave none.
+That is now the ONLY thing those two workflows do. The `schedule:` blocks came out
+on 2026-10-19 once the replacement was proven (section 0), so there is no longer a
+second trigger quietly sweeping the same rows. Nothing else changed: the endpoint,
+the secret and the dispatch button are as they were.
+
+Do not delete the Scheduler jobs to "clean up". They are the only automatic
+trigger now, and a hand-run dispatch is a person noticing, not a safety net.
 
 **One thing to know about the alarms while you are here.** The sweep alarm only
 counts passes authorised by Cloud Scheduler (`via=oidc`), so running the GitHub
