@@ -43,6 +43,13 @@
       "when": 1792081292082,
       "tag": "0005_watery_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792102777398,
+      "tag": "0006_colorful_starfox",
+      "breakpoints": true
     }
   ]
 }
