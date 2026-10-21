@@ -29,9 +29,10 @@ export class LiteApiError extends Error {
     const description = typeof error?.description === "string" ? error.description : null;
     const code = typeof error?.code === "number" ? error.code : null;
 
-    // The thrown text keeps the shape it has always had, so logs and the one
-    // guest-facing relay of it do not change. What is new is everything
-    // alongside it.
+    // The thrown text keeps the shape it has always had, so logs do not change.
+    // It had one guest-facing relay when this was written; NOS-11 closed that,
+    // so this string is now a log line and a test fixture only. Do not put it
+    // in front of a guest again: it is the supplier's wording, not ours.
     super(`LiteAPI ${status}: ${message ?? description ?? JSON.stringify(body)}`);
     this.name = "LiteApiError";
     this.status = status;

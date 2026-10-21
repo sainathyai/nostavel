@@ -1,38 +1,32 @@
 name: Cron - sweep abandoned holds
 
-# docs/production-readiness.md §2.2. Runs as a scheduled GitHub Actions
-# workflow rather than a platform-specific cron (Vercel Cron / Cloud
-# Scheduler) because no deploy target is chosen yet — this works under any
-# future host. Add APP_URL (Settings -> Secrets and variables -> Actions ->
-# Variables) and CRON_SECRET (-> Secrets, matching the value in the deployed
-# app's env) before this can pass; until then a red run here just means
-# there's nothing deployed to sweep yet.
+# MANUAL FALLBACK ONLY. Cloud Scheduler owns this job
+# (infra/envs/uat/scheduler.tf); the `schedule:` block that used to live here is
+# gone, and the runbook's section 6 is why this file still exists at all.
+#
+# WHY THE SCHEDULE WENT, with numbers rather than a preference. GitHub's
+# `schedule` event delivered 13 of an expected 808 sweeper runs over 67.3 hours
+# (1.6%), worst observed gap 9h41m against a supplier hold of 15 minutes, with
+# every one of those 13 runs reporting success - so there was no failure signal
+# anywhere. It also has a 5-minute floor below which nothing fires at all, and on
+# a public repository it disables itself after 60 quiet days, silently.
+#
+# WHY IT WENT NOW, rather than on the day the replacement landed. The runbook
+# required the replacement to be proven first, because removing a broken trigger
+# before its replacement works leaves none. Measured over the 95.3 hours from
+# 2026-10-15 14:35Z: 1138 completed passes authorised by Cloud Scheduler against
+# 1145 expected at `*/5`, which is 99.4%, and the 7-tick deficit is fully
+# accounted for (6 from the deliberate alarm test, 1 late tick). Worst gap
+# outside that test was 10m01s, inside both the 20-minute alarm window and the
+# 15-minute hold. Over those same four days this workflow's schedule fired 27
+# times - 1.6% again, independently - each one a second sweeper acting on rows
+# the real one had already swept.
+#
+# `workflow_dispatch` stays. It authorises with the shared secret
+# (`via=shared-secret` in the logs), which is deliberately NOT what the sweep
+# alarm counts: a dead Scheduler job must not be maskable by the trigger it
+# replaced. See docs/runbooks/cron-jobs.md section 6 before using it.
 on:
-  schedule:
-    # Every three minutes, not every fifteen. The supplier's hold is fifteen
-    # minutes and a booking is only recoverable inside it, so a quarter-hourly
-    # sweep gave a guest whose browser died exactly one chance to be rescued -
-    # and none at all if the tick landed in the first two minutes, or if GitHub
-    # delayed the run, which it routinely does under load. Raised by the NOS-5
-    # security review.
-    # FIVE, NOT THREE, AND THIS IS WHAT TURNS THE JOB ON. GitHub: "The shortest
-    # interval you can run scheduled workflows is once every 5 minutes." The
-    # documentation does not say what a shorter interval does, so it was measured
-    # on 2026-10-10: with `*/3` here, this workflow `active` and the repository
-    # pushed to minutes earlier, no scheduled run fired in 45 minutes and the
-    # repository had never had a single schedule-triggered run. A sub-floor
-    # interval appears to be rejected outright rather than rounded up - so this
-    # job had never once run on its own.
-    #
-    # THIS TRIGGER IS NOT GOOD ENOUGH FOR THIS JOB, and NOS-65 is the fix.
-    # Also from the same page: the schedule event "can be delayed during periods
-    # of high loads" and "some queued jobs may be dropped" - against a supplier
-    # hold of 15 minutes. And, worst: "In a public repository, scheduled
-    # workflows are automatically disabled when no repository activity has
-    # occurred in 60 days." This repository is public, so the only thing that
-    # rescues a guest who was charged switches itself off after 60 quiet days,
-    # with no notification. Cloud Scheduler is the right home for both jobs.
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

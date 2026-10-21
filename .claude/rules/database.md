@@ -24,6 +24,20 @@ Source of truth: `docs/conventions.md` §1 and §8. Stack: Neon Postgres over HT
   already been applied is invisible to both the plan and the migrator. The
   environment then runs code written against SQL that was never executed there.
 - Applying migrations (`db:migrate`) is a deliberate step that needs approval, never a side effect of other work.
+- **A new constraint is not additive, even when no column changes.** The
+  pipeline applies migrations before the new revision takes traffic, and the
+  premise that makes that safe is that the old code still works against the new
+  schema. A `UNIQUE` index breaks that premise: the code currently serving may
+  write rows the new index refuses. So a constraint migration states, in the
+  pull request, what the old code does in that window, and the new code handles
+  the conflict explicitly (`onConflictDoNothing` with a named `target`) rather
+  than relying on the window being short. Measured case: NOS-16, the unique
+  index on `cancellations.booking_id`.
+- **Creating a unique index on existing rows can fail, and that is the safe
+  direction.** The migrate step fails, the deploy fails, and traffic never
+  moves because revisions start with none. Check for the duplicates in **every**
+  environment sharing the schema immediately before approving, not when the
+  pull request opens, because a row can land in between.
 
 ## The booking ledger (§8)
 - `booking_events` is **append-only**. It's the reconciliation record against supplier payouts.
@@ -47,5 +61,5 @@ Source of truth: `docs/conventions.md` §1 and §8. Stack: Neon Postgres over HT
 - Guest personal data (names, emails, phone numbers) never goes into logs, fixtures committed to the repo, or analysis outputs.
 
 ## Done
-- The migration is generated and committed; state in the pull request that it's additive.
+- The migration is generated and committed; state in the pull request whether it is additive, and if it adds a constraint, what the currently-serving code does between the apply and the traffic switch.
 - `npm run verify` passes.

@@ -19,6 +19,23 @@ export default defineConfig({
     // failures. Serial files trade suite speed for a check that is actually
     // deterministic, which matters more for something that gates CI.
     fileParallelism: false,
+    // 30s, NOT VITEST'S 5s DEFAULT, and this is a fix rather than a nicety.
+    // Every test in this tier makes real HTTP round trips to a containerised
+    // Postgres through a proxy, and several make a dozen: `reconcile/
+    // route.int.test.ts`'s "excludes the legacy era however it is capitalised"
+    // runs four iterations of reset-seed-reconcile in one `it`, and that whole
+    // file takes ~18s for its 14 tests on a healthy runner. Under 5s those
+    // tests were not slow, they were a coin toss - that one timed out on a
+    // loaded runner in CI on 2026-10-19 while passing on the same branch's
+    // previous commit, in a file the branch did not touch.
+    //
+    // What a timeout is for is catching a HANG, and 5s does not distinguish a
+    // hang from an ordinary multi-statement test here. 30s still does, and
+    // stays well inside the job's own limit.
+    testTimeout: 30_000,
+    // Same reasoning for `beforeEach`/`afterEach`: the fixtures in this tier
+    // seed and reset real tables.
+    hookTimeout: 30_000,
     // Runs once, before any test file, in its own process with no shared
     // memory with the tests (Vitest's `globalSetup`, unlike `setupFiles`, is
     // isolated) - the right place for the one-time side effect of applying

@@ -1,6 +1,7 @@
 import { searchStaysInArea } from "@/lib/liteapi";
 import { getCurrentUser } from "@/lib/dal";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { reportFailure } from "@/lib/action-error";
 
 // Backs the map's "Search this area" button: the client sends the current
 // viewport as a center + radius when the guest ASKS for it, and we return the
@@ -44,6 +45,10 @@ export async function GET(request: Request) {
     });
     return Response.json(result);
   } catch (err) {
-    return Response.json({ error: err instanceof Error ? err.message : "search failed" }, { status: 502 });
+    // NOS-11: this used to relay the supplier's own error text to an
+    // unauthenticated caller. 502 is unchanged - the upstream really did fail -
+    // and the detail now goes to the log under the same reference the body
+    // carries.
+    return Response.json({ error: reportFailure("area-search", err).error }, { status: 502 });
   }
 }

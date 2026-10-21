@@ -780,6 +780,42 @@ export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult
   };
 }
 
+/**
+ * Record a cancellation write that the unique index absorbed (NOS-16, gap G5).
+ *
+ * WHY THIS EVENT HAS TO EXIST. `onConflictDoNothing` keeps the losing caller
+ * working, and the booking is genuinely cancelled either way, so it would be
+ * easy to drop the loser's write silently. But the two callers read DIFFERENT
+ * supplier responses: the guest path reads what LiteAPI returned to its own
+ * cancel call, the webhook path reads what the supplier pushed. Their refund
+ * amounts can differ, and whichever arrives second is the one thrown away.
+ * Without this row, that difference does not exist anywhere - not in
+ * `cancellations`, which kept the winner, and not in the audit trail. The
+ * weekly payout reconciliation would then be short by the gap with nothing to
+ * explain it.
+ *
+ * NOT best-effort. If this insert fails the caller gets the error, even though
+ * the cancellation itself committed. That is the deliberate direction: a false
+ * error on a cancellation that did happen is recoverable, because a retry hits
+ * the idempotent branch and returns the stored outcome, while a silently lost
+ * record of money that differs is not recoverable at all.
+ */
+async function appendCancelConflict(
+  bookingId: string,
+  dropped: {
+    source: "user" | "admin" | "webhook";
+    droppedRefundAmountMinor: number | null;
+    droppedStatus: string | null;
+  },
+): Promise<void> {
+  await db.insert(bookingEvents).values({
+    bookingId,
+    type: "booking.cancel.conflict",
+    actor: dropped.source === "webhook" ? "webhook" : dropped.source,
+    payload: dropped,
+  });
+}
+
 export type CancelBookingResult = {
   bookingId: string;
   humanRef: string;
@@ -863,17 +899,28 @@ export async function cancelBooking(
   // three in a single HTTPS round trip inside one transaction (see
   // src/db/index.ts), so either all three land or none do.
   const now = new Date();
+  let recorded: { id: string }[];
   try {
-    await db.batch([
+    const written = await db.batch([
       db
         .update(bookings)
         .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
         .where(eq(bookings.id, row.id)),
-      db.insert(cancellations).values({
-        bookingId: row.id,
-        status: result.status,
-        refundAmountMinor: result.refundAmountMinor,
-      }),
+      db
+        .insert(cancellations)
+        .values({
+          bookingId: row.id,
+          status: result.status,
+          refundAmountMinor: result.refundAmountMinor,
+        })
+        // ONE CANCELLATION PER BOOKING (NOS-16, gap G5). The status check above
+        // happened before the supplier call, so a webhook cancel can have landed
+        // in the meantime and written the row. The unique index refuses the
+        // second insert; without `onConflictDoNothing` this whole batch would
+        // roll back and the guest would see an error for a cancellation that
+        // did happen. An EMPTY `returning` is how we learn we lost the race.
+        .onConflictDoNothing({ target: cancellations.bookingId })
+        .returning({ id: cancellations.id }),
       db.insert(bookingEvents).values({
         bookingId: row.id,
         type: "booking.cancel.confirmed",
@@ -881,6 +928,7 @@ export async function cancelBooking(
         payload: result,
       }),
     ]);
+    recorded = written[1];
   } catch (e) {
     // WHAT ATOMICITY DOES NOT FIX, named rather than left implicit. The supplier
     // has already cancelled by the time we get here, so a rolled-back write
@@ -902,6 +950,14 @@ export async function cancelBooking(
       // Swallowed deliberately: see above.
     }
     throw e;
+  }
+
+  if (recorded.length === 0) {
+    await appendCancelConflict(row.id, {
+      source: opts.actor,
+      droppedRefundAmountMinor: result.refundAmountMinor,
+      droppedStatus: result.status,
+    });
   }
 
   return {
@@ -948,16 +1004,23 @@ export async function recordSupplierCancellation(
   // "we were told and did not apply it" marker the reconciler looks for. Writing
   // our own event on top would duplicate that signal.
   const now = new Date();
-  await db.batch([
+  const written = await db.batch([
     db
       .update(bookings)
       .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
       .where(eq(bookings.id, row.id)),
-    db.insert(cancellations).values({
-      bookingId: row.id,
-      status: payload.status ?? "confirmed",
-      refundAmountMinor: payload.refundAmountMinor ?? null,
-    }),
+    db
+      .insert(cancellations)
+      .values({
+        bookingId: row.id,
+        status: payload.status ?? "confirmed",
+        refundAmountMinor: payload.refundAmountMinor ?? null,
+      })
+      // See the matching comment in `cancelBooking`: the other side of the same
+      // race (NOS-16, gap G5), absorbed rather than thrown so one delivery
+      // cannot fail because the guest cancelled at the same moment.
+      .onConflictDoNothing({ target: cancellations.bookingId })
+      .returning({ id: cancellations.id }),
     db.insert(bookingEvents).values({
       bookingId: row.id,
       type: webhookEventType("cancellation"),
@@ -965,6 +1028,14 @@ export async function recordSupplierCancellation(
       payload: payload.raw as object,
     }),
   ]);
+
+  if (written[1].length === 0) {
+    await appendCancelConflict(row.id, {
+      source: "webhook",
+      droppedRefundAmountMinor: payload.refundAmountMinor ?? null,
+      droppedStatus: payload.status ?? null,
+    });
+  }
 
   return { bookingId: row.id, alreadyRecorded: false };
 }

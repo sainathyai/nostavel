@@ -3,6 +3,7 @@ import { getSeasonalSections } from "@/lib/seasonal";
 import Experience from "./Experience";
 import { getCurrentUser } from "@/lib/dal";
 import { recordSearch } from "@/lib/search-history-store";
+import { reportFailure } from "@/lib/action-error";
 
 // Live rates: render on request, never statically prerender at build.
 export const dynamic = "force-dynamic";
@@ -41,7 +42,9 @@ export default async function Home({
         isMember: Boolean(account),
       });
     } catch (e) {
-      error = (e as Error).message;
+      // NOS-11: this went to the client component as `searchError` and was
+      // rendered, so a supplier outage showed the guest LiteAPI's own wording.
+      error = reportFailure("search", e).error;
     }
 
     // Recorded from a GET render, which is a side effect on a read. Accepted

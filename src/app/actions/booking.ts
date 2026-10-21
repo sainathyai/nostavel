@@ -25,6 +25,7 @@ import {
   type CancelBookingResult,
 } from "@/lib/booking-service";
 import { getBookingById } from "@/lib/bookings";
+import { reportFailure } from "@/lib/action-error";
 
 // Every action here either costs a real LiteAPI supplier call (prepare,
 // confirm) or writes to the ledger (guest details). Placeholder limits — no
@@ -131,7 +132,9 @@ export async function prepareBookingAction(
 
     return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    // NOS-11: the thrown message here is LiteAPI's own response text, or a
+    // missing-key instruction meant for an operator. Neither goes to a guest.
+    return { ok: false, error: reportFailure("prepare", e).error };
   }
 }
 
@@ -152,7 +155,7 @@ export async function saveGuestAction(input: GuestInput): Promise<SaveGuestRespo
     await saveBookingGuest(input);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, error: reportFailure("guest", e).error };
   }
 }
 
@@ -189,7 +192,7 @@ export async function markPaymentStartingAction(
     await markPaymentStarting(bookingId);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, error: reportFailure("payment", e).error };
   }
 }
 
@@ -215,7 +218,7 @@ export async function markPaymentFailedAction(
     await markPaymentFailed(bookingId);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return { ok: false, error: reportFailure("payment", e).error };
   }
 }
 
@@ -239,7 +242,9 @@ export async function confirmBookingAction(bookingId: string): Promise<ConfirmBo
     const data = await confirmBooking({ bookingId });
     return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    // The one scope whose copy must not promise that no money moved: the card
+    // is charged in the browser BEFORE this call. See action-error.ts.
+    return { ok: false, error: reportFailure("confirm", e).error };
   }
 }
 
@@ -268,6 +273,9 @@ export async function cancelBookingAction(bookingId: string): Promise<CancelBook
     const data = await cancelBooking(bookingId, { actor: "user" });
     return { ok: true, data };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    // Nor may this one claim the booking is untouched: the supplier is called
+    // before we write, so a failure here can mean the hotel cancelled and our
+    // ledger did not record it (NOS-7's divergence).
+    return { ok: false, error: reportFailure("cancel", e).error };
   }
 }
