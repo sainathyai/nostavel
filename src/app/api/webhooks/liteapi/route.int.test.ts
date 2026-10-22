@@ -49,6 +49,8 @@ import { POST as receiveWebhook } from "./route";
 import { seedPrebookedBooking, fakeSharedSecret } from "@/test-support/db-fixtures";
 import { buildFakeWebhookPayload } from "@/test-support/fake-liteapi";
 
+let deliveryCount = 0;
+
 describe("redelivering the same LiteAPI webhook event_id (standing regression guard)", () => {
   it("does not dispatch a redelivered event a second time", async () => {
     const webhookSecret = fakeSharedSecret("liteapi-webhook");
@@ -76,7 +78,15 @@ describe("redelivering the same LiteAPI webhook event_id (standing regression gu
       receiveWebhook(
         new Request("http://localhost/api/webhooks/liteapi", {
           method: "POST",
-          headers: { authorization: webhookSecret, "content-type": "application/json" },
+        // A distinct address per delivery (NOS-13). The route is rate-limited
+        // per client address now, and every delivery in this file would
+        // otherwise share one bucket keyed "local": harmless at today's count,
+        // a confusing 429 the moment this file grows past the window's limit.
+          headers: {
+            authorization: webhookSecret,
+            "content-type": "application/json",
+            "x-forwarded-for": `198.51.100.${(deliveryCount += 1) % 250}`,
+          },
           body: JSON.stringify(payload),
         }),
       );
