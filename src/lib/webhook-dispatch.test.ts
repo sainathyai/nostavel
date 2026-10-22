@@ -1,7 +1,7 @@
 // The webhook routing rule (NOS-8). Pure, so every case is reachable without a
 // database, a network or a clock.
 import { describe, it, expect } from "vitest";
-import { webhookIntent, webhookEventType } from "./webhook-dispatch";
+import { webhookIntent, webhookEventType, missingIdWarning } from "./webhook-dispatch";
 
 describe("a refund is not a cancellation, which is the bug (G6)", () => {
   it("records a refund without cancelling when the stay is still going ahead", () => {
@@ -137,5 +137,67 @@ describe("the audit label is derived, not hardcoded", () => {
 
   it("labels a cancellation exactly as before, so existing readers are unaffected", () => {
     expect(webhookEventType("cancellation")).toBe("webhook.booking.cancel");
+  });
+});
+
+describe("a delivery with no event_id has to be noticed (NOS-14, G3)", () => {
+  it("says the cancellation was NOT applied, not merely that an id was missing", () => {
+    // THE SEVERE CASE. The branch stores the body and does not dispatch, so a
+    // supplier cancellation lands in `webhook_events` while the booking stays
+    // confirmed. An operator reading this line has to learn that something needs
+    // doing, not that a field was absent.
+    const line = missingIdWarning({ eventName: "booking.cancel", supplierStatus: "CANCELLED" });
+    expect(line).toContain("NOT APPLIED");
+    expect(line).toContain("booking.cancel");
+    expect(line).toContain("cancellation");
+    expect(line).toMatch(/by hand/i);
+  });
+
+  it("names a refund as a refund, because the remedy differs", () => {
+    const line = missingIdWarning({ eventName: "booking.refund", supplierStatus: "CONFIRMED" });
+    expect(line).toContain("NOT APPLIED");
+    expect(line).toContain("refund");
+  });
+
+  it("follows the supplier's status, exactly as the dispatcher would have", () => {
+    // Derived from `webhookIntent` rather than from the event name, so the
+    // warning describes what WOULD have happened. A `booking.refund` carrying
+    // CANCELLED_WITH_CHARGES is a cancellation, and the line must say so.
+    const line = missingIdWarning({
+      eventName: "booking.refund",
+      supplierStatus: "CANCELLED_WITH_CHARGES",
+    });
+    expect(line).toContain("cancellation");
+    expect(line).not.toMatch(/as a refund/);
+  });
+
+  it("stays quiet about remedies for an event nothing would have applied", () => {
+    // `booking.book` and friends are corroboration; the stored row IS the
+    // record. Telling an operator to go and apply one by hand would be a false
+    // alarm, and a warning that cries wolf is read as noise when it matters.
+    for (const name of ["booking.book", "booking.amendment", "booking.book_error"]) {
+      const line = missingIdWarning({ eventName: name, supplierStatus: "CANCELLED" });
+      expect(line, name).toContain("Nothing to apply");
+      expect(line, name).not.toContain("NOT APPLIED");
+    }
+  });
+
+  it("still names the delivery when the event name is missing too", () => {
+    // A body with neither an id nor a name is the least diagnosable delivery
+    // there is, so the line must not read as an empty template.
+    for (const name of [null, undefined, "", "   "]) {
+      const line = missingIdWarning({ eventName: name, supplierStatus: null });
+      expect(line, String(name)).toContain("(no event name)");
+      expect(line, String(name)).toContain("no event_id");
+    }
+  });
+
+  it("carries no payload, because the row already has it", () => {
+    // Guest personal data never goes into logs (.agents/rules/database.md), and
+    // the raw body is the one thing on this path that can hold a name or an
+    // email. The event name is enough to act on.
+    const line = missingIdWarning({ eventName: "booking.cancel", supplierStatus: "CANCELLED" });
+    expect(line).not.toMatch(/@/);
+    expect(line.length).toBeLessThan(400);
   });
 });
