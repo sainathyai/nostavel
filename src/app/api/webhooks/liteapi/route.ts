@@ -22,7 +22,7 @@ import {
   extractSupplierStatus,
   type WebhookEnvelope,
 } from "@/lib/webhook-format";
-import { webhookIntent } from "@/lib/webhook-dispatch";
+import { webhookIntent, missingIdWarning } from "@/lib/webhook-dispatch";
 import { recordSupplierCancellation, recordSupplierRefund } from "@/lib/booking-service";
 
 export const runtime = "nodejs";
@@ -45,6 +45,12 @@ export async function POST(request: Request) {
   if (!env.eventId) {
     // No id to dedupe on. Store as evidence anyway; should be rare-to-never in
     // practice per the documented envelope.
+    //
+    // AND SAY SO (NOS-14, gap G3). This branch does not dispatch, so a
+    // cancellation that arrives here is captured and never applied. It was
+    // silent before, which meant nobody had any reason to go and look. Logged
+    // before the insert, so a failing insert does not also lose the warning.
+    console.warn(missingIdWarning({ eventName: env.eventName, supplierStatus: extractSupplierStatus(env) }));
     await db.insert(webhookEvents).values({ type: env.eventName, payload: body as object });
     return Response.json({ ok: true });
   }

@@ -87,3 +87,36 @@ export function webhookIntent(args: {
 export function webhookEventType(intent: Exclude<WebhookIntent, "ignore">): string {
   return intent === "cancellation" ? "webhook.booking.cancel" : "webhook.booking.refund";
 }
+
+/**
+ * The warning for a delivery that arrived with no `event_id` (NOS-14, gap G3).
+ *
+ * WHY THIS NEEDED SAYING AT ALL. A delivery with no id cannot be deduplicated,
+ * so the route stores it as evidence and does NOT dispatch it. That branch was
+ * silent. If LiteAPI ever sends a cancellation without an id - contrary to their
+ * documented envelope - the supplier's cancellation sits in `webhook_events`
+ * while the booking stays `confirmed`, and nobody has any reason to go and look.
+ *
+ * WHY THE SEVERITY IS DERIVED AND NOT TWO HARDCODED NAMES. The ticket names
+ * `booking.cancel` and `booking.refund` as the severe cases. Asking
+ * `webhookIntent` instead means this line stays in step with what the dispatcher
+ * would actually have done: when the routing rule learns a new actionable event,
+ * this warning learns it in the same change rather than in the one after the
+ * incident.
+ *
+ * WHAT IT DELIBERATELY DOES NOT CONTAIN. No payload. `.agents/rules/database.md`
+ * keeps guest personal data out of logs, the raw body is the one thing here that
+ * can carry a name or an email, and the event name is all an operator needs to
+ * decide whether to go looking. The row itself holds the rest.
+ */
+export function missingIdWarning(args: {
+  eventName: string | null | undefined;
+  supplierStatus: string | null | undefined;
+}): string {
+  const name = (args.eventName ?? "").trim() || "(no event name)";
+  const intent = webhookIntent(args);
+  if (intent === "ignore") {
+    return `[webhook] ${name} arrived with no event_id: stored, not dispatched. Nothing to apply for this event type.`;
+  }
+  return `[webhook] NOT APPLIED: ${name} arrived with no event_id, so it was stored and NOT dispatched. This would have been recorded as a ${intent}. If the supplier ended or refunded this booking, our ledger still says otherwise - find the row in webhook_events and apply it by hand.`;
+}
