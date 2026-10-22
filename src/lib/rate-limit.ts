@@ -7,7 +7,28 @@ import { headers } from "next/headers";
 // consolidated here since it exists only to feed rateLimit() a key.
 export async function clientIp(): Promise<string> {
   const h = await headers();
-  return (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "local";
+  return firstForwardedIp(h.get("x-forwarded-for"));
+}
+
+/**
+ * The same key, taken from a route handler's OWN `Request` (NOS-13).
+ *
+ * WHY BOTH EXIST. `clientIp()` reads Next's request-scoped `headers()`, which a
+ * server action has no other way to reach. A route handler is handed the
+ * `Request` itself, so it does not need that scope - and depending on it there
+ * has a cost: calling `headers()` outside a Next request context throws, which
+ * makes a route that uses it untestable except through a mock of `next/headers`.
+ * The webhook receiver is called directly by its own tests, so it takes this one.
+ *
+ * The parsing rule lives in one place so the two cannot drift: the first entry of
+ * `x-forwarded-for` is the client as the proxy saw it, and the rest are hops.
+ */
+export function clientIpOf(request: Request): string {
+  return firstForwardedIp(request.headers.get("x-forwarded-for"));
+}
+
+function firstForwardedIp(value: string | null): string {
+  return (value ?? "").split(",")[0]?.trim() || "local";
 }
 
 // Best-effort in-memory rate limiter (per server instance). Adequate for the

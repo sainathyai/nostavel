@@ -19,6 +19,7 @@ import { seedPrebookedBooking, fakeSharedSecret } from "@/test-support/db-fixtur
 import { buildFakeWebhookPayload } from "@/test-support/fake-liteapi";
 
 let counter = 0;
+let deliveryCount = 0;
 function uniqueId(prefix: string): string {
   counter += 1;
   return `${prefix}-${Date.now()}-${counter}`;
@@ -30,7 +31,14 @@ async function deliver(payload: Record<string, unknown>): Promise<Response> {
   return receiveWebhook(
     new Request("http://localhost/api/webhooks/liteapi", {
       method: "POST",
-      headers: { authorization: secret, "content-type": "application/json" },
+      // A distinct address per delivery (NOS-13): the route is rate-limited per
+      // client address now, and one shared "local" bucket would turn a longer
+      // version of this file into a confusing 429.
+      headers: {
+        authorization: secret,
+        "content-type": "application/json",
+        "x-forwarded-for": `198.51.100.${(deliveryCount += 1) % 250}`,
+      },
       body: JSON.stringify(payload),
     }),
   );
