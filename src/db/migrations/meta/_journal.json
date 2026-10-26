@@ -50,6 +50,13 @@
       "when": 1792102777398,
       "tag": "0006_colorful_starfox",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793055071788,
+      "tag": "0007_outgoing_devos",
+      "breakpoints": true
     }
   ]
 }

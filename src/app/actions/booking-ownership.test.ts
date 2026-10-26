@@ -29,9 +29,19 @@ vi.mock("@/lib/bookings", () => ({
   getBookingById: async (id: string) => (id === row.id ? row : null),
 }));
 
-vi.mock("@/lib/rate-limit", () => ({
-  rateLimit: () => ({ ok: true, remaining: 9 }),
+// Only the address helper is faked: the real module's window arithmetic is
+// pure and is imported by the store, so replacing it wholesale would hide a
+// real dependency (NOS-10 moved `rateLimit` out of this module).
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rate-limit")>()),
   clientIp: async () => "203.0.113.1",
+}));
+
+// The limiter itself is not what these tests are about: they are about who may
+// act on a booking. Always allowing keeps the counter out of the way without a
+// database, which this file deliberately does not have.
+vi.mock("@/lib/rate-limit-store", () => ({
+  rateLimit: async () => ({ ok: true, remaining: 9, retryAfterMs: 0 }),
 }));
 
 const saveBookingGuest = vi.fn(async () => undefined);

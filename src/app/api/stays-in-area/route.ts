@@ -1,6 +1,7 @@
 import { searchStaysInArea } from "@/lib/liteapi";
 import { getCurrentUser } from "@/lib/dal";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 import { reportFailure } from "@/lib/action-error";
 
 // Backs the map's "Search this area" button: the client sends the current
@@ -16,7 +17,12 @@ import { reportFailure } from "@/lib/action-error";
 // Placeholder limit, no traffic yet to measure against.
 export async function GET(request: Request) {
   const ip = await clientIp();
-  const rl = rateLimit(`stays-in-area:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  const rl = await rateLimit(`stays-in-area:ip:${ip}`, {
+    limit: 20,
+    windowMs: 60_000,
+    // A paid supplier fan-out per call.
+    onStoreError: "deny",
+  });
   if (!rl.ok) {
     return Response.json(
       { error: "Too many area searches. Wait a moment and try again." },

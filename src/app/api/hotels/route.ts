@@ -16,7 +16,8 @@
 //      `offer` rather than `ask`, the dropdown shows a row to press, and that
 //      press comes here. A press is not a keystroke, and the budget decision
 //      stops being a guess about intent.
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 import { listHotelsByName } from "@/lib/liteapi";
 import {
   MIN_HOTEL_QUERY_LENGTH,
@@ -74,7 +75,7 @@ export async function GET(request: Request) {
   }
 
   const ip = await clientIp();
-  const rl = rateLimit(`hotel-name:ip:${ip}`, RATE_LIMIT);
+  const rl = await rateLimit(`hotel-name:ip:${ip}`, { ...RATE_LIMIT, onStoreError: "deny" });
   if (!rl.ok) {
     // 429 rather than an empty list, so the client can say something true
     // instead of "no matches". A silent empty result is how a rate limit turns

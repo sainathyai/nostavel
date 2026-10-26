@@ -60,7 +60,7 @@ These exist in the code today, each with a ticket. Don't treat them as precedent
 
 | Gap | Where | Ticket |
 |---|---|---|
-| Rate limit is in-memory and keyed on `x-forwarded-for`, which a client can spoof | `src/lib/rate-limit.ts` | NOS-10 |
+| Rate limit is keyed on `x-forwarded-for`, which a client can spoof, so one caller can wear many keys and a shared proxy makes many callers wear one. ~~and is in-memory~~ **the store half is closed (NOS-10, 2026-10-26):** counters live in Postgres (`rate_limits`), shared across instances and surviving a cold start, incremented by one atomic upsert. The key remains the open half, and it is the half an attacker chooses | `src/lib/rate-limit.ts`, `src/lib/rate-limit-store.ts` | unfiled - the key, not the store |
 | Raw supplier error messages returned to users | actions and `src/app/api/stays-in-area` | NOS-11 |
 | Four signed formats share `AUTH_SECRET` and one envelope, so each verifies as the others; only the purpose inside the payload tells them apart | `quote-token.ts`, `guest-verify.ts` (two), `signed-claim.ts` | — |
 | Booking snapshots not schema-validated | `src/lib/booking-service.ts` | — |

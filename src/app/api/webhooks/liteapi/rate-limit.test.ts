@@ -13,6 +13,36 @@
 // (src/db/index.ts), so reaching it without `DATABASE_URL` is possible exactly
 // as long as no query runs.
 import { describe, it, expect, afterEach, vi } from "vitest";
+
+// THE LIMITER IS FAKED HERE, AND THAT IS THE POINT (NOS-10). The real one now
+// counts in Postgres so the limit holds across instances, which would make this
+// a database test. What these assertions are about is the ROUTE: that a refused
+// request is refused before the secret check and before any write. So the store
+// is replaced with the same fixed-window arithmetic in memory, and the test
+// still needs no database at all - which is what proves "writes nothing".
+//
+// The Postgres store's own atomicity and cross-instance behaviour are proven
+// against a real database in src/lib/rate-limit-store.int.test.ts.
+vi.mock("@/lib/rate-limit-store", () => {
+  const windows = new Map<string, { count: number; startMs: number }>();
+  return {
+    rateLimit: async (key: string, opts: { limit: number; windowMs: number }) => {
+      const now = Date.now();
+      const startMs = Math.floor(now / opts.windowMs) * opts.windowMs;
+      const held = windows.get(key);
+      const entry = held && held.startMs === startMs ? held : { count: 0, startMs };
+      entry.count = Math.min(entry.count + 1, opts.limit + 1);
+      windows.set(key, entry);
+      const ok = entry.count <= opts.limit;
+      return {
+        ok,
+        remaining: Math.max(0, opts.limit - entry.count),
+        retryAfterMs: ok ? 0 : startMs + opts.windowMs - now,
+      };
+    },
+  };
+});
+
 import { POST as receiveWebhook } from "./route";
 import { checkWebhookRate } from "@/lib/webhook-rate";
 
@@ -153,7 +183,7 @@ describe("when the limiter itself fails, the delivery still gets through", () =>
     // cancellations would leave hotels' cancellations unapplied in our ledger,
     // which is what this endpoint exists to prevent.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const verdict = checkWebhookRate(delivery(freshIp()), () => {
+    const verdict = await checkWebhookRate(delivery(freshIp()), () => {
       throw new Error("rate-limit store unreachable");
     });
 
@@ -168,13 +198,16 @@ describe("when the limiter itself fails, the delivery still gets through", () =>
     // throwing, which would otherwise take the whole endpoint down behind a
     // proxy that did not set it.
     const keys: string[] = [];
-    const spy = (key: string) => {
+    const spy = async (key: string) => {
       keys.push(key);
       return { ok: true, remaining: 1, retryAfterMs: 0 };
     };
 
-    checkWebhookRate(delivery("198.51.100.7, 70.41.3.18, 150.172.238.178"), spy);
-    checkWebhookRate(new Request("http://localhost/api/webhooks/liteapi", { method: "POST" }), spy);
+    await checkWebhookRate(delivery("198.51.100.7, 70.41.3.18, 150.172.238.178"), spy);
+    await checkWebhookRate(
+      new Request("http://localhost/api/webhooks/liteapi", { method: "POST" }),
+      spy,
+    );
 
     expect(keys[0]).toBe("webhook-liteapi:ip:198.51.100.7");
     expect(keys[1]).toBe("webhook-liteapi:ip:local");

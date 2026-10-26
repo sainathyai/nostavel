@@ -340,6 +340,41 @@ export const bookingEvents = pgTable(
   (t) => [index("booking_events_booking_idx").on(t.bookingId)],
 );
 
+// Rate-limit counters, shared across instances (NOS-10).
+//
+// WHY A TABLE AND NOT A MAP. The limiter kept its counters in module memory, so
+// "20 per minute" meant 20 per minute PER INSTANCE, reset by every cold start and
+// every deploy. On Cloud Run with max 2 instances that is already double, and a
+// scale event or a redeploy reset it to zero. These limits guard paid supplier
+// calls, email sends and a one-time-code check, so the number mattering is the
+// point of it.
+//
+// WHY THE WINDOW IS PART OF THE KEY. `window_start` is the wall-clock aligned
+// start of the current window, so a counter's identity is `(key, window_start)`.
+// That is what lets a single statement do the whole job:
+// `INSERT ... ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1
+// RETURNING count` is atomic in Postgres, so two concurrent requests cannot
+// both read 19 and both write 20. A row carrying a mutable "resetAt" would need
+// a read, a decision and a write, which is the race it exists to prevent.
+//
+// The cost, stated: the old window was anchored to a key's FIRST request, so each
+// key got a full window; an aligned window can be as short as the remainder of
+// the current one. Both are fixed windows and both allow a burst of up to twice
+// the limit across a boundary. Alignment is what buys atomicity in one statement.
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    key: text("key").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true, mode: "date" }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.key, t.windowStart] }),
+    // For the cleanup sweep, which deletes whole expired windows.
+    index("rate_limits_window_idx").on(t.windowStart),
+  ],
+);
+
 // Raw inbound LiteAPI callbacks, deduped by their external id.
 export const webhookEvents = pgTable(
   "webhook_events",

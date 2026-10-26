@@ -333,7 +333,7 @@ Non-negotiable regardless of model:
 |---|---|---|
 | **Security headers** | `next.config.ts` sets only `images` | no CSP, HSTS, `X-Frame-Options`, `Referrer-Policy`, or `Permissions-Policy`. Clickjacking and injection have no second line of defence. |
 | **No `middleware.ts`** | absent | nowhere to enforce admin auth, add headers, or block abuse centrally |
-| **Rate limiting** | in-memory, per instance; only on `find` and `interpret-query` | its own comment says "swap before any real public traffic". **Not applied to booking actions at all.** |
+| **Rate limiting** | ~~in-memory, per instance; only on `find` and `interpret-query`~~ **Corrected 2026-10-26.** Both halves of that were stale. Coverage: `rateLimit` is applied at **13** call sites - all six `booking.ts` actions, three in `find.ts`, `interpret-query`, `/api/hotels`, `/api/stays-in-area` and the LiteAPI webhook (NOS-13). Storage: counters are in Postgres (`rate_limits`), shared across instances and surviving a cold start (NOS-10) | The remaining weakness is the **key**, not the store: it is `x-forwarded-for`, which a client can spoof. Tracked separately in the security rule's known-gaps table. Limit values are still untuned placeholders - no real traffic to measure against (§5) |
 | **`/api/stays-in-area`** | unauthenticated, hits LiteAPI on every call | a paid API behind an open GET. Direct cost-abuse vector. |
 | **Input validation** | zod used only in `interpret-query` | `prepareBookingAction` takes a client-supplied snapshot object and passes it into the ledger largely unvalidated |
 | **`AUTH_SECRET`** | signs sessions *and now quote tokens* | one secret, two jobs, no rotation story. Rotating it invalidates every live quote. |
