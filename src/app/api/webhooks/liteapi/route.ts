@@ -14,6 +14,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookEvents } from "@/db/schema";
 import { verifySharedSecret } from "@/lib/webhook-auth";
+import { checkWebhookRate } from "@/lib/webhook-rate";
 import {
   parseWebhookEnvelope,
   extractLiteapiBookingId,
@@ -28,6 +29,18 @@ import { recordSupplierCancellation, recordSupplierRefund } from "@/lib/booking-
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  // BEFORE THE SECRET COMPARISON, not after. A caller without the secret still
+  // costs us a constant-time comparison on every request, and the comparison is
+  // the cheapest thing on this path to protect. Being first also means a limited
+  // request writes nothing: no `webhook_events` row, no dispatch.
+  const rl = checkWebhookRate(request);
+  if (!rl.ok) {
+    return Response.json(
+      { error: "too many requests" },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(rl.retryAfterMs / 1000)) } },
+    );
+  }
+
   const auth = request.headers.get("authorization");
   if (!verifySharedSecret(auth, process.env.LITEAPI_WEBHOOK_SECRET)) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
