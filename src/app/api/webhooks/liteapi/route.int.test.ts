@@ -41,7 +41,7 @@
 // and the single stored `webhookEvents` row are what isolate the CLAIM
 // under test — that a redelivery never reaches `dispatch()` a second time
 // at all — from that deeper guard.)
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { bookings, cancellations, webhookEvents } from "@/db/schema";
@@ -119,5 +119,99 @@ describe("redelivering the same LiteAPI webhook event_id (standing regression gu
 
     const [row] = await db.select().from(bookings).where(eq(bookings.id, seeded.id));
     expect(row.status).toBe("cancelled");
+  });
+});
+
+describe("a delivery with no event_id (NOS-14, threat-model gap G3)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The documented envelope always carries `event_id`; this is the case where it does not. */
+  function withoutEventId(payload: Record<string, unknown>): Record<string, unknown> {
+    const copy = { ...payload };
+    delete copy.event_id;
+    return copy;
+  }
+
+  async function deliverNoId(payload: Record<string, unknown>, secret: string): Promise<Response> {
+    return receiveWebhook(
+      new Request("http://localhost/api/webhooks/liteapi", {
+        method: "POST",
+        headers: { authorization: secret, "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    );
+  }
+
+  it("warns that a cancellation was NOT applied, while still storing the row", async () => {
+    // THE DEFECT, DIRECTLY. This branch cannot deduplicate, so it stores and
+    // does not dispatch - and it was silent. A supplier cancellation arriving
+    // here left the booking `confirmed` with the evidence sitting in
+    // `webhook_events` and nobody with a reason to go and look.
+    const webhookSecret = fakeSharedSecret("liteapi-webhook");
+    process.env.LITEAPI_WEBHOOK_SECRET = webhookSecret;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const liteapiBookingId = "fake-supplier-noid-" + Date.now();
+    const seeded = await seedPrebookedBooking({ status: "confirmed", liteapiBookingId });
+
+    const response = await deliverNoId(
+      withoutEventId(
+        buildFakeWebhookPayload({
+          eventId: "unused-this-is-deleted",
+          eventName: "booking.cancel",
+          bookingId: liteapiBookingId,
+          status: "CANCELLED",
+        }),
+      ),
+      webhookSecret,
+    );
+
+    // Unchanged behaviour: accepted, stored, not dispatched (AC 4).
+    expect(response.status).toBe(200);
+
+    const [booking] = await db.select().from(bookings).where(eq(bookings.id, seeded.id)).limit(1);
+    expect(booking.status).toBe("confirmed");
+    const cancelRows = await db
+      .select()
+      .from(cancellations)
+      .where(eq(cancellations.bookingId, seeded.id));
+    expect(cancelRows).toHaveLength(0);
+
+    // The row is on file as evidence, with no external id to dedupe on.
+    const stored = await db.select().from(webhookEvents).where(eq(webhookEvents.type, "booking.cancel"));
+    expect(stored.some((row) => row.externalId === null)).toBe(true);
+
+    // And the part this ticket adds: somebody can now find out.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0][0]);
+    expect(line).toContain("NOT APPLIED");
+    expect(line).toContain("booking.cancel");
+    expect(line).toContain("no event_id");
+  });
+
+  it("says nothing on the normal path, so the warning stays worth reading", async () => {
+    // AC 2. A warning that fires on every delivery is noise, and noise is what
+    // stops the severe case above being noticed.
+    const webhookSecret = fakeSharedSecret("liteapi-webhook");
+    process.env.LITEAPI_WEBHOOK_SECRET = webhookSecret;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const liteapiBookingId = "fake-supplier-withid-" + Date.now();
+    await seedPrebookedBooking({ status: "confirmed", liteapiBookingId });
+
+    const response = await deliverNoId(
+      buildFakeWebhookPayload({
+        eventId: "evt-has-an-id-" + Date.now(),
+        eventName: "booking.cancel",
+        bookingId: liteapiBookingId,
+        status: "CANCELLED",
+      }),
+      webhookSecret,
+    );
+
+    expect(response.status).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
