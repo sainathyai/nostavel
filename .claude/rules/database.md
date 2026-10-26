@@ -35,9 +35,13 @@ Source of truth: `docs/conventions.md` §1 and §8. Stack: Neon Postgres over HT
   index on `cancellations.booking_id`.
 - **Creating a unique index on existing rows can fail, and that is the safe
   direction.** The migrate step fails, the deploy fails, and traffic never
-  moves because revisions start with none. Check for the duplicates in **every**
-  environment sharing the schema immediately before approving, not when the
-  pull request opens, because a row can land in between.
+  moves because revisions start with none. The owner-facing procedure - how to
+  tell a constraint migration from an additive one, the query to run, and what
+  to do when it returns rows - is `docs/runbooks/deploy.md`, section "When the
+  approval is for a constraint". It is run in **every** environment sharing the
+  schema immediately before approving, not when the pull request opens, because
+  a row can land in between. A pull request adding a constraint links that
+  section rather than restating it.
 
 ## The booking ledger (§8)
 - `booking_events` is **append-only**. It's the reconciliation record against supplier payouts.
