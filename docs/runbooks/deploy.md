@@ -29,6 +29,109 @@ on `main`, and the next run offers the same approval again.
 You are only asked when there is something to apply. A merge with no migration in
 it never stops.
 
+## When the approval is for a constraint, check before you approve
+
+Most migrations add a table or a column, and the approval is the formality above:
+read the summary, approve. A migration that adds a **constraint to a table that
+already holds rows** is the one case where approving is a decision, because
+whether it can succeed depends on what is in the database at that moment and
+nothing in the run can ask. The first was NOS-16's unique index on
+`cancellations.booking_id`. It will not be the last.
+
+1. **Find out whether this is one of those.** The run summary names every
+   migration it will apply. For each name, on `main`:
+
+   ```bash
+   grep -nEi 'create unique index|add constraint|set not null|alter column' src/db/migrations/0006_colorful_starfox.sql
+   ```
+
+   - **Nothing printed** - nothing to pre-check. Approve as normal.
+   - **A line printed** - go to step 2.
+
+   A `CREATE TABLE` full of `NOT NULL` and a `PRIMARY KEY` is **not** a
+   constraint migration: the table is new and empty, so no existing row can
+   violate it. Migration `0007` is exactly that shape and the grep above is
+   silent on it, which is the point of matching those four phrases rather than
+   the words `unique` or `constraint`.
+
+   The pull request is also required to say what the constraint is and what the
+   running code does about it (`.agents/rules/database.md`). If it says nothing,
+   reject and ask rather than reading the SQL yourself.
+
+2. **Ask the environment's own database whether the violating rows exist.** For a
+   unique index, that is a `group by ... having count(*) > 1` on the column being
+   made unique:
+
+   ```bash
+   export PROJECT=nostavel SERVICE=nostavel-uat
+   U=$(gcloud secrets versions access latest --secret="${SERVICE}-DATABASE_URL" --project="$PROJECT")
+   DATABASE_URL="$U" node -e "
+   import('@neondatabase/serverless').then(async ({ neon }) => {
+     const sql = neon(process.env.DATABASE_URL);
+     console.log(JSON.stringify(await sql.query(
+       \"select booking_id, count(*)::int as n from cancellations group by booking_id having count(*) > 1\")));
+   });"
+   ```
+
+   - **Healthy: `[]`.** Nothing else is a pass, including two rows that look like
+     test data.
+   - **Any rows: step 4.**
+
+   **Run it immediately before you click approve, not when the pull request
+   opened.** A guest cancelling a booking can create the duplicate in between,
+   and the approval is the only moment the answer is still true.
+
+3. **Run the same query against development too.** The same migration has to
+   apply there eventually, and any new Neon branch is a copy of its parent, so
+   development's duplicates become the next environment's duplicates:
+
+   ```bash
+   node -e "
+   process.loadEnvFile('.env.local');
+   import('@neondatabase/serverless').then(async ({ neon }) => {
+     const sql = neon(process.env.DATABASE_URL);
+     console.log(JSON.stringify(await sql.query(
+       \"select booking_id, count(*)::int as n from cancellations group by booking_id having count(*) > 1\")));
+   });"
+   ```
+
+   Rows here do not block the approval, because this is not the database being
+   migrated. They do mean `npm run db:migrate` will fail on your machine next,
+   so say so on the ticket.
+
+4. **If either query returned rows: reject, and leave the rows alone.** Reject on
+   the run page and say what the query returned. **Do not `DELETE` the
+   duplicates.** The losing row holds a number somebody computed - in the NOS-16
+   case, a refund amount read from the supplier - and deleting it loses that
+   silently, which is the exact harm the constraint exists to prevent. The fix is
+   a repair migration that keeps one row per key and records the others as
+   `booking_events`, written and reviewed like any other change.
+
+**Approving without checking is not a catastrophe**, and it is worth knowing
+which way it fails so the choice is informed rather than feared: the
+`CREATE UNIQUE INDEX` is refused by Postgres, the apply step fails, the deploy
+stops, and traffic never moves because a new revision starts with none. You end
+up at step 4 anyway, with a red run and no damage. The check exists to save the
+run, not to save the database.
+
+### What the live copy does between the apply and the traffic switch
+
+In that window the revision serving visitors is the **old** one, written before
+the constraint existed. If it tries to write a row the new index refuses, that
+write fails instead of succeeding. Its whole `db.batch` rolls back (NOS-7), so
+there is no half-written record, the caller sees an error, and a retry after the
+traffic switch is handled by the new code's conflict branch.
+
+Short window, and it fails in the safe direction. But it is a real behaviour
+change to code that is already running, which is why this approval is read
+rather than waved through.
+
+**Rehearsed:** steps 1 and 3 run for real on 2026-10-26 (the grep discriminates
+`0006` from `0007`; the development query returns `[]`). Step 2 is the same query
+through the connection string that `bootstrap-uat.md` step 7 and
+`rotate-secrets.md` already use, and has not been run against `uat` by anyone but
+the owner.
+
 ## Watching a run
 
 ```bash
