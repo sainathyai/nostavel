@@ -13,6 +13,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookEvents } from "@/db/schema";
+import { describeThrown } from "@/lib/action-error";
+import { logError, logWarning } from "@/lib/log";
 import { verifySharedSecret } from "@/lib/webhook-auth";
 import { checkWebhookRate } from "@/lib/webhook-rate";
 import {
@@ -63,7 +65,11 @@ export async function POST(request: Request) {
     // cancellation that arrives here is captured and never applied. It was
     // silent before, which meant nobody had any reason to go and look. Logged
     // before the insert, so a failing insert does not also lose the warning.
-    console.warn(missingIdWarning({ eventName: env.eventName, supplierStatus: extractSupplierStatus(env) }));
+    const supplierStatus = extractSupplierStatus(env);
+    logWarning("webhook.missing_event_id", missingIdWarning({ eventName: env.eventName, supplierStatus }), {
+      eventName: env.eventName,
+      supplierStatus,
+    });
     await db.insert(webhookEvents).values({ type: env.eventName, payload: body as object });
     return Response.json({ ok: true });
   }
@@ -88,7 +94,10 @@ export async function POST(request: Request) {
     // become a 500 — that would make LiteAPI retry a delivery we already
     // have. processedAt stays null; the nightly reconciler is the safety net
     // for anything that fails to apply here.
-    console.error("webhook dispatch failed", env.eventName, e);
+    logError("webhook.dispatch.failed", `Dispatching ${env.eventName} failed: ${describeThrown(e)}`, {
+      eventName: env.eventName,
+      webhookEventId: rowId,
+    });
   }
 
   return Response.json({ ok: true });

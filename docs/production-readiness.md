@@ -356,10 +356,14 @@ Two more that are less obvious:
 
 - **No CI.** `npm test`, `tsc`, `lint` and `build` all pass locally and nothing
   enforces that. This is the cheapest high-value item on the list.
-- **No error tracking.** A failed booking currently surfaces as a console line on
-  whatever machine served it.
-- **No structured logging.** No request id, so a guest's report cannot be traced
-  to a request.
+- **No error tracking.** A failed booking surfaces as a log line and nothing
+  groups, counts or notifies on it. NOS-70 is open for that.
+- ~~**No structured logging.**~~ Added 2026-10-27 (NOS-69): every line in `src`
+  is one JSON object with `severity`, `event`, `message` and fields, written by
+  `src/lib/log.ts`; lint refuses `console.*` anywhere else. **Still no request
+  id**, so several lines from one guest's request cannot be joined to each other
+  - what exists is the NOS-11 reference, which joins one guest's report to the
+  one line that failed.
 - ~~**No health check** endpoint for uptime monitoring.~~ Added 2026-10-06
   (NOS-60): `GET /api/health` reports the build, the environment and whether the
   supplier key is a sandbox key; `?deep=1`, behind `CRON_SECRET`, adds the

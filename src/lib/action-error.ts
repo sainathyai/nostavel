@@ -38,9 +38,14 @@
 // (`.agents/rules/security.md`: "the guest gets a safe message; the detail goes
 // to the server log").
 //
-// WHAT THIS IS NOT. Not structured logging and not a request id.
-// `docs/production-readiness.md` §5 tracks that as its own, larger item. This is
-// one `console.error` line in the style `find.ts` already uses, with an id added.
+// WHAT THIS IS NOT. Not a request id: the reference joins one guest's report to
+// one log line and identifies nothing else. It WAS also "not structured
+// logging", which NOS-69 since made false - the line is built by `log.ts`, so
+// `scope` and `reference` are fields a metric can count, and the sentence a
+// human reads is the same string either way.
+
+import { logLine, writeLine, type LogFields } from "./log";
+import { redactPersonalData } from "./redact";
 
 /** Which failure the guest is looking at. The copy differs because the truth does. */
 export type FailureScope =
@@ -101,21 +106,6 @@ const MAX_CAUSE_DEPTH = 5;
 const MAX_DETAIL_CHARS = 2000;
 
 /**
- * Anything that looks like an email address, replaced before it reaches the log.
- *
- * `.agents/rules/database.md` says guest personal data never goes into logs, and
- * a supplier validation error can quote the value it rejected. An email is the
- * one kind of personal data in these payloads with a shape worth matching.
- *
- * HONEST ABOUT THE LIMIT: this does not catch names or phone numbers, because
- * neither has a shape that can be matched without guessing, and a redactor that
- * silently misses most of what it claims to cover is worse than one with a
- * stated scope. What bounds the rest is that only the thrown MESSAGE is logged
- * here, never a request or response body.
- */
-const EMAIL_SHAPED = /[^\s<>()[\],;:"']+@[^\s<>()[\],;:"']+\.[^\s<>()[\],;:"']+/g;
-
-/**
  * A loggable description of anything that was thrown. Never throws itself.
  *
  * Must handle a non-`Error` throw, because `throw "nope"` and a rejected promise
@@ -140,7 +130,7 @@ export function describeThrown(e: unknown): string {
   }
 
   const joined = parts.length ? parts.join(" <- ") : describeOne(e);
-  const redacted = joined.replace(EMAIL_SHAPED, "[email redacted]");
+  const redacted = redactPersonalData(joined);
   return redacted.length > MAX_DETAIL_CHARS
     ? `${redacted.slice(0, MAX_DETAIL_CHARS)}... [truncated]`
     : redacted;
@@ -194,9 +184,12 @@ export function reportFailure(
   deps: { reference?: string; log?: (line: string) => void } = {},
 ): FailureReport {
   const reference = deps.reference ?? newReference();
-  const log = deps.log ?? ((line: string) => console.error(line));
+  const log = deps.log ?? ((line: string) => writeLine("ERROR", line));
   // One line, one string: `grep REF123` has to find it, and a line split across
-  // console.error arguments is not greppable in Cloud Logging.
-  log(`[action:${scope}] failed ref=${reference}: ${describeThrown(thrown)}`);
+  // console.error arguments is not greppable in Cloud Logging. Since NOS-69 that
+  // one string is JSON, so `scope` and `reference` are fields a filter can key
+  // on as well as text a human can read.
+  const fields: LogFields = { scope, reference };
+  log(logLine("ERROR", "action.failed", `${scope} failed, reference ${reference}: ${describeThrown(thrown)}`, fields));
   return { reference, error: guestMessage(scope, reference) };
 }

@@ -2,6 +2,8 @@ import "server-only";
 import { and, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { rateLimits } from "@/db/schema";
+import { describeThrown } from "@/lib/action-error";
+import { logError } from "@/lib/log";
 import { verdictFor, windowStartMs, type RateResult, type RateWindow } from "@/lib/rate-limit";
 
 // Where rate-limit counters actually live (NOS-10).
@@ -112,9 +114,15 @@ export async function rateLimit(
   } catch (e) {
     // Never throws into the caller either way: an action that returns "try again"
     // is recoverable, an unhandled rejection inside a server action is not.
-    console.error(
-      `[rate-limit] store unavailable, failing ${options.onStoreError === "deny" ? "closed" : "open"}:`,
-      (e as Error).message,
+    const failing = options.onStoreError === "deny" ? "closed" : "open";
+    // The BUCKET, not the key. A key ends in a client address or an email, and
+    // when the whole store is unreachable neither tells anyone anything the
+    // bucket name does not - while both are personal data in a log line.
+    const bucket = key.split(":")[0];
+    logError(
+      "rate_limit.store_unavailable",
+      `The rate-limit store is unavailable, failing ${failing} for ${bucket}: ${describeThrown(e)}`,
+      { bucket, failing, policy: options.onStoreError },
     );
     return options.onStoreError === "deny"
       ? { ok: false, remaining: 0, retryAfterMs: options.windowMs }

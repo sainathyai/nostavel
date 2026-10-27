@@ -24,3 +24,17 @@ export function statusesAgree(ours: "confirmed" | "cancelled", theirs: string | 
   if (ours === "confirmed") return t === "CONFIRMED" || t === "BOOKED";
   return t.startsWith("CANCELLED");
 }
+
+/**
+ * A pass's counts as one readable clause, for the `message` an operator reads
+ * in the Logs Explorer summary (NOS-69).
+ *
+ * The same numbers are also written as individual fields, which is what a
+ * metric would key on. This is the half a human reads at 3am without expanding
+ * anything: "0 recovered" is the number that matters and it should not need a
+ * click.
+ */
+export function summarise(counts: Record<string, number>): string {
+  const parts = Object.entries(counts).map(([name, value]) => `${name}=${value}`);
+  return parts.length > 0 ? parts.join(" ") : "nothing to do";
+}

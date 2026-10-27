@@ -56,7 +56,8 @@ import { db } from "@/db";
 import { bookings, bookingEvents } from "@/db/schema";
 import { getSupplierBooking } from "@/lib/liteapi";
 import { authorizeCronRequest } from "@/lib/cron-auth";
-import { statusesAgree } from "@/lib/cron-format";
+import { logInfo, logWarning } from "@/lib/log";
+import { statusesAgree, summarise } from "@/lib/cron-format";
 
 /**
  * When the ledger started meaning what it means today: the first `NSTVL-*` row,
@@ -76,7 +77,9 @@ export async function POST(request: Request) {
   // Either a Cloud Scheduler OIDC token or the legacy shared secret (NOS-65).
   const auth = await authorizeCronRequest(request, "reconcile", now);
   if (!auth.ok) {
-    console.warn(JSON.stringify({ event: "cron.reconcile.unauthorized", reason: auth.reason }));
+    logWarning("cron.reconcile.unauthorized", `A reconcile call was refused: ${auth.reason}`, {
+      reason: auth.reason,
+    });
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   // WHICH credential ran this, logged on success (security review of NOS-65, H1).
@@ -86,7 +89,9 @@ export async function POST(request: Request) {
   // for deleting that secret path, which is 72 hours of Scheduler delivery
   // "counted from booking_events and Cloud Run logs". No ledger row can tell a
   // Scheduler run from a workflow_dispatch run from someone's curl. This line can.
-  console.info(JSON.stringify({ event: "cron.reconcile.authorized", via: auth.via }));
+  logInfo("cron.reconcile.authorized", `A reconcile pass was authorised by ${auth.via}.`, {
+    via: auth.via,
+  });
 
   const rows = await db
     .select()
@@ -157,15 +162,12 @@ export async function POST(request: Request) {
   // so the metric can require `oidc` and not be kept alive by a GitHub
   // workflow_dispatch run, which is also what makes this ticket's "72 hours of
   // Scheduler delivery" precondition answerable.
-  console.info(
-    JSON.stringify({
-      event: "cron.reconcile.completed",
-      via: auth.via,
-      checked,
-      mismatches,
-      missingSupplierCost,
-      errors: errors.length,
-    }),
+  // `event` and `via` are TOP-LEVEL FIELDS because `infra/envs/uat/scheduler.tf`
+  // filters on exactly those two paths; `log-contract.test.ts` holds that link.
+  logInfo(
+    "cron.reconcile.completed",
+    `A reconcile pass completed via ${auth.via}: ${summarise({ checked, mismatches, missingSupplierCost, errors: errors.length })}`,
+    { via: auth.via, checked, mismatches, missingSupplierCost, errors: errors.length },
   );
   return Response.json({ ok: true, checked, mismatches, missingSupplierCost, errors });
 }

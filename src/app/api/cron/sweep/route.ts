@@ -58,7 +58,9 @@ import {
   sweepDecision,
   type SweepCandidate,
 } from "@/lib/booking-transitions";
+import { summarise } from "@/lib/cron-format";
 import { authorizeCronRequest } from "@/lib/cron-auth";
+import { logInfo, logWarning } from "@/lib/log";
 
 export const runtime = "nodejs";
 
@@ -92,7 +94,9 @@ export async function POST(request: Request) {
   if (!auth.ok) {
     // The reason is logged, not returned: this route's value is being
     // unguessable, and telling a caller which claim failed is a map.
-    console.warn(JSON.stringify({ event: "cron.sweep.unauthorized", reason: auth.reason }));
+    logWarning("cron.sweep.unauthorized", `A sweep call was refused: ${auth.reason}`, {
+      reason: auth.reason,
+    });
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   // WHICH credential ran this, logged on success (security review of NOS-65, H1).
@@ -102,7 +106,7 @@ export async function POST(request: Request) {
   // for deleting that secret path, which is 72 hours of Scheduler delivery
   // "counted from booking_events and Cloud Run logs". No ledger row can tell a
   // Scheduler run from a workflow_dispatch run from someone's curl. This line can.
-  console.info(JSON.stringify({ event: "cron.sweep.authorized", via: auth.via }));
+  logInfo("cron.sweep.authorized", `A sweep pass was authorised by ${auth.via}.`, { via: auth.via });
 
   const counts: Counts = {
     holdsExpired: 0,
@@ -218,7 +222,13 @@ export async function POST(request: Request) {
   // so the metric can require `oidc` and not be kept alive by a GitHub
   // workflow_dispatch run, which is also what makes this ticket's "72 hours of
   // Scheduler delivery" precondition answerable.
-  console.info(JSON.stringify({ event: "cron.sweep.completed", via: auth.via, ...counts }));
+  // `event` and `via` are TOP-LEVEL FIELDS because `infra/envs/uat/scheduler.tf`
+  // filters on exactly those two paths. `log-contract.test.ts` fails if either
+  // ever moves, because the alarm would otherwise just go quiet.
+  logInfo("cron.sweep.completed", `A sweep pass completed via ${auth.via}: ${summarise(counts)}`, {
+    via: auth.via,
+    ...counts,
+  });
   return Response.json({ ok: true, ...counts });
 }
 

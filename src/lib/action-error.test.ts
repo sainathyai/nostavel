@@ -123,10 +123,16 @@ describe("the reference is the whole point: it must be in both places", () => {
     expect(lines[0]).toContain("upstream exploded");
   });
 
-  it("names the scope in the log line, so the search narrows", () => {
+  it("names the scope as a FIELD, so the search is a filter and not a substring", () => {
+    // Was `[action:cancel]` in free text. Since NOS-69 the line is JSON, so
+    // `jsonPayload.scope="cancel"` is a filter a metric could be built on, and
+    // the scope is still in the sentence a human reads.
     const lines: string[] = [];
     reportFailure("cancel", new Error("boom"), { reference: "EEEE5555", log: (l) => lines.push(l) });
-    expect(lines[0]).toContain("[action:cancel]");
+
+    const entry = JSON.parse(lines[0]) as Record<string, unknown>;
+    expect(entry).toMatchObject({ severity: "ERROR", event: "action.failed", scope: "cancel", reference: "EEEE5555" });
+    expect(String(entry.message)).toContain("cancel failed");
   });
 
   it("logs one line, not several arguments", () => {

@@ -37,6 +37,14 @@ Source of truth: `docs/conventions.md` §1, §2, §5 and §10. This file is a di
 - **Validation:** check input shape at the boundary; zod v4 is available.
 - **Atomic writes:** writes that must succeed or fail together go through `db.batch` (the Neon HTTP driver runs a batch as one transaction).
 
+## Logging (NOS-69)
+- **Never `console.*` in `src`.** Lint refuses it. Use `logInfo`, `logWarning`, `logError` or `logCritical` from `lib/log.ts`, which write one line of JSON with `severity`, `event`, `message` and whatever fields were passed.
+- **`event` is a dotted, stable identifier** (`cron.sweep.completed`, `email.send.failed`). It is what a filter, a log-based metric and therefore an alert key on, so renaming one is a breaking change to whatever watches it. `log-contract.test.ts` reads the Terraform filters and fails if an event a policy depends on disappears.
+- **`message` is a sentence for a person**, because the Logs Explorer summary shows `jsonPayload.message` and nothing else until a line is expanded. Put the numbers in fields as well, not only in prose.
+- **Fields are top-level.** They are the thing a metric can count. Do not wrap them in a `data` object; the existing filters would stop matching and no test but the contract test would notice.
+- **Severity means what it says:** `WARNING` is still-serving, `ERROR` is this request or job failed, `CRITICAL` is the process up and deliberately not serving. The stream follows the severity; the payload is what Cloud Logging honours.
+- **Personal data:** the logger redacts email-shaped text in every string it writes, including nested fields. That is a floor, not a licence - do not pass a guest's name, phone number or address in the first place, and never a secret, a token or a password attempt.
+
 ## Supplier (LiteAPI)
 - All supplier calls go through `lib/liteapi.ts`. Don't call `fetch` against the supplier anywhere else.
 - Prices from the supplier are floats. Convert to integer minor units at the edge (see the money-and-claims rule).

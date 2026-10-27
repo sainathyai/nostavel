@@ -50,6 +50,14 @@ Source of truth: `docs/conventions.md` §2 and `SECURITY.md`. The repository is 
 - **Rate limits:** anything that calls the supplier, sends email or checks a code is rate-limited.
 - **Input:** validate at the boundary. Never trust IDs, prices or tiers sent by the browser.
 - **Errors:** the guest gets a safe message; the detail goes to the server log.
+- **Logs:** the detail goes through `lib/log.ts`, which redacts email-shaped text
+  in every string it writes (NOS-69). Treat that as the floor and not the
+  control: a name, a phone number or an address has no shape to match, so the
+  rule is still not to pass one. A credential attempt - a password, a token, a
+  one-time code someone typed - is never logged at all, redaction or not. The
+  one deliberate exception is the development-only line in `actions/find.ts`
+  that prints a code this process just issued, and it no longer names the guest
+  it was for.
 
 ## Headers and CSP
 - Security headers and the Content Security Policy live in `next.config.ts`. The CSP is **report-only** today.

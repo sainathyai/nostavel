@@ -2,6 +2,8 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { describeThrown } from "@/lib/action-error";
+import { logError, logInfo } from "@/lib/log";
 import { clientIp } from "@/lib/rate-limit";
 import { rateLimit } from "@/lib/rate-limit-store";
 import { findConfirmedBookingsByEmailAndLastName } from "@/lib/bookings";
@@ -89,13 +91,15 @@ export async function requestGuestCode(_prev: FindState, formData: FormData): Pr
       await sendGuestCode(email, code);
       if (process.env.NODE_ENV !== "production") {
         // Dev-only: the Resend sandbox only delivers to the account owner, so
-        // surface the code in the server log to keep the flow testable.
-        console.log(`[find] verification code for ${email}: ${code}`);
+        // surface the code in the server log to keep the flow testable. The
+        // guest's address was in this line until NOS-69; it is not needed to
+        // use the code, and a development log is still a log.
+        logInfo("find.code.issued_dev", `A verification code was issued: ${code}`, { code });
       }
     }
   } catch (e) {
     // Never leak existence via an error path — log and fall through to the note.
-    console.error("[find] requestGuestCode failed:", (e as Error).message);
+    logError("find.locate.failed", `Locating a booking to send a code failed: ${describeThrown(e)}`);
   }
 
   return { stage: "code", email, note: SENT_NOTE, error: null };

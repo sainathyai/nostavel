@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cutoffFor, statusesAgree } from "./cron-format";
+import { cutoffFor, statusesAgree, summarise } from "./cron-format";
 
 describe("cutoffFor", () => {
   it("subtracts the TTL in minutes from now", () => {
@@ -30,5 +30,18 @@ describe("statusesAgree", () => {
   it("disagrees when the supplier still shows the booking live", () => {
     expect(statusesAgree("cancelled", "CONFIRMED")).toBe(false);
     expect(statusesAgree("cancelled", null)).toBe(false);
+  });
+});
+
+describe("a pass's counts, as the sentence an operator reads (NOS-69)", () => {
+  it("names every count, because zero is the one that matters", () => {
+    // "0 recovered" is the number somebody is looking for, and it should not
+    // need a click to see in the Logs Explorer summary.
+    expect(summarise({ holdsExpired: 1, recovered: 0 })).toBe("holdsExpired=1 recovered=0");
+  });
+
+  it("says something when there is nothing to say", () => {
+    // An empty clause would leave the message ending in a dangling colon.
+    expect(summarise({})).toBe("nothing to do");
   });
 });

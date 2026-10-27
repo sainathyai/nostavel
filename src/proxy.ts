@@ -23,6 +23,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requestVerdict } from "@/lib/access-gate";
 import { accessGateEnabled, accessPassword, fatalProblems } from "@/lib/deploy-config";
+import { logWarning } from "@/lib/log";
 import { verifySharedSecret } from "@/lib/webhook-auth";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -60,20 +61,22 @@ export function proxy(request: NextRequest) {
     });
   }
 
-  // LOGGED, BECAUSE OTHERWISE NOBODY EVER LEARNS IT WAS TRIED. There is no rate
-  // limit on this gate yet (NOS-62): the in-memory limiter this repository has
-  // is per instance, and on a platform that scales to zero that is close to no
-  // limit at all. So the minimum the NOS-60 security review asked for is that a
-  // refusal leaves a trace — an unthrottled dictionary attack against a public
-  // URL should at least be visible afterwards, and on a per-request billing
-  // model it is also a cost worth seeing.
+  // LOGGED, BECAUSE OTHERWISE NOBODY EVER LEARNS IT WAS TRIED. There is still no
+  // rate limit on this gate (NOS-62). The reason given here used to be that the
+  // limiter was per instance and therefore worthless on a platform that scales
+  // to zero; NOS-10 moved the counters into Postgres, so that is no longer true
+  // and NOS-62 is now simply unbuilt. The minimum the NOS-60 security review
+  // asked for is that a refusal leaves a trace — an unthrottled dictionary
+  // attack against a public URL should at least be visible afterwards, and on a
+  // per-request billing model it is also a cost worth seeing.
   //
   // The path and a coarse source only. Never the password that was tried, and
   // never the header: both are attacker-controlled text heading for a log, and
   // one of them is a credential guess that may be someone's real password
   // somewhere else.
   const source = (request.headers.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || "unknown";
-  console.warn(`[gate] refused ${request.nextUrl.pathname} from ${source}`);
+  const path = request.nextUrl.pathname;
+  logWarning("gate.refused", `Refused ${path} from ${source}.`, { path, source });
 
   return new NextResponse("Authentication required.", {
     status: 401,
