@@ -10,7 +10,8 @@ import { mayActOnBooking, type Purpose } from "@/lib/booking-authz";
 import { resolveCaller } from "@/lib/booking-caller";
 import { getCurrentUser } from "@/lib/dal";
 import { quoteMatchesSession } from "@/lib/quote-token";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 import {
   prepareBooking,
   confirmBooking,
@@ -83,7 +84,14 @@ export async function prepareBookingAction(
   args: PrepareBookingArgs,
 ): Promise<PrepareBookingResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-prepare:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-prepare:ip:${ip}`, {
+    limit: 10,
+    windowMs: 60_000,
+    // Spends money at the supplier, so a limiter outage must not become free
+    // prebooks. Costs nothing in practice: if the store is down, this action
+    // was going to fail at its own first write.
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   const user = await getCurrentUser();
@@ -143,7 +151,11 @@ export type SaveGuestResponse = { ok: true } | { ok: false; error: string };
 // Persist the lead guest before payment. Called from the checkout page.
 export async function saveGuestAction(input: GuestInput): Promise<SaveGuestResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-guest:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-guest:ip:${ip}`, {
+    limit: 20,
+    windowMs: 60_000,
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   // Overwriting the lead guest on someone else's held rate was free before
@@ -182,7 +194,15 @@ export async function markPaymentStartingAction(
   bookingId: string,
 ): Promise<PaymentStartingResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-paying:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-paying:ip:${ip}`, {
+    limit: 20,
+    windowMs: 60_000,
+    // Deliberately `deny` even though this call is harmless on its own: a
+    // guest hitting the limiter here is told so and pays anyway (see the
+    // function comment), so refusing costs nothing and the pair of
+    // paying-flag actions stays one rule.
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   const auth = await authorize(bookingId, "checkout");
@@ -208,7 +228,11 @@ export async function markPaymentFailedAction(
   bookingId: string,
 ): Promise<PaymentStartingResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-paying:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-paying:ip:${ip}`, {
+    limit: 20,
+    windowMs: 60_000,
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   const auth = await authorize(bookingId, "checkout");
@@ -230,7 +254,12 @@ export type ConfirmBookingResponse =
 // the guest + transaction were already stored, so no other input is needed.
 export async function confirmBookingAction(bookingId: string): Promise<ConfirmBookingResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-confirm:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-confirm:ip:${ip}`, {
+    limit: 10,
+    windowMs: 60_000,
+    // The one that calls the supplier's `book()`. Fail closed.
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   // This one spends money: `confirmBooking` calls the supplier's `book()`.
@@ -258,7 +287,11 @@ export type CancelBookingResponse =
 // have proved is theirs.
 export async function cancelBookingAction(bookingId: string): Promise<CancelBookingResponse> {
   const ip = await clientIp();
-  const rl = rateLimit(`booking-cancel:ip:${ip}`, { limit: 10, windowMs: 60_000 });
+  const rl = await rateLimit(`booking-cancel:ip:${ip}`, {
+    limit: 10,
+    windowMs: 60_000,
+    onStoreError: "deny",
+  });
   if (!rl.ok) return { ok: false, error: TOO_MANY };
 
   // `manage`, not `checkout`: a guest may cancel long after the checkout claim

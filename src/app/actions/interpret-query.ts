@@ -2,7 +2,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 import { resolveDest, CATEGORY_SYNONYMS } from "@/lib/liteapi";
 import { DESTINATIONS } from "@/lib/destinations";
 import type { Query } from "@/lib/query-url";
@@ -37,7 +38,12 @@ export type InterpretQueryInput = {
 
 export async function interpretQuery(input: InterpretQueryInput): Promise<InterpretQueryResult> {
   const ip = await clientIp();
-  const rl = rateLimit(`interpret-query:ip:${ip}`, { limit: 20, windowMs: 60_000 });
+  const rl = await rateLimit(`interpret-query:ip:${ip}`, {
+    limit: 20,
+    windowMs: 60_000,
+    // Each call is a paid model request.
+    onStoreError: "deny",
+  });
   if (!rl.ok) {
     return {
       intent: { dest: null, checkin: null, nights: null, notes: "" },

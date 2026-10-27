@@ -33,7 +33,7 @@ export async function POST(request: Request) {
   // costs us a constant-time comparison on every request, and the comparison is
   // the cheapest thing on this path to protect. Being first also means a limited
   // request writes nothing: no `webhook_events` row, no dispatch.
-  const rl = checkWebhookRate(request);
+  const rl = await checkWebhookRate(request);
   if (!rl.ok) {
     return Response.json(
       { error: "too many requests" },

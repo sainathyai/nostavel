@@ -4,7 +4,8 @@
 // file may only export the handler and Next's own config keys, so a helper that
 // a test needs to reach cannot live there; and docs/conventions.md §1 keeps the
 // decision in src/lib with the route doing the routing.
-import { rateLimit, clientIpOf, type RateResult } from "@/lib/rate-limit";
+import { clientIpOf, type RateResult } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 
 /**
  * Generous on purpose (NOS-13, threat-model gap G2).
@@ -31,6 +32,8 @@ import { rateLimit, clientIpOf, type RateResult } from "@/lib/rate-limit";
  */
 const WEBHOOK_RATE = { limit: 60, windowMs: 60_000 };
 
+type WebhookRateOptions = typeof WEBHOOK_RATE & { onStoreError: "allow" | "deny" };
+
 /**
  * FAILS OPEN, which is the opposite of what the money-path actions do.
  *
@@ -46,13 +49,21 @@ const WEBHOOK_RATE = { limit: 60, windowMs: 60_000 };
  * store, at which point the branch stops being hypothetical and this call site
  * needs only `await`.
  */
-export function checkWebhookRate(
+export async function checkWebhookRate(
   request: Request,
-  limiter: (key: string, opts: typeof WEBHOOK_RATE) => RateResult = rateLimit,
-): RateResult {
+  limiter: (key: string, opts: WebhookRateOptions) => Promise<RateResult> = rateLimit,
+): Promise<RateResult> {
   try {
-    return limiter(`webhook-liteapi:ip:${clientIpOf(request)}`, WEBHOOK_RATE);
+    return await limiter(`webhook-liteapi:ip:${clientIpOf(request)}`, {
+      ...WEBHOOK_RATE,
+      // The only `allow` in the codebase, for the reason above: refusing a real
+      // delivery is the harm here, not admitting one too many.
+      onStoreError: "allow",
+    });
   } catch (e) {
+    // Belt and braces. `rateLimit` already turns a store error into its policy
+    // rather than a throw, so reaching this means something unforeseen - and
+    // the direction is the same either way: let the delivery through.
     console.warn(
       "[webhook] rate limiter unavailable, allowing the delivery:",
       (e as Error).message,

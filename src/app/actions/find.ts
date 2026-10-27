@@ -2,7 +2,8 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { clientIp } from "@/lib/rate-limit";
+import { rateLimit } from "@/lib/rate-limit-store";
 import { findConfirmedBookingsByEmailAndLastName } from "@/lib/bookings";
 import { sendGuestCode } from "@/lib/email";
 import {
@@ -58,8 +59,18 @@ export async function requestGuestCode(_prev: FindState, formData: FormData): Pr
   }
 
   const ip = await clientIp();
-  const perIp = rateLimit(`find-send:ip:${ip}`, { limit: 6, windowMs: 15 * 60_000 });
-  const perEmail = rateLimit(`find-send:email:${email}`, { limit: 4, windowMs: 15 * 60_000 });
+  // Sends email, and the per-email key is the one that stops a stranger
+  // filling someone else's inbox. Fail closed on a store outage.
+  const perIp = await rateLimit(`find-send:ip:${ip}`, {
+    limit: 6,
+    windowMs: 15 * 60_000,
+    onStoreError: "deny",
+  });
+  const perEmail = await rateLimit(`find-send:email:${email}`, {
+    limit: 4,
+    windowMs: 15 * 60_000,
+    onStoreError: "deny",
+  });
   if (!perIp.ok || !perEmail.ok) {
     return {
       stage: "locate",
@@ -102,7 +113,13 @@ export async function verifyGuestCode(_prev: FindState, formData: FormData): Pro
   }
 
   const ip = await clientIp();
-  const rl = rateLimit(`find-verify:ip:${ip}`, { limit: 12, windowMs: 15 * 60_000 });
+  const rl = await rateLimit(`find-verify:ip:${ip}`, {
+    limit: 12,
+    windowMs: 15 * 60_000,
+    // Checks a six-digit code. An unlimited code check is a free brute force,
+    // so this is the last limit that should ever fail open.
+    onStoreError: "deny",
+  });
   if (!rl.ok) {
     return { stage: "code", email, note: null, error: "Too many attempts. Please wait a few minutes." };
   }
