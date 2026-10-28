@@ -356,8 +356,13 @@ Two more that are less obvious:
 
 - **No CI.** `npm test`, `tsc`, `lint` and `build` all pass locally and nothing
   enforces that. This is the cheapest high-value item on the list.
-- **No error tracking.** A failed booking surfaces as a log line and nothing
-  groups, counts or notifies on it. NOS-70 is open for that.
+- ~~**No error tracking.**~~ Added 2026-10-28 (NOS-70): an unexpected exception
+  is written as a `ReportedErrorEvent` carrying its stack, the service and the
+  commit, so Error Reporting groups it with a count and a first-seen; Next's
+  `onRequestError` covers the ones no catch block of ours sees. No vendor, no
+  secret, no IAM change - it rides the log pipeline. Refusals are deliberately
+  not reported. The grouped view needs `terraform apply` for the API; the
+  entries are written either way.
 - ~~**No structured logging.**~~ Added 2026-10-27 (NOS-69): every line in `src`
   is one JSON object with `severity`, `event`, `message` and fields, written by
   `src/lib/log.ts`; lint refuses `console.*` anywhere else. **Still no request

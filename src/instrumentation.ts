@@ -32,6 +32,8 @@
 // reads before it moves any traffic.
 //
 // So this function logs, loudly, and nothing here can stop a process serving.
+import type { Instrumentation } from "next";
+import { pathOnly, reportError } from "./lib/error-report";
 import { logCritical, logError, logInfo, logWarning } from "./lib/log";
 
 export async function register() {
@@ -80,3 +82,40 @@ export async function register() {
     );
   }
 }
+
+/**
+ * Every server error Next catches for us, reported once (NOS-70).
+ *
+ * This is the half `reportFailure` cannot reach: a server component that
+ * throws, a route handler that throws, a server action nobody wrapped. Without
+ * it those are whatever Next printed to stderr, with no group, no count and no
+ * first-seen.
+ *
+ * NO RUNTIME GUARD, unlike `register` above. That one returns early on the edge
+ * runtime because it imports a module tree with no business being evaluated
+ * there; this one reaches `log.ts`, which is `console` and `JSON.stringify`, and
+ * an error on an edge route is exactly as worth reporting as one on a node
+ * route.
+ *
+ * Synchronous on purpose. Next awaits a promise returned from here, so an async
+ * reporter would sit in the request's own path; everything this does is one
+ * line to stdout.
+ */
+export const onRequestError: Instrumentation.onRequestError = (error, request, context) => {
+  const path = pathOnly(request.path);
+  // React can replace the thrown instance while rendering a server component,
+  // and then the digest a guest reads on screen is the only thing tying their
+  // report to this entry (Next's instrumentation docs). Read defensively: the
+  // caught value is `unknown` and may not be an object at all.
+  const digest =
+    typeof error === "object" && error !== null && "digest" in error
+      ? String((error as { digest: unknown }).digest)
+      : undefined;
+
+  reportError(
+    "request.failed",
+    `Unhandled error in ${context.routeType} ${request.method} ${path}.`,
+    error,
+    { path, method: request.method, routeType: context.routeType, routePath: context.routePath, digest },
+  );
+};
