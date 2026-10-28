@@ -183,12 +183,18 @@ describe("a delivery with no event_id (NOS-14, threat-model gap G3)", () => {
     const stored = await db.select().from(webhookEvents).where(eq(webhookEvents.type, "booking.cancel"));
     expect(stored.some((row) => row.externalId === null)).toBe(true);
 
-    // And the part this ticket adds: somebody can now find out.
+    // And the part this ticket adds: somebody can now find out. Since NOS-69 the
+    // line is JSON, so this also proves the structured shape survives the whole
+    // route rather than only a unit test of the logger.
     expect(warn).toHaveBeenCalledTimes(1);
-    const line = String(warn.mock.calls[0][0]);
-    expect(line).toContain("NOT APPLIED");
-    expect(line).toContain("booking.cancel");
-    expect(line).toContain("no event_id");
+    const entry = JSON.parse(String(warn.mock.calls[0][0])) as Record<string, unknown>;
+    expect(entry).toMatchObject({
+      severity: "WARNING",
+      event: "webhook.missing_event_id",
+      eventName: "booking.cancel",
+    });
+    expect(String(entry.message)).toContain("NOT APPLIED");
+    expect(String(entry.message)).toContain("no event_id");
   });
 
   it("says nothing on the normal path, so the warning stays worth reading", async () => {

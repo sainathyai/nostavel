@@ -3,6 +3,9 @@
 // Everything here is best-effort: a failed send is logged and swallowed so it
 // can never break a booking that has already been charged and confirmed.
 
+import { describeThrown } from "./action-error";
+import { logError, logWarning } from "./log";
+
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
 function fromAddress(): string {
@@ -21,7 +24,14 @@ function appUrl(): string {
 export async function sendEmail(opts: { to: string; subject: string; html: string }): Promise<boolean> {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
-    console.warn("[email] RESEND_API_KEY not set — skipping send to", opts.to);
+    // The recipient was in this line until NOS-69 and is not any more. It is a
+    // guest's address, this branch is not dev-only (it fires in any environment
+    // where the key is unset), and `subject` says which email was lost without
+    // naming who it was for.
+    logWarning("email.skipped", `RESEND_API_KEY is not set, so "${opts.subject}" was not sent.`, {
+      subject: opts.subject,
+      reason: "no_api_key",
+    });
     return false;
   }
   try {
@@ -32,12 +42,18 @@ export async function sendEmail(opts: { to: string; subject: string; html: strin
       cache: "no-store",
     });
     if (!res.ok) {
-      console.error("[email] Resend responded", res.status, await res.text().catch(() => ""));
+      const body = await res.text().catch(() => "");
+      logError("email.rejected", `Resend answered ${res.status} for "${opts.subject}": ${body}`, {
+        subject: opts.subject,
+        status: res.status,
+      });
       return false;
     }
     return true;
   } catch (e) {
-    console.error("[email] send failed:", (e as Error).message);
+    logError("email.send.failed", `Sending "${opts.subject}" failed: ${describeThrown(e)}`, {
+      subject: opts.subject,
+    });
     return false;
   }
 }

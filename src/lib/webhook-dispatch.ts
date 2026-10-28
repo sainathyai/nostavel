@@ -116,7 +116,7 @@ export function missingIdWarning(args: {
   const name = (args.eventName ?? "").trim() || "(no event name)";
   const intent = webhookIntent(args);
   if (intent === "ignore") {
-    return `[webhook] ${name} arrived with no event_id: stored, not dispatched. Nothing to apply for this event type.`;
+    return `${name} arrived with no event_id: stored, not dispatched. Nothing to apply for this event type.`;
   }
-  return `[webhook] NOT APPLIED: ${name} arrived with no event_id, so it was stored and NOT dispatched. This would have been recorded as a ${intent}. If the supplier ended or refunded this booking, our ledger still says otherwise - find the row in webhook_events and apply it by hand.`;
+  return `NOT APPLIED: ${name} arrived with no event_id, so it was stored and NOT dispatched. This would have been recorded as a ${intent}. If the supplier ended or refunded this booking, our ledger still says otherwise - find the row in webhook_events and apply it by hand.`;
 }

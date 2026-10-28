@@ -196,10 +196,18 @@ describe("when the store cannot answer (AC 5)", () => {
 
   it("says which way it went, so an outage is diagnosable", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    await rateLimit("k", { limit: 1, windowMs: MINUTE, onStoreError: "deny" }, broken);
-    const line = String(error.mock.calls[0][0]);
-    expect(line).toContain("[rate-limit]");
-    expect(line).toContain("store unavailable");
+    await rateLimit("booking-confirm:ip:1.2.3.4", { limit: 1, windowMs: MINUTE, onStoreError: "deny" }, broken);
+    const entry = JSON.parse(String(error.mock.calls[0][0])) as Record<string, unknown>;
     error.mockRestore();
+
+    expect(entry).toMatchObject({
+      severity: "ERROR",
+      event: "rate_limit.store_unavailable",
+      failing: "closed",
+      // The BUCKET, not the key: the key ends in a client address, and when the
+      // store is unreachable the address explains nothing the bucket does not.
+      bucket: "booking-confirm",
+    });
+    expect(String(entry.message)).not.toContain("1.2.3.4");
   });
 });

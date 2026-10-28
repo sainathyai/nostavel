@@ -4,6 +4,8 @@
 // file may only export the handler and Next's own config keys, so a helper that
 // a test needs to reach cannot live there; and docs/conventions.md §1 keeps the
 // decision in src/lib with the route doing the routing.
+import { describeThrown } from "@/lib/action-error";
+import { logWarning } from "@/lib/log";
 import { clientIpOf, type RateResult } from "@/lib/rate-limit";
 import { rateLimit } from "@/lib/rate-limit-store";
 
@@ -64,9 +66,9 @@ export async function checkWebhookRate(
     // Belt and braces. `rateLimit` already turns a store error into its policy
     // rather than a throw, so reaching this means something unforeseen - and
     // the direction is the same either way: let the delivery through.
-    console.warn(
-      "[webhook] rate limiter unavailable, allowing the delivery:",
-      (e as Error).message,
+    logWarning(
+      "webhook.rate_limit.unavailable",
+      `The rate limiter was unavailable, allowing the delivery: ${describeThrown(e)}`,
     );
     return { ok: true, remaining: 0, retryAfterMs: 0 };
   }

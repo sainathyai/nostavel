@@ -32,6 +32,8 @@
 // reads before it moves any traffic.
 //
 // So this function logs, loudly, and nothing here can stop a process serving.
+import { logCritical, logError, logInfo, logWarning } from "./lib/log";
+
 export async function register() {
   // `register` is called in every runtime; this file reads process.env and
   // nothing else, but the import below pulls in a module tree that has no
@@ -42,13 +44,23 @@ export async function register() {
 
   const env = appEnv(process.env);
   const sha = (process.env.APP_SHA ?? "").trim() || "unknown";
-  console.log(`[startup] env=${env} commit=${sha} supplier=${supplierMode(process.env)}`);
+  const supplier = supplierMode(process.env);
+  logInfo("startup.ready", `Started in ${env} on commit ${sha}, supplier ${supplier}.`, {
+    env,
+    commit: sha,
+    supplier,
+  });
 
   const problems = configProblems(process.env);
   for (const problem of problems) {
-    const line = `[startup] ${problem.severity}: ${problem.code} - ${problem.message}`;
-    if (problem.severity === "fatal") console.error(line);
-    else console.warn(line);
+    const message = `${problem.code} - ${problem.message}`;
+    // `{ ...problem }` was the obvious thing to write here and it was wrong: a
+    // `ConfigProblem` carries its own `severity` and `message`, and the logger
+    // writes the canonical pair last, so both would have been silently dropped.
+    // The problem's own severity is already said by ERROR versus WARNING.
+    const fields = { code: problem.code, env };
+    if (problem.severity === "fatal") logError("startup.config_problem", message, fields);
+    else logWarning("startup.config_problem", message, fields);
   }
 
   // Asked for rather than filtered here, so "what counts as fatal" has exactly
@@ -59,10 +71,12 @@ export async function register() {
     // and deliberately serving nothing. Without this line, the only symptom is
     // a 503 with no explanation in it (src/proxy.ts keeps the detail out of the
     // response body, because the response goes to whoever knocked).
-    console.error(
-      `[startup] NOT SERVING REQUESTS. ${fatal.length} fatal configuration problem(s): ` +
+    logCritical(
+      "startup.not_serving",
+      `NOT SERVING REQUESTS. ${fatal.length} fatal configuration problem(s): ` +
         fatal.map((p) => p.code).join(", ") +
         ". Every path except /api/health will answer 503 until they are fixed.",
+      { env, commit: sha, codes: fatal.map((p) => p.code), count: fatal.length },
     );
   }
 }
