@@ -44,6 +44,9 @@ Source of truth: `docs/conventions.md` §1, §2, §5 and §10. This file is a di
 - **Fields are top-level.** They are the thing a metric can count. Do not wrap them in a `data` object; the existing filters would stop matching and no test but the contract test would notice.
 - **Severity means what it says:** `WARNING` is still-serving, `ERROR` is this request or job failed, `CRITICAL` is the process up and deliberately not serving. The stream follows the severity; the payload is what Cloud Logging honours.
 - **Personal data:** the logger redacts email-shaped text in every string it writes, including nested fields. That is a floor, not a licence - do not pass a guest's name, phone number or address in the first place, and never a secret, a token or a password attempt.
+- **An exception nobody expected goes through `reportError` (`lib/error-report.ts`), not `logError`.** It writes the same line plus the `ReportedErrorEvent` type, the stack and the service and commit, which is what makes the same fault across twenty requests one group with a count instead of twenty lines. Pass the guest's `reference` when there is one.
+- **Never report a refusal.** A wrong password, a rate-limit denial, an unauthorized cron call and a duplicate webhook are the system working; they are logged, sometimes at ERROR, and never reported. An error channel carrying routine refusals is one nobody reads. Severity and reporting are separate decisions: ERROR means this request failed, a report means nobody expected it.
+- **Errors Next catches for us** (a server component, a route handler or an action that throws) are reported by `onRequestError` in `src/instrumentation.ts`. Nothing needs to be added per route.
 
 ## Supplier (LiteAPI)
 - All supplier calls go through `lib/liteapi.ts`. Don't call `fetch` against the supplier anywhere else.

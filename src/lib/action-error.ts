@@ -44,7 +44,8 @@
 // `scope` and `reference` are fields a metric can count, and the sentence a
 // human reads is the same string either way.
 
-import { logLine, writeLine, type LogFields } from "./log";
+import { reportFields, reportedMessage } from "./error-report";
+import { logLine, writeLine } from "./log";
 import { redactPersonalData } from "./redact";
 
 /** Which failure the guest is looking at. The copy differs because the truth does. */
@@ -189,7 +190,18 @@ export function reportFailure(
   // console.error arguments is not greppable in Cloud Logging. Since NOS-69 that
   // one string is JSON, so `scope` and `reference` are fields a filter can key
   // on as well as text a human can read.
-  const fields: LogFields = { scope, reference };
-  log(logLine("ERROR", "action.failed", `${scope} failed, reference ${reference}: ${describeThrown(thrown)}`, fields));
+  // AND REPORTED, not only logged (NOS-70). The same fault on twenty bookings
+  // was twenty unrelated lines; with the report fields it is one group with a
+  // count, a first-seen, and the guest's `reference` on it - so the id they
+  // quote on the phone finds the group and not just the one line.
+  const headline = `${scope} failed, reference ${reference}: ${describeThrown(thrown)}`;
+  log(
+    logLine(
+      "ERROR",
+      "action.failed",
+      reportedMessage(headline, thrown),
+      reportFields("action.failed", thrown, { scope, reference }),
+    ),
+  );
   return { reference, error: guestMessage(scope, reference) };
 }
