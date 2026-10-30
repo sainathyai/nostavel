@@ -556,5 +556,10 @@ alarm, which counts Cloud Scheduler passes only.
   which is why step 9 says so.
 - **The map basemap is down** for unrelated reasons (public Protomaps builds
   stopped allowing browser access), so map views will be blank.
-- **No error tracking or uptime alerting yet.** `payment.unresolved` still writes
-  to a table nobody reads (NOS-56).
+- ~~**No error tracking or uptime alerting yet.**~~ Closed 2026-10-30: an
+  unexpected exception reaches Error Reporting (NOS-70), and
+  `payment.unresolved` now emails the owner with the booking, the amount and
+  the supplier reference on it (NOS-56) - see
+  [unresolved-payment.md](unresolved-payment.md). Both ride the log pipeline, so
+  the only outstanding step is a `terraform apply` in `infra/envs/uat` to add
+  the alert policy and enable the Error Reporting API.

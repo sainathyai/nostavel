@@ -22,6 +22,12 @@ Source of truth: `docs/conventions.md` §3 and §4. A mistake here costs money o
 - **Round in the guest's favour.** `displayPrice` rounds up, so the charge is never above the number shown.
 - **Margins** (`MEMBER_MARGIN_PCT`, `PUBLIC_MARGIN_PCT`) are business decisions. Change them only with an explicit decision recorded in the ticket or an ADR.
 
+## When a guest's money is in doubt (NOS-56)
+- **A `payment.unresolved` event must also raise the alert.** `alertUnresolvedPayment` (`lib/unresolved-alert.ts`) writes the line `infra/envs/uat/observability.tf` emails the owner on. There are **three** places that record the event - the sweeper's lapsed-hold branch, the sweeper's recovery branch, and the confirmation page's `recordUnresolvedPayment` - and a fourth must raise the alert too. A record nobody reads was this ticket's entire defect.
+- **Once per booking, not once per pass.** The alert is raised only where the event was actually appended. The sweeper runs every five minutes forever, and an alert that repeats is an alert that gets muted.
+- **The alert carries the booking, never the guest.** `humanRef`, the amount, the supplier reference and the reason. Not the email, the name or the phone number: the notification is forwarded into an inbox, and the runbook's first step is how to get the guest's details from the booking.
+- **Never close an unresolved row by changing its status.** `expired` or `cancelled` ends the only record that a person has not finished with it. Append `payment.unresolved.closed` instead - [docs/runbooks/unresolved-payment.md](../../docs/runbooks/unresolved-payment.md).
+
 ## Price integrity
 - **Tier binding:** the tier a guest was quoted is bound by a signed quote token (`lib/quote-token.ts`, HMAC with a 30-minute TTL). `quoteMatchesSession` rejects both a member price used by a signed-out visitor and a public price used by a member. Keep both directions.
 - **Charge amount:** what the guest pays is decided on the server from the prebook response, never from a value the browser sent.

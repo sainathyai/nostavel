@@ -20,6 +20,9 @@ import { makeRef, extractCancellation } from "@/lib/booking-format";
 import { buildCancelPolicy, describeTiers, zoneFor, type RawCancelPolicies } from "@/lib/cancellation";
 import { holdLapsed, statusAfterFailedBook } from "@/lib/booking-transitions";
 import { webhookEventType } from "@/lib/webhook-dispatch";
+import { describeThrown } from "@/lib/action-error";
+import { logWarning } from "@/lib/log";
+import { alertUnresolvedPayment, unresolvedFrom } from "@/lib/unresolved-alert";
 
 export type HotelSnapshot = {
   name: string;
@@ -539,6 +542,31 @@ export async function recordUnresolvedPayment(
     actor: "guest",
     payload: { reason },
   });
+
+  // AND TELL SOMEBODY (NOS-56). This is the THIRD place that records an
+  // unresolved payment, and the ticket named only the sweeper's two. It is also
+  // the most alarming of the three: a browser came back from the payment
+  // provider, so this guest demonstrably reached the card step, where the
+  // sweeper's two cases are inferences from silence. Alerting on two of three
+  // would have left the loudest one quiet.
+  //
+  // CAUGHT, UNLIKE NOS-16's CONFLICT EVENT, and the difference is worth stating
+  // because the two look alike. There, a failed write meant the only record of
+  // a money difference was lost, so the caller had to see the error. Here the
+  // record is already written one line above; the alert is a notification
+  // derived from it, and the runbook's first step finds the row whether or not
+  // this succeeded. Throwing would break the page of a guest who is already in
+  // the worst state this system has.
+  try {
+    const [row] = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
+    if (row) alertUnresolvedPayment(unresolvedFrom(row, reason));
+  } catch (e) {
+    logWarning(
+      "payment.unresolved.alert_failed",
+      `The unresolved payment for ${bookingId} is recorded, but the alert could not be built: ${describeThrown(e)}. docs/runbooks/unresolved-payment.md step 1 still lists it.`,
+      { bookingId },
+    );
+  }
 }
 
 export async function confirmBooking(input: ConfirmInput): Promise<ConfirmResult> {

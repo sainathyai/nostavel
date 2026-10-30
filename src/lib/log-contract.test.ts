@@ -61,6 +61,33 @@ function appSource(): string {
 }
 
 /**
+ * Every event name the application actually LOGS.
+ *
+ * Not "appears in the source", which is what this test checked first and was
+ * not enough: NOS-56 renamed the event in `logError("payment.unresolved", ...)`
+ * and this file stayed green, because the same string is also the ledger event
+ * type in `appendOnce(row.id, "payment.unresolved", ...)` one directory away.
+ * An alarm keys on the LOG line, so the guard has to read logging calls, not
+ * text - the same mistake as the wildcard, wearing different clothes.
+ *
+ * A call whose event is a variable rather than a literal is not found here. The
+ * failure is then a loud one on a change that deserves looking at, which is the
+ * right direction for a guard.
+ */
+function loggedEvents(source: string): Set<string> {
+  const events = new Set<string>();
+  const calls = [
+    /\blog(?:Info|Warning|Error|Critical)\(\s*"([^"]+)"/g,
+    /\blogLine\(\s*"[A-Z]+",\s*"([^"]+)"/g,
+    /\breportError\(\s*"([^"]+)"/g,
+  ];
+  for (const pattern of calls) {
+    for (const match of source.matchAll(pattern)) events.add(match[1]);
+  }
+  return events;
+}
+
+/**
  * Every literal event name a filter stands for, with `${each.key}` expanded.
  *
  * The metric is written once with `for_each = local.cron_jobs`, so the filter
@@ -165,15 +192,22 @@ describe("the log fields Terraform depends on (AC 3)", () => {
   it("depends only on event names the application still logs", () => {
     // Catches the other half: not the mechanism moving, but the string being
     // renamed. Fails until whoever renamed it updates the Terraform too.
-    const source = appSource();
+    const logged = loggedEvents(appSource());
+
+    // The parser's own guard, again. If the regexes stop matching, every
+    // assertion below becomes trivially false rather than quietly true, but
+    // this says so first and in one line.
+    expect(logged.size, "found no logging calls at all; the parser is broken").toBeGreaterThan(5);
+    expect(logged).toContain("cron.sweep.completed");
+
     for (const { field, value, file } of dependencies) {
       if (field !== "event") continue;
       const events = expansionsOf(value, readFileSync(file, "utf8"));
       expect(events, `${file} filters on "${value}" and this test cannot expand it`).not.toHaveLength(0);
       for (const event of events) {
         expect(
-          source.includes(`"${event}"`),
-          `${file} filters on event "${event}", which no longer appears in src`,
+          logged.has(event),
+          `${file} filters on event "${event}", which nothing in src logs any more`,
         ).toBe(true);
       }
     }
