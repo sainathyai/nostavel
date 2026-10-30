@@ -8,6 +8,11 @@ rescue is not happening, and a guest who paid can end up with no booking and
 nobody alerted. The **reconciler** is the only automatic comparison of our ledger
 against the supplier's. The sweeper is the urgent one.
 
+**If the sweeper IS running and it told you about an unresolved payment**, that
+is a different situation and a different runbook:
+[unresolved-payment.md](unresolved-payment.md). This one is for the jobs
+themselves having stopped.
+
 **Most of this needs no secret.** Running the jobs, reading logs and inspecting
 configuration all use your own Google account. One optional check in section 4
 reads `/api/health?deep=1`, which needs the operations secret; it is marked, and a
@@ -25,8 +30,11 @@ and they are in this order for a reason.
    Use a personal address. A Google Group silently drops alerting mail unless it is
    configured to accept it from `alerting-noreply@google.com`, and an alarm nobody
    receives is this runbook's whole subject.
-2. `terraform apply`. It enables three APIs, creates two role-less invoker
-   identities, two Scheduler jobs, two log-based metrics and three alert policies.
+2. `terraform apply`. It enables four APIs, creates two role-less invoker
+   identities, two Scheduler jobs, two log-based metrics and four alert policies.
+   The fourth policy is the unresolved-payment alarm (NOS-56), which watches the
+   application rather than the jobs and lives in `observability.tf`; proving that
+   one is a step in its own runbook.
 3. **Promote traffic.** The apply creates a revision with **zero traffic**, so the
    four `CRON_*_INVOKER_*` values are on the template and not on the copy serving
    requests. This is measured, not theoretical: see section 4.

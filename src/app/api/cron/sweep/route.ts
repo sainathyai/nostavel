@@ -61,6 +61,7 @@ import {
 import { summarise } from "@/lib/cron-format";
 import { authorizeCronRequest } from "@/lib/cron-auth";
 import { logInfo, logWarning } from "@/lib/log";
+import { alertUnresolvedPayment, unresolvedFrom } from "@/lib/unresolved-alert";
 
 export const runtime = "nodejs";
 
@@ -199,7 +200,9 @@ export async function POST(request: Request) {
         // statement may show a pending charge, and this event is the only thing
         // that explains it.
         counts.alerts++;
-        await appendOnce(row.id, "payment.unresolved", { reason: decision.reason });
+        if (await appendOnce(row.id, "payment.unresolved", { reason: decision.reason })) {
+          alertUnresolvedPayment(unresolvedFrom(row, decision.reason));
+        }
         break;
       }
 
@@ -209,7 +212,7 @@ export async function POST(request: Request) {
           break;
         }
         recoveryBudget--;
-        await recover(row.id, holdLapsed(row.prebookedAt, now), counts, decision.reason);
+        await recover(row, holdLapsed(row.prebookedAt, now), counts, decision.reason);
         break;
       }
     }
@@ -243,11 +246,12 @@ export async function POST(request: Request) {
  * finalized.
  */
 async function recover(
-  bookingId: string,
+  row: BookingRow,
   holdHasLapsed: boolean,
   counts: Counts,
   reason: string,
 ): Promise<void> {
+  const bookingId = row.id;
   let result: { ok: true } | { ok: false; error: unknown };
   try {
     const confirmed = await confirmBooking({ bookingId });
@@ -291,10 +295,15 @@ async function recover(
 
     case "alert":
       counts.alerts++;
-      await appendOnce(bookingId, "payment.unresolved", { reason: outcome.reason });
+      if (await appendOnce(row.id, "payment.unresolved", { reason: outcome.reason })) {
+        alertUnresolvedPayment(unresolvedFrom(row, outcome.reason));
+      }
       return;
   }
 }
+
+/** One candidate row, as the query returns it. */
+type BookingRow = typeof bookings.$inferSelect;
 
 /**
  * Append a ledger event, at most once per booking per type.
@@ -308,12 +317,13 @@ async function appendOnce(
   bookingId: string,
   type: string,
   payload: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   const existing = await db
     .select({ id: bookingEvents.id })
     .from(bookingEvents)
     .where(and(eq(bookingEvents.bookingId, bookingId), eq(bookingEvents.type, type)))
     .limit(1);
-  if (existing.length) return;
+  if (existing.length) return false;
   await db.insert(bookingEvents).values({ bookingId, type, actor: "system", payload });
+  return true;
 }

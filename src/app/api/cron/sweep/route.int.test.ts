@@ -262,3 +262,92 @@ describe("a card that was declined", () => {
     expect(await statusOf(booking.id)).toBe("payment_pending");
   });
 });
+
+describe("the owner is actually told, once (NOS-56)", () => {
+  /** Every structured line the sweeper wrote to stderr, parsed, in order. */
+  async function alertsFrom(run: () => Promise<unknown>): Promise<Record<string, unknown>[]> {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await run();
+      return error.mock.calls
+        .map((call) => {
+          try {
+            return JSON.parse(String(call[0])) as Record<string, unknown>;
+          } catch {
+            // Something wrote a non-JSON line to stderr. Not ours; skip it
+            // rather than failing on it, so this asserts about our own lines.
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.event === "payment.unresolved");
+    } finally {
+      error.mockRestore();
+    }
+  }
+
+  it("names the booking, the money and the supplier reference, and not the guest", async () => {
+    // The recover path: the supplier could not be reached, so whether the guest
+    // paid is unknown. The alert is the entire point of this branch.
+    configureBookError(supplierRefusal(4290, "exceeded the allowed request limit", "too many requests"));
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(5),
+      amountTotalMinor: 41255,
+    });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, RECOVER_AFTER_MINUTES + 1);
+
+    const alerts = await alertsFrom(runSweep);
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      severity: "ERROR",
+      humanRef: booking.humanRef,
+      amountTotalMinor: 41255,
+      currency: "USD",
+      transactionId: booking.transactionId,
+    });
+    // Readable on its own in an email, which is where this lands.
+    expect(String(alerts[0].message)).toContain("USD 412.55");
+    expect(String(alerts[0].message)).toContain("docs/runbooks/unresolved-payment.md");
+    // THE PRIVACY LINE. The guest's address is on the row this was built from,
+    // and it is not in the alert: `.agents/rules/security.md`, and an alert
+    // forwarded into an inbox is the last place to make an exception.
+    expect(booking.contactEmail).toBeTruthy();
+    expect(JSON.stringify(alerts[0])).not.toContain(booking.contactEmail!);
+  });
+
+  it("tells the owner once, not once per sweep (AC 2)", async () => {
+    // The direct path: the hold lapsed mid-payment, so the supplier cannot
+    // answer either. The row stays a candidate forever by design, and the
+    // sweeper runs every five minutes - so a line per pass would be an alert
+    // muted within a day, and then the one that matters arrives muted.
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 5),
+    });
+    await markPaymentStarting(booking.id);
+    await wentQuiet(booking.id, PREBOOK_HOLD_MINUTES + 5);
+
+    const first = await alertsFrom(runSweep);
+    const second = await alertsFrom(runSweep);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+    // Still flagged as a candidate on the second pass: the counting is
+    // unchanged, only the alerting is deduplicated.
+    expect(await eventTypes(booking.id)).toEqual(expect.arrayContaining(["payment.unresolved"]));
+    expect(await statusOf(booking.id)).toBe("payment_pending");
+  });
+
+  it("says nothing at all when a pass had nothing to report (AC 4)", async () => {
+    // An ordinary expiry: a room nobody paid for. An alert channel that
+    // produces routine noise is one that gets muted.
+    const { booking } = await seedConfirmableBooking({
+      prebookedAt: minsAgo(PREBOOK_HOLD_MINUTES + 1),
+    });
+
+    const alerts = await alertsFrom(runSweep);
+
+    expect(alerts).toHaveLength(0);
+    expect(await statusOf(booking.id)).toBe("expired");
+  });
+});

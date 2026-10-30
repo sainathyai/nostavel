@@ -27,7 +27,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { payments, bookingEvents } from "@/db/schema";
-import { confirmBooking } from "@/lib/booking-service";
+import { confirmBooking, recordUnresolvedPayment } from "@/lib/booking-service";
 import { seedConfirmableBooking } from "@/test-support/db-fixtures";
 import {
   bookCalls,
@@ -95,5 +95,66 @@ describe("confirmBooking under two concurrent calls for the same booking (NOS-6)
     // Both callers still get a real answer either way — this suite is about
     // the double-charge, not about one request hanging or crashing.
     expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+  });
+});
+
+describe("the confirmation page's unresolved payment, which also has to reach a person (NOS-56)", () => {
+  // THE THIRD WRITE SITE. NOS-56's acceptance criteria name the sweeper's two
+  // cases; this one is a guest's browser coming back from the payment provider
+  // onto a lapsed hold, which is the only one of the three where the guest
+  // demonstrably reached the card step. Alerting on the other two and not this
+  // one would have left the loudest case silent.
+  async function unresolvedAlerts(run: () => Promise<unknown>): Promise<Record<string, unknown>[]> {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await run();
+      return error.mock.calls
+        .map((call) => {
+          try {
+            return JSON.parse(String(call[0])) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.event === "payment.unresolved");
+    } finally {
+      error.mockRestore();
+    }
+  }
+
+  it("records the event and raises the alert, with the booking and the money on it", async () => {
+    const { booking } = await seedConfirmableBooking({ amountTotalMinor: 41255 });
+
+    const alerts = await unresolvedAlerts(() =>
+      recordUnresolvedPayment(booking.id, "the provider's redirect arrived on a lapsed hold"),
+    );
+
+    const events = await db.select().from(bookingEvents).where(eq(bookingEvents.bookingId, booking.id));
+    expect(events.filter((e) => e.type === "payment.unresolved")).toHaveLength(1);
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      severity: "ERROR",
+      humanRef: booking.humanRef,
+      amountTotalMinor: 41255,
+      transactionId: booking.transactionId,
+    });
+    expect(String(alerts[0].message)).toContain("USD 412.55");
+    // The guest's address is on the row and must not be in the alert.
+    expect(JSON.stringify(alerts[0])).not.toContain(booking.contactEmail!);
+  });
+
+  it("stays silent on a refresh, because this page is a URL a guest will reload", async () => {
+    // The event is already idempotent per booking; the alert has to be too, or
+    // a guest refreshing the page becomes a stream of identical emails.
+    const { booking } = await seedConfirmableBooking();
+
+    const first = await unresolvedAlerts(() => recordUnresolvedPayment(booking.id, "redirect on a lapsed hold"));
+    const second = await unresolvedAlerts(() => recordUnresolvedPayment(booking.id, "redirect on a lapsed hold"));
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+    const events = await db.select().from(bookingEvents).where(eq(bookingEvents.bookingId, booking.id));
+    expect(events.filter((e) => e.type === "payment.unresolved")).toHaveLength(1);
   });
 });
